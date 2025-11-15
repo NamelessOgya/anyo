@@ -1,0 +1,1 @@
+docker rm t4r
