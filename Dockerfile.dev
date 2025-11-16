@@ -1,0 +1,8 @@
+FROM t4r
+
+# Install build dependencies for sentencepiece and other packages
+RUN apt-get update && apt-get install -y \
+    cmake \
+    build-essential \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*

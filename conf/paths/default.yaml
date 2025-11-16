@@ -1,0 +1,3 @@
+data_dir: "data"
+result_root: "result"
+teacher_outputs_dir: "${paths.data_dir}/teacher_outputs/${dataset.name}"

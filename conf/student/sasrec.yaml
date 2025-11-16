@@ -1,0 +1,8 @@
+name: "sasrec"
+emb_size: 64
+hidden_size: 64
+max_seq_len: 50
+dropout: 0.1
+batch_size: 256
+lr: 1e-3
+num_epochs: 200

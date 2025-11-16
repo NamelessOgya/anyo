@@ -1,0 +1,7 @@
+name: "ilora"
+llm_path: "dummy_llm"
+batch_size: 64
+lr: 1e-4
+num_epochs: 5
+prompt_template: "default"
+save_interval: 1

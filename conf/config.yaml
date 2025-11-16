@@ -1,0 +1,16 @@
+defaults:
+  - _self_
+  - dataset: movielens
+  - teacher: ilora
+  - student: sasrec
+  - distill: dllm2rec
+  - active: all
+  - paths: default
+  - logging: default
+  - metrics: recsys
+  - hydra: default
+
+general:
+  experiment_name: "anyo_ilora_dllm2rec"
+  seed: 42
+  device: "cpu"

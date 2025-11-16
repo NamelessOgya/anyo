@@ -1,0 +1,5 @@
+name: "movielens"
+max_seq_len: 50
+min_user_inter: 5
+split:
+  method: "leave_one_out"

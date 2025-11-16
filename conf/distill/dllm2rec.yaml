@@ -1,0 +1,7 @@
+name: "dllm2rec"
+alpha: 0.5       # ranking distill の重み
+ed_weight: 0.3   # embedding distill の重み
+lambda: 0.7
+batch_size: 256
+lr: 1e-3
+num_epochs: 200
