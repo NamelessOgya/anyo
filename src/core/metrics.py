@@ -18,7 +18,7 @@ def calculate_metrics(
         Dict[str, float]: 計算された評価指標を含む辞書。
     """
     if not predictions or not ground_truths:
-        return {"recall@k": 0.0, "ndcg@k": 0.0, "hit_ratio@k": 0.0}
+        return {f"recall@{k}": 0.0, f"ndcg@{k}": 0.0, f"hit_ratio@{k}": 0.0}
 
     total_recall = 0.0
     total_ndcg = 0.0

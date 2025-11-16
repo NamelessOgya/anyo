@@ -14,6 +14,7 @@ numpy = "^1.26"
 pandas = "^2.2"
 tensorboard = "^2.18"
 peft = "^0.12"
+pytorch-lightning = "^2.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8"
