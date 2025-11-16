@@ -1,0 +1,7 @@
+ranking_loss_weight: 1.0
+embedding_loss_weight: 1.0
+ce_loss_weight: 1.0
+ranking_temperature: 2.0
+embedding_loss_type: mse # mse or cosine
+# teacher_checkpoint_path: null # 学習済み教師モデルのパス
+# student_checkpoint_path: null # 学習済み生徒モデルのパス (蒸留の初期化に使う場合)

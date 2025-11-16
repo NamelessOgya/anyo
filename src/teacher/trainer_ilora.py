@@ -4,38 +4,25 @@ import pytorch_lightning as pl
 from torch.optim import AdamW
 from typing import Dict, Any
 
-from src.student.models import SASRec
+from src.teacher.ilora_model import iLoRAModel
 from src.core.metrics import calculate_metrics
 
-class SASRecTrainer(pl.LightningModule):
+class iLoRATrainer(pl.LightningModule):
     def __init__(self, 
-                 num_users: int, 
-                 num_items: int, 
-                 hidden_size: int, 
-                 num_heads: int, 
-                 num_layers: int, 
-                 dropout_rate: float, 
-                 max_seq_len: int,
-                 learning_rate: float = 1e-3,
+                 ilora_model: iLoRAModel,
+                 num_items: int,
+                 learning_rate: float = 1e-4,
                  weight_decay: float = 0.01,
                  metrics_k: int = 10):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['ilora_model'])
 
-        self.model = SASRec(
-            num_users=num_users,
-            num_items=num_items,
-            hidden_size=hidden_size,
-            num_heads=num_heads,
-            num_layers=num_layers,
-            dropout_rate=dropout_rate,
-            max_seq_len=max_seq_len
-        )
+        self.model = ilora_model
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=0) # パディングID=0は損失計算から除外
         self.metrics_k = metrics_k
 
     def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> torch.Tensor:
-        return self.model.predict(item_seq, item_seq_len)
+        return self.model(item_seq, item_seq_len)
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         item_seq = batch["item_seq"]
@@ -44,9 +31,7 @@ class SASRecTrainer(pl.LightningModule):
 
         logits = self.forward(item_seq, item_seq_len)
         
-        # next_itemは0-indexedのアイテムID
-        # logitsは(batch_size, num_items + 1)の形状で、各アイテムIDに対するスコア
-        # CrossEntropyLossはターゲットがクラスID（ここではnext_item）であることを期待する
+        # iLoRAの学習では、次アイテム予測のCE損失を計算
         loss = self.loss_fn(logits, next_item)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
@@ -59,11 +44,7 @@ class SASRecTrainer(pl.LightningModule):
         logits = self.forward(item_seq, item_seq_len)
         loss = self.loss_fn(logits, next_item)
 
-        # 予測と正解を収集してメトリクスを計算
-        # logitsからトップKのアイテムIDを取得
         _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
-        
-        # next_itemはスカラーなので、リストのリスト形式に変換
         ground_truths = [[item.item()] for item in next_item]
         predictions = predicted_indices.tolist()
 
@@ -98,34 +79,50 @@ class SASRecTrainer(pl.LightningModule):
         return {"test_loss": loss}
 
     def configure_optimizers(self) -> Any:
-        optimizer = AdamW(self.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
+        # iLoRAでは、LoRAアダプターとゲーティングネットワークのパラメータのみを学習対象とする
+        # LLMのベースモデルのパラメータはフリーズされている
+        optimizer = AdamW(self.model.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
         return optimizer
 
 if __name__ == "__main__":
     # テスト用のダミーデータとデータモジュール
-    from src.student.datamodule import SASRecDataModule
+    from src.student.datamodule import SASRecDataModule # データモジュールは共通
+    from omegaconf import OmegaConf
     from pytorch_lightning import Trainer
     from pytorch_lightning.callbacks import LearningRateMonitor
 
     # ダミーデータモジュール
-    dm = SASRecDataModule(batch_size=4, max_seq_len=50, num_workers=0) # num_workers=0 for Windows/debugging
+    dm = SASRecDataModule(batch_size=4, max_seq_len=50, num_workers=0)
     dm.prepare_data()
     dm.setup()
 
-    # トレーナーのインスタンス化
-    # num_usersとnum_itemsはdatamoduleから取得
-    num_users_dummy = 1000 # SASRecモデルではnum_usersは直接使われないが、引数として渡す
-    num_items_actual = dm.num_items
+    # iLoRAModelのインスタンス化 (ダミー設定)
+    ilora_cfg = OmegaConf.create({
+        "llm_model_name": "facebook/opt-125m",
+        "num_lora_experts": 3,
+        "lora_r": 8,
+        "lora_alpha": 16,
+        "lora_dropout": 0.05,
+        "hidden_size": 64,
+        "dropout_rate": 0.1
+    })
+    ilora_model_instance = iLoRAModel(
+        llm_model_name=ilora_cfg.llm_model_name,
+        num_lora_experts=ilora_cfg.num_lora_experts,
+        lora_r=ilora_cfg.lora_r,
+        lora_alpha=ilora_cfg.lora_alpha,
+        lora_dropout=ilora_cfg.lora_dropout,
+        num_items=dm.num_items,
+        max_seq_len=dm.max_seq_len,
+        hidden_size=ilora_cfg.hidden_size,
+        dropout_rate=ilora_cfg.dropout_rate
+    )
 
-    trainer_model = SASRecTrainer(
-        num_users=num_users_dummy,
-        num_items=num_items_actual,
-        hidden_size=64,
-        num_heads=2,
-        num_layers=2,
-        dropout_rate=0.1,
-        max_seq_len=50,
-        learning_rate=1e-3,
+    # iLoRATrainerのインスタンス化
+    ilora_trainer = iLoRATrainer(
+        ilora_model=ilora_model_instance,
+        num_items=dm.num_items,
+        learning_rate=1e-4,
         weight_decay=0.01,
         metrics_k=10
     )
@@ -141,10 +138,10 @@ if __name__ == "__main__":
         enable_checkpointing=False,
     )
 
-    print("\n--- Starting dummy training ---")
-    trainer.fit(trainer_model, dm.train_dataloader(), dm.val_dataloader())
-    print("Dummy training finished.")
+    print("\n--- Starting dummy iLoRA training ---")
+    trainer.fit(ilora_trainer, dm.train_dataloader(), dm.val_dataloader())
+    print("Dummy iLoRA training finished.")
 
-    print("\n--- Starting dummy testing ---")
-    trainer.test(trainer_model, dm.test_dataloader())
-    print("Dummy testing finished.")
+    print("\n--- Starting dummy iLoRA testing ---")
+    trainer.test(ilora_trainer, dm.test_dataloader())
+    print("Dummy iLoRA testing finished.")

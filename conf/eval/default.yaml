@@ -1,0 +1,5 @@
+metrics_k: 10
+batch_size: 128 # 評価時のバッチサイズ
+# baseline_student_checkpoint_path: null
+# distilled_student_checkpoint_path: null
+# teacher_checkpoint_path: null
