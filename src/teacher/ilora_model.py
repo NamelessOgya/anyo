@@ -62,24 +62,24 @@ class iLoRAModel(TeacherModel, nn.Module):
         self.sequence_encoder = nn.Sequential(
             nn.Embedding(num_items + 1, hidden_size, padding_idx=0), # アイテム埋め込み
             nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(d_model=hidden_size, nhead=num_lora_experts, dropout=dropout_rate, batch_first=True),
+                nn.TransformerEncoderLayer(d_model=hidden_size, nhead=4, dropout=dropout_rate, batch_first=True), # nheadをhidden_sizeの約数に固定
                 num_layers=1 # 簡略化のため1層
             )
-        )
+        ).to(self.device) # デバイスに移動
         self.gating_network = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
             nn.Dropout(dropout_rate),
             nn.Linear(hidden_size, num_lora_experts),
             nn.Softmax(dim=-1)
-        )
+        ).to(self.device) # デバイスに移動
 
         # 出力層 (LLMのvocab_sizeからnum_itemsへのマッピング)
         # LLMの出力は語彙サイズだが、推薦ではアイテム数に絞る必要がある
         # ここでは、LLMの最後の線形層の重みとアイテム埋め込みを関連付ける必要がある
         # 簡略化のため、LLMの出力から直接アイテムスコアを抽出するロジックを仮定
         # 実際には、LLMの出力とアイテム埋め込みの類似度を計算する
-        self.item_embeddings = nn.Embedding(num_items + 1, self.llm.config.hidden_size, padding_idx=0) # LLMの隠れ層サイズに合わせる
+        self.item_embeddings = nn.Embedding(num_items + 1, self.llm.config.vocab_size, padding_idx=0).to(self.device) # LLMの語彙サイズに合わせる
 
     def _get_sequence_representation(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> torch.Tensor:
         """
@@ -192,17 +192,10 @@ class iLoRAModel(TeacherModel, nn.Module):
         last_token_logits = weighted_logits[:, -1, :] # (batch_size, vocab_size)
 
         # アイテム埋め込みとの内積
-        # (batch_size, vocab_size) @ (vocab_size, num_items + 1)
-        # LLMの語彙サイズとアイテム埋め込みの次元が異なる場合がある
-        # ここでは、LLMのvocab_sizeとitem_embeddingsのhidden_sizeが同じと仮定
-        # 実際には、LLMの出力からアイテム埋め込み空間へのプロジェクションが必要
-        
-        # 簡略化のため、LLMの出力語彙から直接アイテムIDに対応するスコアを抽出
-        # LLMの語彙IDとアイテムIDが一致しないため、これは不適切
-        # 実際には、LLMの出力埋め込みとアイテム埋め込みの類似度を計算する
-        
-        # 暫定的に、ランダムなアイテムスコアを生成
-        final_item_scores = torch.randn(batch_size, self.num_items + 1, device=self.device)
+        # last_token_logits: (batch_size, vocab_size)
+        # self.item_embeddings.weight: (num_items + 1, vocab_size)
+        # final_item_scores: (batch_size, num_items + 1)
+        final_item_scores = torch.matmul(last_token_logits, self.item_embeddings.weight.t())
 
         return final_item_scores
 

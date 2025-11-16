@@ -97,7 +97,7 @@
 
 ---
 
-## 3. `src/teacher` (未実装)
+## 3. `src/teacher` (実行済み: 3/3 passed)
 
 ### 3.1. `test_ilora_model.py` (`src/teacher/ilora_model.py` のテスト)
 
@@ -118,7 +118,7 @@
 
 ---
 
-## 4. `src/distill` (未実装)
+## 4. `src/distill` (実行済み: 3/3 passed)
 
 ### 4.1. `test_kd_losses.py` (`src/distill/kd_losses.py` のテスト)
 
