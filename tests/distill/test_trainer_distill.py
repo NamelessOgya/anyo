@@ -50,6 +50,8 @@ def distill_trainer_and_data():
         max_seq_len=dm.max_seq_len,
         hidden_size=teacher_cfg.hidden_size,
         dropout_rate=teacher_cfg.dropout_rate,
+        item_id_to_name=dm.item_id_to_name,
+        padding_item_id=dm.padding_item_id, # 追加
         device="cpu" # 明示的にCPUを指定
     )
 

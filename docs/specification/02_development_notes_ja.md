@@ -150,3 +150,68 @@ docker run -it --rm \
 *   `run_student_baseline.py`: SASRec生徒モデルのベースライン学習と評価を実行するためのエントリポイントスクリプトを実装済み。
 *   `run_distill.py`: 知識蒸留の学習と評価を実行するためのエントリポイントスクリプトを実装済み。
 *   `run_eval_all.py`: 複数の学習済みモデルをまとめて評価するためのエントリポイントスクリプトを実装済み。
+
+---
+
+## 7. iLoRAモデルの実装とテスト環境修正
+
+`05_handover_notes.md` に記載のあった最優先タスク「教師モデル (`iLoRAModel`) の詳細実装」を完了しました。以下にその概要と、関連する修正作業を記録します。
+
+### 7.1. `iLoRAModel` の実装 (`src/teacher/ilora_model.py`)
+
+スケルトン実装だった `forward` メソッドに、iLoRAの主要ロジックを実装しました。
+
+*   **プロンプトエンジニアリング**:
+    *   入力されたアイテムIDシーケンス (`item_seq`) を、`SASRecDataModule` から受け取った `item_id_to_name` マッピングを用いて、自然言語のプロンプトに変換します。
+    *   例: `[1, 2, 3]` → `"item_name_1, item_name_2, item_name_3"`
+*   **動的なLoRAエキスパートの結合**:
+    *   ゲーティングネットワーク (`gating_network`) が計算した重み (`gate_weights`) に基づき、複数のLoRAエキスパート (`peft_models`) の推論結果（ロジット）を動的に結合します。
+    *   各エキスパートで推論を実行し、その出力ロジットを重み付け加算することで、最終的な出力ロジットを生成します。
+*   **依存関係の注入**:
+    *   プロンプト生成に必要な `item_id_to_name` とパディング処理に必要な `padding_item_id` をコンストラクタで受け取るように変更しました。
+    *   この変更に伴い、`factory.py`, `run_teacher.py`, `trainer_ilora.py` および関連するテストコードのインスタンス生成部分を修正しました。
+
+### 7.2. テスト環境の修正とデバッグ
+
+`iLoRAModel` の実装後、`pytest` を実行して発覚した問題を修正しました。
+
+*   **`ModuleNotFoundError` の解決**:
+    *   テスト実行時に `src` ディレクトリがPythonのパスに含まれておらず、モジュールが見つからない問題がありました。
+    *   `PYTHONPATH=/workspace` を設定して `pytest` を実行することで解決しました。
+    *   **コマンド**: `PYTHONPATH=/workspace poetry run pytest`
+*   **`pytest` の探索範囲の限定**:
+    *   `pytest` が `ref_repositories/` 内のテストまで収集しようとしてエラーが発生していました。
+    *   `pyproject.toml` に `norecursedirs = ["ref_repositories"]` を追加し、`pytest` の探索範囲から除外しました。
+*   **テストフィクスチャの修正**:
+    *   `iLoRAModel` のコンストラクタ変更に伴い、`tests/teacher/test_ilora_model.py` などのテストファイルで `TypeError` が発生していました。
+    *   テスト用の `iLoRAModel` インスタンスを生成する箇所で、必要な引数 (`item_id_to_name`, `padding_item_id`) を渡すようにフィクスチャを修正しました。
+*   **`peft` モデルの呼び出し修正**:
+    *   当初、`PeftModel` の `forward` を直接呼び出そうとして `AttributeError` が発生しました。
+    *   `PeftModel` インスタンスを関数のように呼び出す (`model(input_ids)`) ことで、正しく推論が実行されるように修正しました。
+
+上記の結果、`iLoRAModel` の実装が完了し、関連するすべての単体テストがパスする状態になりました。
+---
+
+## 8. データ関連処理の強化と選択的蒸留ポリシーの高度化
+
+`05_handover_notes.md` に記載のあったタスク「データ関連処理の強化」を完了しました。以下にその概要を記録します。
+
+### 8.1. `DataBridge` の実装 (`src/distill/data_bridge.py`)
+
+教師モデルと生徒モデルの出力を蒸留損失計算に適した形式に橋渡しする `DataBridge` クラスを実装しました。
+
+*   `process_teacher_outputs`: 教師モデルのランキングスコアと埋め込みを処理します。iLoRAModelの出力は既に適切な形式であるため、現時点ではそのまま返します。
+*   `process_student_outputs`: 生徒モデルのロジットと埋め込みを処理します。SASRecモデルの出力は既に適切な形式であるため、現時点ではそのまま返します。
+*   このクラスは、将来的に教師モデルや生徒モデルの出力形式が変更された際に、蒸留パイプラインへの影響を最小限に抑えるための抽象化レイヤーとして機能します。
+
+### 8.2. `SelectionPolicy` の高度化 (`src/distill/selection_policy.py`)
+
+蒸留に用いるサンプルを選択するポリシーを強化しました。
+
+*   **`GroundTruthErrorPolicy` の追加**:
+    *   生徒モデルが正解アイテムを正しく予測できないサンプル（正解アイテムに対する生徒モデルのロジットが特定の閾値を下回る場合）を選択する新しいポリシーを追加しました。
+    *   これにより、生徒モデルが苦手とするサンプルに焦点を当てて蒸留を行うことが可能になります。
+*   **`KLDivergencePolicy` テストの修正**:
+    *   `KLDivergencePolicy` のテストケースにおいて、`F.kl_div` の `log_target=True` の使用法が誤っていたため、`teacher_logits` も `F.log_softmax` で処理するように修正しました。これにより、KLダイバージェンスの計算が意図通りに行われ、テストが安定してパスするようになりました。
+
+上記の結果、データ関連処理の強化と選択的蒸留ポリシーの高度化が完了し、関連するすべての単体テストがパスする状態になりました。

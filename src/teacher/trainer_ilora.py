@@ -13,13 +13,17 @@ class iLoRATrainer(pl.LightningModule):
                  num_items: int,
                  learning_rate: float = 1e-4,
                  weight_decay: float = 0.01,
-                 metrics_k: int = 10):
+                 metrics_k: int = 10,
+                 item_id_to_name: Dict[int, str] = None): # item_id_to_nameを追加
         super().__init__()
-        self.save_hyperparameters(ignore=['ilora_model'])
+        # ilora_modelは複雑なオブジェクトなのでignoreする
+        # item_id_to_nameも直接保存せず、ilora_model経由でアクセスする
+        self.save_hyperparameters(ignore=['ilora_model', 'item_id_to_name']) 
 
         self.model = ilora_model
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=0) # パディングID=0は損失計算から除外
         self.metrics_k = metrics_k
+        # self.item_id_to_name = item_id_to_name # ilora_modelが持つので不要
 
     def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> torch.Tensor:
         return self.model(item_seq, item_seq_len)

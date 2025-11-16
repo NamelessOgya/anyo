@@ -32,11 +32,11 @@
   * コードは自前実装だが、「どう動くか」は iLoRA 論文・公式実装と同等を目指す。
   * 想定GPU：A100 1枚で学習・推論可能。
 
-* 生徒モデル
+* **生徒モデル**
 
   * SASRec などの軽量なシーケンシャル推薦モデル（ID ベース）。
 
-* 知識蒸留
+* **知識蒸留**
 
   * DLLM2Rec の論文・実装を参考に、
 
@@ -44,14 +44,14 @@
     * 埋め込み蒸留
       を組み合わせた **DLLM2Rec 相当ロジック**を自前実装する。
 
-* 実験管理
+* **実験管理**
 
   * 依存管理：Poetry
   * 設定管理：Hydra
   * 実験環境：Docker コンテナ（起動スクリプトは `env_shell` 配下）
   * 実験結果：Hydra の `run.dir` を `result/result_{timestamp}` に設定し、その下に config・モデル・ログ・メトリクスを保存。
 
-* 将来拡張
+* **将来拡張**
 
   * Active Learning / Meta Learning による「どのサンプルを蒸留に使うか」を `SelectionPolicy` インターフェース経由で追加できるよう設計（初期実装は「全サンプル使用」のみ）。
 
@@ -198,6 +198,7 @@ IMAGE_NAME="anyo-ilora-dllm2rec:latest"
 
 # イメージがなければビルド
 if ! docker image inspect "${IMAGE_NAME}" > /dev/null 2>&1;
+then
   docker build -t "${IMAGE_NAME}" "${HOST_PROJECT_ROOT}"
 fi
 
@@ -210,7 +211,7 @@ docker run -it --rm \
   bash
 ```
 
-*実験は基本的に：
+* 実験は基本的に：
 
   1. ホストで `env_shell/start_experiment_container.sh` を実行してコンテナに入る。
   2. コンテナ内で `poetry install` → `poetry run ...` で実験を回す。

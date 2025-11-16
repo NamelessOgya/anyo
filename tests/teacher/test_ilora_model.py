@@ -18,7 +18,9 @@ def ilora_model_and_data():
     hidden_size = 64
     dropout_rate = 0.1
     batch_size = 2
+    padding_item_id = 0
 
+    dummy_item_id_to_name = {i: f"Item {i}" for i in range(num_items + 1)}
     model = iLoRAModel(
         llm_model_name=llm_model_name,
         num_lora_experts=num_lora_experts,
@@ -28,7 +30,9 @@ def ilora_model_and_data():
         num_items=num_items,
         max_seq_len=max_seq_len,
         hidden_size=hidden_size,
-        dropout_rate=dropout_rate
+        dropout_rate=dropout_rate,
+        item_id_to_name=dummy_item_id_to_name,
+        padding_item_id=padding_item_id
     )
 
     item_seq = torch.randint(1, num_items, (batch_size, max_seq_len)).to(model.device)

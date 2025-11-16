@@ -42,7 +42,9 @@ def run_teacher(cfg: DictConfig):
     ilora_model_instance = create_teacher_model(
         cfg, 
         num_items=dm.num_items, 
-        max_seq_len=dm.max_seq_len
+        max_seq_len=dm.max_seq_len,
+        item_id_to_name=dm.item_id_to_name,
+        padding_item_id=dm.padding_item_id # 追加
     )
 
     # 4. iLoRATrainerのインスタンス化
@@ -51,7 +53,8 @@ def run_teacher(cfg: DictConfig):
         num_items=dm.num_items,
         learning_rate=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
-        metrics_k=cfg.eval.metrics_k
+        metrics_k=cfg.eval.metrics_k,
+        item_id_to_name=dm.item_id_to_name # 追加
     )
 
     # 5. PyTorch Lightning Trainerのインスタンス化と学習の実行
@@ -97,7 +100,8 @@ def run_teacher(cfg: DictConfig):
             num_items=dm.num_items,
             learning_rate=cfg.train.learning_rate,
             weight_decay=cfg.train.weight_decay,
-            metrics_k=cfg.eval.metrics_k
+            metrics_k=cfg.eval.metrics_k,
+            item_id_to_name=dm.item_id_to_name # 追加
         )
     else:
         logger.warning("No best teacher model checkpoint found. Using final model for evaluation.")

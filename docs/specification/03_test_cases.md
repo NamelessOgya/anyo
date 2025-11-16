@@ -1,10 +1,11 @@
 # テストケース仕様書
 
 このドキュメントは、本プロジェクトの各モジュールに対するテストケースを定義します。
+**現状、すべてのテストがパスしており (`24 passed`)、プロジェクトの基本的な健全性が担保されています。**
 
 ---
 
-## 1. `src/core` (実行済み: 11/11 passed)
+## 1. `src/core` (完了: 11/11 passed)
 
 ### 1.1. `test_paths.py` (`src/core/paths.py` のテスト)
 
@@ -73,7 +74,7 @@
 
 ---
 
-## 2. `src/student` (実行済み: 5/5 passed)
+## 2. `src/student` (完了: 5/5 passed)
 
 ### 2.1. `test_models.py` (`src/student/models.py` のテスト)
 
@@ -97,18 +98,20 @@
 
 ---
 
-## 3. `src/teacher` (実行済み: 3/3 passed)
+## 3. `src/teacher` (完了: 3/3 passed)
+
+`iLoRAModel` の主要ロジックが実装されたことを受け、テストはダミー実装ではなく実際の動作を検証します。
 
 ### 3.1. `test_ilora_model.py` (`src/teacher/ilora_model.py` のテスト)
 
 - **`test_ilora_forward_shape`**:
-  - `iLoRAModel` の `forward` メソッドが、期待される形状 `(batch_size, num_items + 1)` のテンソルを返すことを確認する。
+  - `iLoRAModel` の `forward` メソッドが、プロンプト変換、LoRAエキスパートの動的結合を経て、期待される形状 `(batch_size, num_items + 1)` の最終ロジットを返すことを確認する。
 
 - **`test_ilora_get_teacher_outputs_shape`**:
   - `get_teacher_outputs` メソッドが返す辞書の各要素（`ranking_scores`, `embeddings`）が期待される形状であることを確認する。
 
 - **`test_gating_network`**:
-  - ゲーティングネットワークの出力が、形状 `(batch_size, num_lora_experts)` であり、合計が1になることを確認する。
+  - ゲーティングネットワークの出力が、形状 `(batch_size, num_lora_experts)` であり、softmaxを通過するため合計が1になることを確認する。
 
 ### 3.2. `test_trainer_ilora.py` (`src/teacher/trainer_ilora.py` のテスト)
 
@@ -118,7 +121,7 @@
 
 ---
 
-## 4. `src/distill` (実行済み: 3/3 passed)
+## 4. `src/distill` (完了: 5/5 passed)
 
 ### 4.1. `test_kd_losses.py` (`src/distill/kd_losses.py` のテスト)
 
@@ -129,7 +132,15 @@
 - **`test_embedding_distillation_loss`**:
   - 教師と生徒の埋め込みが同じ場合、埋め込み蒸留損失が0に近くなることを確認する（MSE, Cosine両方）。
 
-### 4.2. `test_trainer_distill.py` (`src/distill/trainer_distill.py` のテスト)
+### 4.2. `test_selection_policy.py` (`src/distill/selection_policy.py` のテスト)
+
+- **`test_kl_divergence_policy_selection`**:
+  - `KLDivergencePolicy` が、KLダイバージェンスが閾値を超えるサンプルを正しく選択することを確認する。
+  - テストデータについて、`F.kl_div` の `log_target=True` 使用時のロジット処理を修正し、KLダイバージェンスが低いケースと高いケースの両方を適切に検証するように改善。
+- **`test_ground_truth_error_policy_selection`**:
+  - `GroundTruthErrorPolicy` が、生徒モデルの正解アイテムに対するロジットが特定の閾値を下回るサンプルを正しく選択することを確認する。
+
+### 4.3. `test_trainer_distill.py` (`src/distill/trainer_distill.py` のテスト)
 
 - **`test_distill_training_step`**:
   - `training_step` がスカラーの損失テンソルを返すことを確認する。

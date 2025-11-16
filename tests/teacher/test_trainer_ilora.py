@@ -37,6 +37,8 @@ def ilora_trainer_and_data():
         max_seq_len=dm.max_seq_len,
         hidden_size=ilora_cfg.hidden_size,
         dropout_rate=ilora_cfg.dropout_rate,
+        item_id_to_name=dm.item_id_to_name,
+        padding_item_id=dm.padding_item_id, # 追加
         device="cpu" # 明示的にCPUを指定
     )
 
@@ -46,7 +48,8 @@ def ilora_trainer_and_data():
         num_items=dm.num_items,
         learning_rate=1e-4,
         weight_decay=0.01,
-        metrics_k=10
+        metrics_k=10,
+        item_id_to_name=dm.item_id_to_name # 追加
     )
 
     return {

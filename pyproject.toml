@@ -26,3 +26,6 @@ run-teacher = "src.exp.run_teacher:main"
 run-student-baseline = "src.exp.run_student_baseline:main"
 run-distill = "src.exp.run_distill:main"
 run-eval-all = "src.exp.run_eval_all:main"
+
+[tool.pytest.ini_options]
+norecursedirs = ["ref_repositories"]
