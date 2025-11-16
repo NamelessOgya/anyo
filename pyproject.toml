@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "anyo-ilora-dllm2rec"
+version = "0.1.0"
+description = "LLM->Sequential Rec distillation framework (iLoRA logic + DLLM2Rec logic)"
+authors = ["<Your Name> <you@example.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+torch = "^2.3"
+transformers = "^4.43"
+hydra-core = "^1.3"
+numpy = "^1.26"
+pandas = "^2.2"
+tensorboard = "^2.18"
+peft = "^0.12"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+black = "^24"
+ruff = "^0.7"
+
+[tool.poetry.scripts]
+run-teacher = "src.exp.run_teacher:main"
+run-student-baseline = "src.exp.run_student_baseline:main"
+run-distill = "src.exp.run_distill:main"
+run-eval-all = "src.exp.run_eval_all:main"

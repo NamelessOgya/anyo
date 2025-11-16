@@ -1,0 +1,11 @@
+defaults:
+  - _self_
+  - dataset: ???
+  - teacher: ???
+  - student: ???
+  - distill: ???
+  - active: ???
+  - hydra: default
+
+# Basic experiment settings
+seed: 42
