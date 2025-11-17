@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-poetry run python -m src.exp.run_teacher "$@"
+PYTHONPATH=/workspace poetry run python -m src.exp.run_teacher "$@"

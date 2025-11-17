@@ -1,2 +1,3 @@
 #!/usr/bin/env bash
-poetry run python -m src.exp.run_student_baseline "$@"
+PYTHONPATH=/workspace poetry run python -m src.exp.run_student_baseline "$@"
+

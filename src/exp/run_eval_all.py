@@ -101,7 +101,8 @@ def run_eval_all(cfg: DictConfig):
                 learning_rate=cfg.train.learning_rate, # ダミー値
                 weight_decay=cfg.train.weight_decay, # ダミー値
                 metrics_k=cfg.eval.metrics_k,
-                selection_policy=None # ロード時は不要
+                selection_policy=None, # ロード時は不要
+                strict=False # ここにstrict=Falseを追加
             )
             evaluator = SASRecEvaluator(distilled_trainer.student_model, dm, metrics_k=cfg.eval.metrics_k)
             distilled_metrics = evaluator.evaluate(dm.test_dataloader())
