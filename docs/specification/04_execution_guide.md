@@ -32,13 +32,14 @@ docker exec -it ilora-dev-container bash
 メインの設定ファイルは `conf/config.yaml` であり、ここから各モジュールの設定が読み込まれます。
 
 実験の挙動を変更したい場合は、`conf/` 配下の各 `.yaml` ファイルを修正するか、コマンドライン引数で上書きします。
+特に、`train`コンフィグは`conf/config.yaml`で`train: default`が設定されているため、各実験タイプに対応する`train`コンフィグ（例: `train/student.yaml`, `train/teacher.yaml`, `train/distill.yaml`）をコマンドライン引数で明示的に指定する必要があります。
 
 **データセットの行数制限 (`limit_data_rows`)**:
 `conf/dataset/*.yaml` ファイルの `limit_data_rows` パラメータを使用すると、データセットから読み込む行数を制限できます。これは、開発やデバッグ時に迅速な実験を行うために非常に有用です。`src/exp/run_teacher.py` および `src/exp/run_distill.py` の両方でこの設定が適用されます。
 
 **例：バッチサイズを変更して生徒モデルのベースラインを学習**
 ```bash
-poetry run python -m src.exp.run_student_baseline train.batch_size=64
+poetry run python -m src.exp.run_student_baseline train=student train.batch_size=64
 ```
 
 ---
@@ -78,7 +79,7 @@ docker exec ilora-dev-container bash -c "PYTHONPATH=/workspace poetry run python
 **コマンド:**
 ```bash
 # poetry run を使用する場合
-poetry run python -m src.exp.run_student_baseline
+poetry run python -m src.exp.run_student_baseline train=student
 
 # または、cmd/ ディレクトリのスクリプトを使用する場合
 ./cmd/run_student_baseline.sh
@@ -102,8 +103,8 @@ poetry run python -m src.exp.run_student_baseline
 **コマンド:**
 ```bash
 # poetry run を使用する場合
-# 例: poetry run python -m src.exp.run_teacher teacher.rec_model_checkpoint_path=/path/to/your/sasrec_checkpoint.ckpt
-poetry run python -m src.exp.run_teacher
+# 例: poetry run python -m src.exp.run_teacher train=teacher teacher.rec_model_checkpoint_path=/path/to/your/sasrec_checkpoint.ckpt
+poetry run python -m src.exp.run_teacher train=teacher
 
 # または、cmd/ ディレクトリのスクリプトを使用する場合
 ./cmd/run_teacher.sh
@@ -120,7 +121,7 @@ poetry run python -m src.exp.run_teacher
 **コマンド:**
 ```bash
 # poetry run を使用する場合
-poetry run python -m src.exp.run_distill
+poetry run python -m src.exp.run_distill train=distill
 
 # または、cmd/ ディレクトリのスクリプトを使用する場合
 ./cmd/run_distill.sh

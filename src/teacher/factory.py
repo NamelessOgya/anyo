@@ -52,18 +52,18 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
                 max_seq_len=max_seq_len,
             ).to(device)
             # Load the state_dict
-            rec_model.load_state_dict(torch.load(cfg.teacher.rec_model_checkpoint_path, map_location=device))
+            checkpoint = torch.load(cfg.teacher.rec_model_checkpoint_path, map_location=device)
+            # Strip 'model.' prefix from keys
+            new_state_dict = {}
+            for k, v in checkpoint['state_dict'].items():
+                if k.startswith('model.'):
+                    new_state_dict[k[len('model.'):]] = v
+                else:
+                    new_state_dict[k] = v
+            rec_model.load_state_dict(new_state_dict)
             rec_model.eval() # Set to eval mode
         else:
-            print("No pre-trained SASRec checkpoint path provided. Initializing a new SASRec model.")
-            rec_model = SASRec(
-                num_items=num_items,
-                hidden_size=cfg.student.hidden_size,
-                num_heads=cfg.student.num_heads,
-                num_layers=cfg.student.num_layers,
-                dropout_rate=cfg.student.dropout_rate,
-                max_seq_len=max_seq_len,
-            ).to(device)
+            raise ValueError("rec_model_checkpoint_path must be provided in the teacher config for iLoRAModel.")
         
         # Freeze rec_model parameters
         for param in rec_model.parameters():
@@ -153,8 +153,7 @@ if __name__ == "__main__":
         max_seq_len_dummy, 
         dummy_item_id_to_name,
         padding_item_id_dummy,
-        rec_model=dummy_rec_model, # Pass dummy rec_model
-        projector=dummy_projector # Pass dummy projector
+        candidate_topk=10 # ダミー値を設定
     )
     print(f"Created teacher model type: {type(teacher_model)}")
 

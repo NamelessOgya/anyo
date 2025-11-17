@@ -91,7 +91,7 @@ def test_sasrec_predict_shape(sasrec_model_and_data):
 
     prediction_scores = model.predict(item_seq, item_seq_len)
     
-    assert prediction_scores.shape == (batch_size, num_items + 1)
+    assert prediction_scores.shape == (batch_size, num_items)
 
 def test_sasrec_forward_with_teacher_embedding(sasrec_model_and_data, sasrec_datamodule_for_models):
     """

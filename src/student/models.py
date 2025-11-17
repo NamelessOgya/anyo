@@ -17,7 +17,7 @@ class SASRec(nn.Module):
 
         # ユーザーとアイテムの埋め込み層
         # 0番目のアイテムIDはパディング用として予約
-        self.item_embeddings = nn.Embedding(num_items + 2, hidden_size, padding_idx=padding_item_id)
+        self.item_embeddings = nn.Embedding(num_items + 1, hidden_size, padding_idx=0)
         self.position_embeddings = nn.Embedding(max_seq_len, hidden_size)
 
         self.dropout = nn.Dropout(dropout_rate)
@@ -129,7 +129,7 @@ class SASRec(nn.Module):
         last_item_representation_for_prediction = self._get_last_item_representation(item_seq, item_seq_len)
         # 全アイテム埋め込みとの内積を計算
         # (batch_size, hidden_size) @ (hidden_size, num_items + 1) -> (batch_size, num_items + 1)
-        scores = torch.matmul(last_item_representation_for_prediction, self.item_embeddings.weight[:-1].transpose(0, 1))
+        scores = torch.matmul(last_item_representation_for_prediction, self.item_embeddings.weight[1:].transpose(0, 1))
         return scores
 
 

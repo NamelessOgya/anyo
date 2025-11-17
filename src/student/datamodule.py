@@ -142,7 +142,7 @@ class SASRecDataModule(pl.LightningDataModule):
         
         self.item_id_to_name = self._get_movie_id2name(item_path)
         self.num_items = max(self.item_id_to_name.keys())
-        self.padding_item_id = self.num_items + 1 # Set padding_item_id here
+        self.padding_item_id = 0 # Set padding_item_id here
 
         # トークナイザーが渡されていない場合、LLMモデル名からロード
         if self.tokenizer is None and self.llm_model_name:

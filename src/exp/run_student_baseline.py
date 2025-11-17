@@ -70,7 +70,8 @@ def run_student_baseline(cfg: DictConfig):
         logger=tb_logger,
         enable_checkpointing=True,
         val_check_interval=cfg.train.val_check_interval,
-        log_every_n_steps=cfg.train.log_every_n_steps
+        log_every_n_steps=cfg.train.log_every_n_steps,
+        enable_progress_bar=False
     )
 
     logger.info("Starting student baseline training...")

@@ -7,5 +7,5 @@ lora_dropout: 0.05
 hidden_size: 64 # ゲーティングネットワーク用
 dropout_rate: 0.1
 max_gen_length: 20
-rec_model_checkpoint_path: null # 事前学習済みSASRecモデルのチェックポイントパス
+rec_model_checkpoint_path: /workspace/result/result_20251117_135143/checkpoints/best_model.ckpt # 事前学習済みSASRecモデルのチェックポイントパス
 # teacher_checkpoint_path: null # 学習済みモデルのパス (run_distill, run_eval_allで使用)

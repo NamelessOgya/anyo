@@ -3,7 +3,7 @@ embedding_loss_weight: 1.0
 ce_loss_weight: 1.0
 ranking_temperature: 2.0
 embedding_loss_type: mse # mse or cosine
-teacher_checkpoint_path: /workspace/result/result_20251117_022931/checkpoints/best_teacher_model.ckpt
+teacher_checkpoint_path: /workspace/result/result_20251117_151945/checkpoints/best_teacher_model.ckpt
 # student_checkpoint_path: null # 学習済み生徒モデルのパス (蒸留の初期化に使う場合)
 ed_weight: 0.1
 gamma_position: 1.0
@@ -13,3 +13,4 @@ candidate_topk: 10
 alpha: 0.0 # Weight for DRO loss. Set to > 0 to enable.
 beta: 1.0  # Parameter for DRO loss (robust radius).
 ps_power: 0.05 # Power for propensity score calculation.
+lam: 0.8 # Weight for importance-aware ranking distillation

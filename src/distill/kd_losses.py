@@ -118,7 +118,7 @@ class DROLoss(nn.Module):
         
         # model_outputはロジットなので、二乗する意味は不明だが、参照実装に従う
         # ただし、psはnum_itemsの次元を持つため、model_outputの各アイテムに対応させる
-        weighted_model_output_sq = torch.mul(model_output * model_output, ps_on_device)
+        weighted_model_output_sq = torch.mul(model_output * model_output, ps_on_device[1:])
         
         # expの引数をクランプしてinfを防ぐ
         clamped_weighted_model_output_sq_div_beta = torch.clamp(weighted_model_output_sq / self.beta, max=80.0)
@@ -128,7 +128,7 @@ class DROLoss(nn.Module):
         pos_scores_dro = torch.squeeze(pos_scores_dro) # (batch_size,)
         clamped_pos_scores_dro_div_beta = torch.clamp(pos_scores_dro / self.beta, max=80.0)
 
-        weighted_model_output_minus_1_sq = torch.mul((model_output - 1) * (model_output - 1), ps_on_device)
+        weighted_model_output_minus_1_sq = torch.mul((model_output - 1) * (model_output - 1), ps_on_device[1:])
         pos_loss_dro = torch.gather(weighted_model_output_minus_1_sq, 1, target)
         pos_loss_dro = torch.squeeze(pos_loss_dro) # (batch_size,)
         clamped_pos_loss_dro_div_beta = torch.clamp(pos_loss_dro / self.beta, max=80.0)
@@ -197,7 +197,7 @@ class WeightedBCELoss(nn.Module):
             # DRO損失
             if self.alpha > 0:
                 ps_on_device = self.ps.to(student_logits.device)
-                weighted_model_output_sq = torch.mul(student_logits * student_logits, ps_on_device)
+                weighted_model_output_sq = torch.mul(student_logits * student_logits, ps_on_device[1:])
                 
                 # expの引数をクランプしてinfを防ぐ
                 clamped_weighted_model_output_sq_div_beta = torch.clamp(weighted_model_output_sq / self.beta, max=80.0)
@@ -207,7 +207,7 @@ class WeightedBCELoss(nn.Module):
                 pos_scores_dro = torch.squeeze(pos_scores_dro) # (batch_size,)
                 clamped_pos_scores_dro_div_beta = torch.clamp(pos_scores_dro / self.beta, max=80.0)
 
-                weighted_model_output_minus_1_sq = torch.mul((student_logits - 1) * (student_logits - 1), ps_on_device)
+                weighted_model_output_minus_1_sq = torch.mul((student_logits - 1) * (student_logits - 1), ps_on_device[1:])
                 pos_loss_dro = torch.gather(weighted_model_output_minus_1_sq, 1, target)
                 pos_loss_dro = torch.squeeze(pos_loss_dro) # (batch_size,)
                 clamped_pos_loss_dro_div_beta = torch.clamp(pos_loss_dro / self.beta, max=80.0)

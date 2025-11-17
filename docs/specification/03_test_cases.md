@@ -82,7 +82,7 @@
   - `SASRec` モデルの `forward` メソッドが、期待される形状 `(batch_size, hidden_size)` のテンソルを返すことを確認する。
 
 - **`test_sasrec_predict_shape`**:
-  - `SASRec` モデルの `predict` メソッドが、期待される形状 `(batch_size, num_items + 1)` のテンソルを返すことを確認する。
+  - `SASRec` モデルの `predict` メソッドが、期待される形状 `(batch_size, num_items)` のテンソルを返すことを確認する。
 
 ### 2.2. `test_datamodule.py` (`src/student/datamodule.py` のテスト)
 
@@ -91,10 +91,10 @@
   - `num_items` が正しく計算されていることを確認する。
 
 - **`test_dataloader_batch_shape`**:
-  - `train_dataloader` などが返すバッチの各要素（`item_seq`, `item_seq_len`, `next_item`）が期待される形状であることを確認する。
+  - `train_dataloader` などが返すバッチの各要素（`seq`, `len_seq`, `next_item`）が期待される形状であることを確認する。
 
 - **`test_dataloader_padding`**:
-  - バッチ内の `item_seq` が、`max_seq_len` に合わせて正しくパディングされていることを確認する。
+  - バッチ内の `seq` が、`max_seq_len` に合わせて正しくパディングされていることを確認する。
 
 ---
 
@@ -105,10 +105,10 @@
 ### 3.1. `test_ilora_model.py` (`src/teacher/ilora_model.py` のテスト)
 
 - **`test_ilora_forward_shape`**:
-  - `iLoRAModel` の `forward` メソッドが、プロンプト変換、カスタムMoE LoRAレイヤーの動的結合を経て、期待される形状 `(batch_size, num_items + 1)` の最終ロジットを返すことを確認する。
+  - `iLoRAModel` の `forward` メソッドが、プロンプト変換、カスタムMoE LoRAレイヤーの動的結合を経て、期待される形状 `(batch_size, num_items)` の最終ロジットを返すことを確認する。
 
 - **`test_ilora_get_teacher_outputs_shape`**:
-  - `get_teacher_outputs` メソッドが返す辞書の各要素（`ranking_scores`, `embeddings`）が期待される形状であることを確認する（`ranking_scores` は `(batch_size, num_items + 1)`、`embeddings` は `(batch_size, llm_hidden_size)`）。
+  - `get_teacher_outputs` メソッドが返す辞書の各要素（`ranking_scores`, `embeddings`）が期待される形状であることを確認する（`ranking_scores` は `(batch_size, num_items)`、`embeddings` は `(batch_size, llm_hidden_size)`）。
 
 - **`test_gating_network`**:
   - ゲーティングネットワークの出力が、形状 `(batch_size, num_lora_experts)` であり、softmaxを通過するため合計が1になることを確認する。
@@ -122,7 +122,7 @@
 
 ---
 
-## 4. `src/distill` (一部失敗: 4/5 passed)
+## 4. `src/distill` (完了: 5/5 passed)
 
 ### 4.1. `test_kd_losses.py` (`src/distill/kd_losses.py` のテスト)
 
@@ -144,7 +144,7 @@
 ### 4.3. `test_trainer_distill.py` (`src/distill/trainer_distill.py` のテスト)
 
 - **`test_distill_training_step`**:
-  - **現状:** `RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn` により失敗しています。
   - `training_step` がスカラーの損失テンソルを返すことを確認する。
   - 各損失（ranking, embedding, ce）が正しく計算され、合計損失に反映されることを確認する。
   - 教師モデルのパラメータが学習中に更新されないことを確認する。
+  - **更新:** 以前発生していた`RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn`は解決され、現在パスしています。

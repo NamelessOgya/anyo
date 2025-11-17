@@ -30,7 +30,8 @@ class DistillationTrainer(pl.LightningModule):
                  ed_weight: float,
                  alpha: float = 0.0, # DRO loss weight
                  beta: float = 1.0,  # DRO robust radius
-                 propensity_scores: Optional[torch.Tensor] = None # Pre-calculated ps
+                 propensity_scores: Optional[torch.Tensor] = None, # Pre-calculated ps
+                 lam: float = 1.0 # Weight for importance-aware ranking distillation
                  ):
         super().__init__()
         self.student_model_module = student_model # Registered as a submodule
@@ -51,6 +52,7 @@ class DistillationTrainer(pl.LightningModule):
         self.alpha = alpha
         self.beta = beta
         self.propensity_scores = propensity_scores
+        self.lam = lam
         self.student_model_module.train() # Explicitly set to train mode here
 
         # 損失関数
@@ -142,7 +144,7 @@ class DistillationTrainer(pl.LightningModule):
                 teacher_candidates[distill_mask],
                 weights[distill_mask]
             )
-            total_loss += self.ranking_loss_weight * ranking_kd_loss
+            total_loss += self.lam * self.ranking_loss_weight * ranking_kd_loss
             self.log('train_ranking_kd_loss', ranking_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
         # 4.2. 埋め込み蒸留損失
@@ -166,9 +168,8 @@ class DistillationTrainer(pl.LightningModule):
         self.log('train_total_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return total_loss
 
-    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int):
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
+        item_seq = batch["seq"]
+        item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)

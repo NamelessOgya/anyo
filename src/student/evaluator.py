@@ -26,11 +26,11 @@ class SASRecEvaluator:
         all_ground_truths: List[List[int]] = []
 
         for batch in dataloader:
-            item_seq = batch["item_seq"].to(self.device)
-            item_seq_len = batch["item_seq_len"].to(self.device)
+            seq = batch["seq"].to(self.device)
+            len_seq = batch["len_seq"].to(self.device)
             next_item = batch["next_item"].to(self.device)
 
-            logits = self.model(item_seq, item_seq_len)
+            logits = self.model(seq, len_seq)
             
             # トップKの予測アイテムIDを取得
             _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)

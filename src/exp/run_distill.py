@@ -1,4 +1,3 @@
-from pathlib import Path
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
@@ -32,24 +31,26 @@ def run_distill(cfg: DictConfig):
     logger.info(f"Git Info: {git_info}")
     logger.info(f"Config: {OmegaConf.to_yaml(cfg)}")
 
-    # 2. SASRecDataModuleのインスタンス化とデータ準備
+    # 2. SASRecDataModuleの初期インスタンス化とデータ準備 (tokenizerなし)
     dm = SASRecDataModule(
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
         max_seq_len=cfg.student.max_seq_len,
         num_workers=cfg.train.num_workers,
-        limit_data_rows=cfg.dataset.limit_data_rows
+        limit_data_rows=cfg.dataset.limit_data_rows,
+        llm_model_name=cfg.teacher.llm_model_name, # llm_model_nameはここで渡せる
+        tokenizer=None # 初期段階ではtokenizerはNone
     )
     dm.prepare_data()
     dm.setup()
 
     # 3. 教師モデルのインスタンス化と学習済み重みのロード
-    # 教師モデルは学習済みチェックポイントからロードすることを想定
+    # dmから取得したnum_itemsなどを使ってteacher_model_instanceを定義
+    teacher_model_instance = None # 初期化
     if cfg.distill.teacher_checkpoint_path and cfg.distill.teacher_checkpoint_path != "???":
         logger.info(f"Loading pre-trained teacher model from {cfg.distill.teacher_checkpoint_path}")
         # iLoRATrainerのチェックポイントをロード
-        # ロード時に必要な引数を渡す
         loaded_teacher_trainer = iLoRATrainer.load_from_checkpoint(
             checkpoint_path=cfg.distill.teacher_checkpoint_path,
             ilora_model=create_teacher_model(
@@ -57,20 +58,20 @@ def run_distill(cfg: DictConfig):
                 num_items=dm.num_items,
                 max_seq_len=cfg.student.max_seq_len,
                 item_id_to_name=dm.item_id_to_name,
-                padding_item_id=dm.padding_item_id
+                padding_item_id=dm.padding_item_id,
+                candidate_topk=cfg.distill.candidate_topk
             ),
             num_items=dm.num_items,
-            learning_rate=cfg.train.learning_rate, # ダミー値、実際には使われない
-            weight_decay=cfg.train.weight_decay,   # ダミー値、実際には使われない
+            learning_rate=cfg.train.learning_rate,
+            weight_decay=cfg.train.weight_decay,
             metrics_k=cfg.eval.metrics_k,
             item_id_to_name=dm.item_id_to_name,
             strict=False
         )
         teacher_model_instance = loaded_teacher_trainer.model
-        # 教師モデルのパラメータはフリーズする
         for param in teacher_model_instance.parameters():
             param.requires_grad = False
-        teacher_model_instance.eval() # 評価モードに設定
+        teacher_model_instance.eval()
     else:
         logger.warning("No teacher_checkpoint_path provided or it's '???'. Using randomly initialized teacher model.")
         teacher_model_instance = create_teacher_model(
@@ -78,12 +79,29 @@ def run_distill(cfg: DictConfig):
             num_items=dm.num_items,
             max_seq_len=cfg.student.max_seq_len,
             item_id_to_name=dm.item_id_to_name,
-            padding_item_id=dm.padding_item_id
+            padding_item_id=dm.padding_item_id,
+            candidate_topk=cfg.distill.candidate_topk
         )
+
+    # SASRecDataModuleをteacher_model_instance.tokenizerを使って再インスタンス化
+    dm = SASRecDataModule(
+        dataset_name=cfg.dataset.name,
+        data_dir=cfg.dataset.data_dir,
+        batch_size=cfg.train.batch_size,
+        max_seq_len=cfg.student.max_seq_len,
+        num_workers=cfg.train.num_workers,
+        limit_data_rows=cfg.dataset.limit_data_rows,
+        llm_model_name=cfg.teacher.llm_model_name,
+        tokenizer=teacher_model_instance.tokenizer # ここでtokenizerを渡す
+    )
+    dm.prepare_data()
+    dm.setup()
 
     # 3.5. 傾向スコア (Propensity Scores) の計算
     # PropensityScoreCalculatorは訓練データ全体のnext_itemを必要とする
-    train_next_items = [batch["next_item"].item() for batch in dm.train_dataloader()]
+    train_next_items = []
+    for batch in dm.train_dataloader():
+        train_next_items.extend(batch["next_item"].tolist())
     ps_calculator = PropensityScoreCalculator(
         item_num=dm.num_items + 1, # num_items + 1 に修正
         train_next_items=train_next_items,
@@ -183,7 +201,8 @@ def run_distill(cfg: DictConfig):
                 num_items=dm.num_items,
                 max_seq_len=cfg.student.max_seq_len,
                 item_id_to_name=dm.item_id_to_name,
-                padding_item_id=dm.padding_item_id
+                padding_item_id=dm.padding_item_id,
+                candidate_topk=cfg.distill.candidate_topk
             ),
             num_items=dm.num_items,
             ranking_loss_weight=cfg.distill.ranking_loss_weight,
@@ -205,10 +224,10 @@ def run_distill(cfg: DictConfig):
             propensity_scores=propensity_scores # ロード時にもpsを渡す
         )
         # 評価器には生徒モデルのみを渡す
-        evaluator = SASRecEvaluator(loaded_distill_trainer.student_model, dm, metrics_k=cfg.eval.metrics_k)
+        evaluator = SASRecEvaluator(loaded_distill_trainer.student_model_module, dm, metrics_k=cfg.eval.metrics_k)
     else:
         logger.warning("No best distilled student model checkpoint found. Using final model for evaluation.")
-        evaluator = SASRecEvaluator(distill_trainer.student_model, dm, metrics_k=cfg.eval.metrics_k)
+        evaluator = SASRecEvaluator(distill_trainer.student_model_module, dm, metrics_k=cfg.eval.metrics_k)
 
     test_metrics = evaluator.evaluate(dm.test_dataloader())
     logger.info(f"Test Metrics: {test_metrics}")
@@ -218,6 +237,9 @@ def run_distill(cfg: DictConfig):
         for key, value in test_metrics.items():
             f.write(f"{key}: {value}\n")
     logger.info(f"Test metrics saved to {output_dir / 'test_metrics.txt'}")
+
+if __name__ == "__main__":
+    run_distill()
 
 if __name__ == "__main__":
     run_distill()
