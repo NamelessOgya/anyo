@@ -67,6 +67,28 @@ docker run -it --rm \
 
 *   各コンポーネント（`teacher`, `student`, `distill` など）に必要なパラメータを、それぞれのYAMLファイルで定義する。これは、対応する `src` モジュールの実装前または実装中に行うべきです。
 
+### 2.3. データセットの行数制限 (`limit_data_rows`)
+
+開発およびデバッグの目的で、データセットの読み込み行数を制限する機能が追加されました。これにより、大規模なデータセット全体を読み込むことなく、迅速な実験とテストが可能になります。
+
+*   **設定ファイル**: `conf/dataset/*.yaml` (例: `conf/dataset/movielens.yaml`)
+*   **パラメータ**: `limit_data_rows`
+    *   型: `int`
+    *   デフォルト値: `-1` (制限なし)
+    *   説明: データセットから読み込む行の最大数を指定します。`-1` を設定すると、データセット全体が読み込まれます。正の整数を設定すると、指定された行数にデータセットが切り詰められます。
+*   **実装詳細**:
+    *   `src/student/datamodule.py` の `SASRecDataModule` クラスに `limit_data_rows` 引数が追加され、`setup` メソッド内で `pd.DataFrame.head()` を使用してデータが制限されます。
+    *   `src/exp/run_teacher.py` (および他の `run_*.py` スクリプト) は、Hydraの設定 (`cfg.dataset.limit_data_rows`) を介してこのパラメータを `SASRecDataModule` に渡すように修正されました。
+
+**使用例**:
+`conf/dataset/movielens.yaml` に以下のように設定することで、Movielensデータセットの読み込み行数を640に制限できます。
+
+```yaml
+name: movielens
+data_dir: ref_repositories/iLoRA/data/ref
+limit_data_rows: 640
+```
+
 ---
 
 ## 3. 依存関係 (`pyproject.toml`)

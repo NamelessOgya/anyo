@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 @hydra.main(config_path="../../conf", config_name="config", version_base="1.3")
 def run_teacher(cfg: DictConfig):
     # 1. ロギング、シード、Git情報の初期化
-    output_dir = get_project_root() / "result" / cfg.hydra.run.dir.split('/')[-1]
+    output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
     git_info = get_git_info()
@@ -32,8 +32,9 @@ def run_teacher(cfg: DictConfig):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
-        max_seq_len=cfg.model.max_seq_len, # 教師モデルも同じmax_seq_lenを使用
-        num_workers=cfg.train.num_workers
+        max_seq_len=cfg.student.max_seq_len, # 教師モデルも同じmax_seq_lenを使用
+        num_workers=cfg.train.num_workers,
+        limit_data_rows=cfg.dataset.limit_data_rows
     )
     dm.prepare_data()
     dm.setup()
@@ -42,7 +43,7 @@ def run_teacher(cfg: DictConfig):
     ilora_model_instance = create_teacher_model(
         cfg, 
         num_items=dm.num_items, 
-        max_seq_len=dm.max_seq_len,
+        max_seq_len=cfg.student.max_seq_len,
         item_id_to_name=dm.item_id_to_name,
         padding_item_id=dm.padding_item_id # 追加
     )
@@ -101,7 +102,17 @@ def run_teacher(cfg: DictConfig):
             learning_rate=cfg.train.learning_rate,
             weight_decay=cfg.train.weight_decay,
             metrics_k=cfg.eval.metrics_k,
-            item_id_to_name=dm.item_id_to_name # 追加
+            item_id_to_name=dm.item_id_to_name,
+            # iLoRAModelのハイパーパラメータを明示的に渡す
+            llm_model_name=cfg.teacher.llm_model_name,
+            num_lora_experts=cfg.teacher.num_lora_experts,
+            lora_r=cfg.teacher.lora_r,
+            lora_alpha=cfg.teacher.lora_alpha,
+            lora_dropout=cfg.teacher.lora_dropout,
+            hidden_size=cfg.teacher.hidden_size,
+            dropout_rate=cfg.teacher.dropout_rate,
+            max_seq_len=cfg.student.max_seq_len, # max_seq_lenはstudentから取得
+            padding_item_id=dm.padding_item_id
         )
     else:
         logger.warning("No best teacher model checkpoint found. Using final model for evaluation.")

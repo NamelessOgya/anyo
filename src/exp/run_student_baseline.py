@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 @hydra.main(config_path="../../conf", config_name="config", version_base="1.3")
 def run_student_baseline(cfg: DictConfig):
     # 1. ロギング、シード、Git情報の初期化
-    output_dir = get_project_root() / "result" / cfg.hydra.run.dir.split('/')[-1]
+    output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
     git_info = get_git_info()
@@ -31,7 +31,7 @@ def run_student_baseline(cfg: DictConfig):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
-        max_seq_len=cfg.model.max_seq_len,
+        max_seq_len=cfg.student.max_seq_len,
         num_workers=cfg.train.num_workers
     )
     dm.prepare_data()
@@ -41,11 +41,11 @@ def run_student_baseline(cfg: DictConfig):
     trainer_model = SASRecTrainer(
         num_users=dm.num_items + 1, # SASRecではユーザー数は直接使われないが、一応渡す
         num_items=dm.num_items,
-        hidden_size=cfg.model.hidden_size,
-        num_heads=cfg.model.num_heads,
-        num_layers=cfg.model.num_layers,
-        dropout_rate=cfg.model.dropout_rate,
-        max_seq_len=cfg.model.max_seq_len,
+        hidden_size=cfg.student.hidden_size,
+        num_heads=cfg.student.num_heads,
+        num_layers=cfg.student.num_layers,
+        dropout_rate=cfg.student.dropout_rate,
+        max_seq_len=cfg.student.max_seq_len,
         learning_rate=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
         metrics_k=cfg.eval.metrics_k
@@ -94,13 +94,13 @@ def run_student_baseline(cfg: DictConfig):
             best_model_path,
             num_users=dm.num_items + 1, # SASRecではユーザー数は直接使われないが、一応渡す
             num_items=dm.num_items,
-            hidden_size=cfg.model.hidden_size,
-            num_heads=cfg.model.num_heads,
-            num_layers=cfg.model.num_layers,
-            dropout_rate=cfg.model.dropout_rate,
-            max_seq_len=cfg.model.max_seq_len,
-            learning_rate=cfg.train.learning_rate,
-            weight_decay=cfg.train.weight_decay,
+            hidden_size=cfg.student.hidden_size,
+            num_heads=cfg.student.num_heads,
+            num_layers=cfg.student.num_layers,
+            dropout_rate=cfg.student.dropout_rate,
+            max_seq_len=cfg.student.max_seq_len,
+            learning_rate=cfg.train.learning_rate, # ダミー値
+            weight_decay=cfg.train.weight_decay, # ダミー値
             metrics_k=cfg.eval.metrics_k
         )
     else:

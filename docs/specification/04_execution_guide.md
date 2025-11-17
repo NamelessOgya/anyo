@@ -33,6 +33,9 @@ docker exec -it ilora-dev-container bash
 
 実験の挙動を変更したい場合は、`conf/` 配下の各 `.yaml` ファイルを修正するか、コマンドライン引数で上書きします。
 
+**データセットの行数制限 (`limit_data_rows`)**:
+`conf/dataset/*.yaml` ファイルの `limit_data_rows` パラメータを使用すると、データセットから読み込む行数を制限できます。これは、開発やデバッグ時に迅速な実験を行うために非常に有用です。`src/exp/run_teacher.py` および `src/exp/run_distill.py` の両方でこの設定が適用されます。
+
 **例：バッチサイズを変更して生徒モデルのベースラインを学習**
 ```bash
 poetry run python -m src.exp.run_student_baseline train.batch_size=64
@@ -88,7 +91,11 @@ poetry run python -m src.exp.run_student_baseline
 ### 3.2. 教師モデル (iLoRA) の学習
 
 `iLoRA` モデルを学習・評価します。
-**注意:** iLoRAモデルは大規模なLLMを使用するため、十分なGPUメモリが必要です。
+
+**注意:** iLoRAモデルは大規模なLLMを使用するため、十分なGPUメモリが必要です。`torch.OutOfMemoryError` が発生した場合は、以下の点を確認してください。
+*   `conf/teacher/ilora.yaml` の `hidden_size` を小さくする。
+*   `conf/teacher/ilora.yaml` の `llm_model_name` をより小さなモデル（例: `facebook/opt-125m` はOPTモデルで最小）に変更する。
+*   `src/teacher/ilora_model.py` 内の `item_embeddings` 層の次元が適切に設定されているか確認する（`llm.config.vocab_size` ではなく `hidden_size` を使用し、プロジェクション層を介してLLMの入力次元に合わせる）。
 
 **コマンド:**
 ```bash
@@ -115,7 +122,7 @@ poetry run python -m src.exp.run_distill
 # または、cmd/ ディレクトリのスクリプトを使用する場合
 ./cmd/run_distill.sh
 ```
-**注意:** このスクリプトを実行する前に、`conf/distill/dllm2rec.yaml` またはコマンドライン引数で、学習済みの教師モデルのチェックポイントパス (`distill.teacher_checkpoint_path`) を指定する必要があります。
+**注意:** このスクリプトを実行する前に、`run_teacher.py` を実行して教師モデルを学習し、生成されたチェックポイントパスを `conf/distill/dllm2rec.yaml` の `distill.teacher_checkpoint_path` に設定しておく必要があります。現在、このパスは以前に学習された教師モデルのチェックポイントで埋められています。
 
 **出力:**
 - 蒸留学習のログ、TensorBoardログ、チェックポイントが `result/result_{timestamp}/` ディレクトリに保存されます。

@@ -1,260 +1,167 @@
+from typing import Dict, List, Any
 import torch
 import torch.nn as nn
+import torch.nn.functional as F # 追加
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
-from typing import Dict, Any, List, Optional
+from peft import get_peft_model, LoraConfig, TaskType, PeftModel
+import random
 
-from src.teacher.interfaces import TeacherModel
+from src.teacher.mlp_projector import MLPProjector # 修正されたインポートパス
 
-class iLoRAModel(TeacherModel, nn.Module):
+class iLoRAModel(nn.Module):
     def __init__(self, 
-                 llm_model_name: str,
+                 llm: AutoModelForCausalLM, 
+                 tokenizer: AutoTokenizer,
+                 num_items: int,
+                 max_seq_len: int,
                  num_lora_experts: int,
                  lora_r: int,
                  lora_alpha: int,
                  lora_dropout: float,
-                 num_items: int, # 生徒モデルのnum_itemsと合わせる
-                 max_seq_len: int,
-                 hidden_size: int, # ゲーティングネットワーク用
-                 dropout_rate: float, # ゲーティングネットワーク用
-                 item_id_to_name: Dict[int, str], # アイテムIDから名前へのマッピング
-                 padding_item_id: int = 0, # パディング用のアイテムID
-                 device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+                 hidden_size: int, # ゲーティングネットワークの隠れ層サイズ
+                 dropout_rate: float,
+                 item_id_to_name: Dict[int, str],
+                 padding_item_id: int):
         super().__init__()
-        self.llm_model_name = llm_model_name
-        self.num_lora_experts = num_lora_experts
-        self.lora_r = lora_r
-        self.lora_alpha = lora_alpha
-        self.lora_dropout = lora_dropout
+        self.llm = llm
+        self.tokenizer = tokenizer
         self.num_items = num_items
         self.max_seq_len = max_seq_len
-        self.hidden_size = hidden_size
-        self.dropout_rate = dropout_rate
+        self.num_lora_experts = num_lora_experts # 追加
+        self.padding_item_id = padding_item_id
         self.item_id_to_name = item_id_to_name
-        self.padding_item_id = padding_item_id # 追加
-        self.device = device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 1. LLMのロード
-        self.tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
-        # パディングトークンがない場合は追加
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-        base_llm = AutoModelForCausalLM.from_pretrained(llm_model_name)
-        base_llm.resize_token_embeddings(len(self.tokenizer))
-        base_llm.to(self.device)
-
-        # 2. LoRAアダプターの準備
-        # まず、ベースLLMをPeftModelでラップし、すべてのアダプターをそこに追加する
-        lora_config_template = LoraConfig(
+        # LLMのLoRAアダプターを準備
+        self.peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             inference_mode=False,
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
-            target_modules=["q_proj", "v_proj"] # 一般的なLoRAターゲットモジュール
+            target_modules=["q_proj", "v_proj"] # OPTモデルのAttention層のクエリとバリューに適用
         )
-        # ベースLLMをPeftModelでラップ (最初はアダプターなし)
-        self.llm = get_peft_model(base_llm, lora_config_template, adapter_name="dummy_adapter")
-        self.llm.delete_adapter("dummy_adapter") # ダミーアダプターは削除
-
-        for i in range(num_lora_experts):
-            adapter_name = f"expert_{i}"
-            self.llm.add_adapter(adapter_name, lora_config_template)
+        self.peft_models = nn.ModuleList()
+        for _ in range(num_lora_experts):
+            peft_model = get_peft_model(self.llm, self.peft_config)
+            self.peft_models.append(peft_model)
         
-        # 3. ゲーティングメカニズム (スケルトン)
-        # シーケンス表現を生成するための埋め込み層とTransformer (SASRecのものを流用)
-        # ここでは簡略化のため、直接シーケンス表現を生成するMLPを仮定
-        # 実際には、LLMの埋め込み層やTransformer層の一部を再利用してシーケンス表現を生成する
-        self.sequence_encoder = nn.Sequential(
-            nn.Embedding(num_items + 1, hidden_size, padding_idx=0), # アイテム埋め込み
-            nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(d_model=hidden_size, nhead=4, dropout=dropout_rate, batch_first=True), # nheadをhidden_sizeの約数に固定
-                num_layers=1 # 簡略化のため1層
-            )
-        ).to(self.device) # デバイスに移動
-        self.gating_network = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.GELU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_size, num_lora_experts),
-            nn.Softmax(dim=-1)
-        ).to(self.device) # デバイスに移動
+        # アイテム埋め込み層
+        self.item_embeddings = nn.Embedding(num_items + 1, hidden_size, padding_idx=0).to(self.device)
+        # アイテム埋め込みをLLMの入力埋め込み次元に合わせるためのプロジェクション層
+        self.item_embedding_projection = nn.Linear(hidden_size, self.llm.config.hidden_size).to(self.device)
 
-        # 出力層 (LLMのvocab_sizeからnum_itemsへのマッピング)
-        # LLMの出力は語彙サイズだが、推薦ではアイテム数に絞る必要がある
-        # ここでは、LLMの最後の線形層の重みとアイテム埋め込みを関連付ける必要がある
-        # 簡略化のため、LLMの出力から直接アイテムスコアを抽出するロジックを仮定
-        # 実際には、LLMの出力とアイテム埋め込みの類似度を計算する
-        self.item_embeddings = nn.Embedding(num_items + 1, self.llm.config.vocab_size, padding_idx=0).to(self.device) # LLMの語彙サイズに合わせる
+        # ゲーティングネットワーク
+        self.gating_network = MLPProjector( # 直接インスタンス化
+            input_dim=self.llm.config.hidden_size, # LLMの隠れ状態の次元
+            output_dim=num_lora_experts,
+            hidden_size=hidden_size,
+            dropout_rate=dropout_rate
+        ).to(self.device)
 
-    def _generate_prompt(self, item_seq: torch.Tensor) -> List[str]:
-        """
-        アイテムシーケンスからLLMへのプロンプトを生成します。
-        例: "User has viewed [item_name_1], [item_name_2]. What would they be interested in next?"
-        """
-        prompts = []
-        for seq in item_seq:
-            # パディングを除外し、実際のアイテムIDのみを取得
-            actual_items = [self.item_id_to_name.get(item_id.item(), f"Unknown Item {item_id.item()}") 
-                            for item_id in seq if item_id.item() != self.padding_item_id]
-            
-            if not actual_items:
-                prompts.append("The user has not viewed any items. What would they be interested in?")
-            else:
-                # ユーザーが閲覧したアイテムのリスト
-                viewed_items_str = ", ".join(actual_items)
-                prompt = f"The user has viewed the following items: {viewed_items_str}. Based on this history, what would be the most relevant item for them next? Please list only the item name."
-                prompts.append(prompt)
-        return prompts
+        # 出力層 (LLMの最終隠れ状態からアイテムロジットを予測)
+        self.output_layer = nn.Linear(self.llm.config.hidden_size, num_items + 1).to(self.device)
 
-    def _get_sequence_representation(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> torch.Tensor:
-        """
-        入力アイテムシーケンスからシーケンス表現を生成します。
-        ここでは簡略化のため、SASRecのようなTransformerエンコーダを使用します。
-        """
-        # item_seq: (batch_size, max_seq_len)
-        # item_seq_len: (batch_size)
+    def _get_item_names(self, item_ids: torch.Tensor) -> List[str]:
+        """アイテムIDのテンソルをアイテム名のリストに変換する"""
+        return [self.item_id_to_name.get(item_id.item(), "[UNK]") for item_id in item_ids]
 
-        # アイテム埋め込み
-        item_embeddings = self.sequence_encoder[0](item_seq) # nn.Embedding層
-
-        # TransformerEncoderLayerの入力マスクを作成
-        # src_key_padding_mask: (batch_size, max_seq_len)
-        # True: パディング要素 (無視する)、False: 有効な要素
-        src_key_padding_mask = (item_seq == self.sequence_encoder[0].padding_idx)
-
-        # TransformerEncoderLayerの入力は (batch_size, seq_len, embed_dim)
-        # output: (batch_size, seq_len, hidden_size)
-        transformer_output = self.sequence_encoder[1](
-            item_embeddings,
-            src_key_padding_mask=src_key_padding_mask
-        )
-        
-        # 各シーケンスの最後のアイテムの表現を取得
-        # item_seq_lenは実際の長さなので、-1して0-indexedにする
-        last_item_indices = item_seq_len - 1
-        # gatherを使って、各バッチの最後のアイテムの埋め込みを取得
-        # transformer_output: (batch_size, max_seq_len, hidden_size)
-        # last_item_indices: (batch_size)
-        # 期待される結果: (batch_size, hidden_size)
-        last_item_representation = torch.gather(
-            transformer_output,
-            1,
-            last_item_indices.view(-1, 1, 1).expand(-1, 1, self.hidden_size)
-        ).squeeze(1)
-
-        return last_item_representation
-
+    def _generate_prompt(self, item_seq_names: List[str]) -> str:
+        """アイテム名のシーケンスからプロンプトを生成する"""
+        # 例: "User has watched: MovieA, MovieB, MovieC. Predict the next movie:"
+        return f"User has interacted with: {', '.join(item_seq_names)}. Predict the next item:"
 
     def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> torch.Tensor:
-        """
-        iLoRAモデルのフォワードパス。
-        ゲーティングネットワークで選択されたLoRAエキスパートをLLMに適用し、推薦スコアを計算します。
-        """
-        batch_size, seq_len = item_seq.shape
+        # item_seq: (batch_size, max_seq_len)
+        # item_seq_len: (batch_size,)
 
-        # 1. シーケンス表現の生成
-        h_seq = self._get_sequence_representation(item_seq, item_seq_len) # (batch_size, hidden_size)
+        batch_size = item_seq.shape[0]
 
-        # 2. ゲーティングネットワークによるエキスパート重みの計算
-        expert_weights = self.gating_network(h_seq) # (batch_size, num_lora_experts)
+        # 各シーケンスの最後のアイテムの埋め込みを取得 (ゲーティングネットワークの入力)
+        # item_seq_lenは実際のシーケンス長なので、それを使って最後のアイテムを特定
+        last_item_ids = item_seq[torch.arange(batch_size), item_seq_len - 1]
+        last_item_embeds = self.item_embedding_projection(self.item_embeddings(last_item_ids)) # (batch_size, llm_hidden_size)
 
-        # 3. LoRAアダプターの動的結合 (peftの機能を利用)
-        # peftのmerge_and_unload()やset_adapter()を動的に使うのは複雑
-        # ここでは、各LoRAモデルの出力を重み付け平均する形で簡略化
-        # 実際には、LoRAの重み行列自体を結合してLLMに適用する
-        
-        # 簡略化のため、各LoRAモデルで個別に推論し、その出力を重み付け平均する
-        # これは計算コストが高いが、概念実証としては有効
-        
-        # LLMの入力形式に変換 (アイテムIDをトークンIDにマッピングする必要がある)
-        # ここでは簡略化のため、item_seqを直接LLMの入力として扱う (実際はトークナイズが必要)
-        # LLMの入力は通常、トークンIDのシーケンス
-        # item_seqをそのままLLMの入力として使うのは不適切だが、ここでは概念実証のため
-        
-        # プロンプトの生成
-        prompts = self._generate_prompt(item_seq)
-        
-        # プロンプトのトークナイズ
-        tokenized_inputs = self.tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding="longest",
-            truncation=True,
-            max_length=self.max_seq_len, # LLMの入力長を制限
-        ).to(self.device)
-        
-        llm_input_ids = tokenized_inputs["input_ids"]
-        llm_attention_mask = tokenized_inputs["attention_mask"]
+        # ゲーティングネットワークで各LoRAエキスパートの重みを予測
+        gate_weights = F.softmax(self.gating_network(last_item_embeds), dim=-1) # (batch_size, num_lora_experts)
 
-        # 3. LoRAアダプターの動的結合とLLM推論
-        # 各バッチのexpert_weightsに基づいて、動的にLoRAアダプターを結合し、LLMを推論する
-        
-        # weighted_logitsを格納するテンソルを初期化
-        weighted_logits = torch.zeros(batch_size, llm_input_ids.shape[1], self.llm.config.vocab_size, device=self.device)
+        # プロンプトの準備
+        input_texts = []
+        for i in range(batch_size):
+            current_item_ids = item_seq[i, :item_seq_len[i]]
+            item_seq_names = self._get_item_names(current_item_ids)
+            input_texts.append(self._generate_prompt(item_seq_names))
 
-        # アダプター名をリスト化
-        adapter_names = [f"expert_{i}" for i in range(self.num_lora_experts)]
+        # トークナイズ
+        inputs = self.tokenizer(input_texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_seq_len).to(self.device)
 
-        for b in range(batch_size):
-            # 現在のバッチサンプルのエキスパート重みを取得
-            current_expert_weights = expert_weights[b] # (num_lora_experts,)
+        # 各LoRAエキスパートで推論を実行し、重み付け和を取る
+        combined_logits = torch.zeros(batch_size, self.num_items + 1, device=self.device) # 最終的なアイテムロジット
 
-            # 重み付けされたアダプターを一時的に追加
-            # add_weighted_adapterは新しいアダプターを作成する
-            # combination_type="linear"で重み付け線形結合
-            self.llm.add_weighted_adapter(
-                adapters=adapter_names,
-                weights=current_expert_weights.tolist(), # weightsはリストで渡す
-                adapter_name="dynamic_adapter",
-                combination_type="linear"
-            )
+        for i in range(self.num_lora_experts):
+            peft_model = self.peft_models[i]
             
-            # 一時的に作成したアダプターをアクティブに設定
-            self.llm.set_adapter("dynamic_adapter")
-
-            # LLMのフォワードパスを実行
-            with torch.no_grad(): # 推論時は勾配計算不要
-                output = self.llm(
-                    input_ids=llm_input_ids[b].unsqueeze(0), # バッチサイズ1で入力
-                    attention_mask=llm_attention_mask[b].unsqueeze(0)
-                ).logits
+            # LLMのフォワードパス
+            outputs = peft_model(**inputs, output_hidden_states=True)
             
-            # 出力をweighted_logitsに格納
-            weighted_logits[b] = output.squeeze(0)
+            # 最終トークンの隠れ状態を取得
+            last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (batch_size, llm_hidden_size)
 
-            # 一時アダプターを削除して次のバッチサンプルに備える
-            self.llm.delete_adapter("dynamic_adapter")
+            # 出力層でアイテムロジットを予測
+            expert_logits = self.output_layer(last_hidden_state) # (batch_size, num_items + 1)
 
-        # LLMの出力は通常、最後のトークンに対するロジットが重要
-        # weighted_logits: (batch_size, seq_len, vocab_size)
-        # 最後のトークンの出力を取得
-        last_token_logits = weighted_logits[:, -1, :] # (batch_size, vocab_size)
+            # ゲーティングネットワークの重みを適用
+            # gate_weightsは(batch_size, num_lora_experts)なので、expert_logitsにブロードキャストして適用
+            combined_logits += expert_logits * gate_weights[:, i].unsqueeze(1)
 
-        # アイテム埋め込みとの内積
-        # last_token_logits: (batch_size, vocab_size)
-        # self.item_embeddings.weight: (num_items + 1, vocab_size)
-        # final_item_scores: (batch_size, num_items + 1)
-        final_item_scores = torch.matmul(last_token_logits, self.item_embeddings.weight.t())
-
-        return final_item_scores
+        return combined_logits
 
     def get_teacher_outputs(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> Dict[str, Any]:
         """
-        蒸留に必要な教師モデルの出力を生成します。
-        ランキングスコアと埋め込みを返します。
+        教師モデルの出力（ランキングスコアと埋め込み）を返す。
+        蒸留プロセスで使用される。
         """
-        batch_size, seq_len = item_seq.shape
+        batch_size = item_seq.shape[0]
 
-        # 推薦スコアの取得
-        ranking_scores = self.forward(item_seq, item_seq_len) # (batch_size, num_items + 1)
+        # 各シーケンスの最後のアイテムの埋め込みを取得 (ゲーティングネットワークの入力)
+        last_item_ids = item_seq[torch.arange(batch_size), item_seq_len - 1]
+        last_item_embeds = self.item_embedding_projection(self.item_embeddings(last_item_ids)) # (batch_size, llm_hidden_size)
 
-        # 埋め込みの取得 (例: 最後のシーケンス表現)
-        embeddings = self._get_sequence_representation(item_seq, item_seq_len) # (batch_size, hidden_size)
+        # ゲーティングネットワークで各LoRAエキスパートの重みを予測
+        gate_weights = F.softmax(self.gating_network(last_item_embeds), dim=-1) # (batch_size, num_lora_experts)
+
+        # プロンプトの準備
+        input_texts = []
+        for i in range(batch_size):
+            current_item_ids = item_seq[i, :item_seq_len[i]]
+            item_seq_names = self._get_item_names(current_item_ids)
+            input_texts.append(self._generate_prompt(item_seq_names))
+
+        # トークナイズ
+        inputs = self.tokenizer(input_texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_seq_len).to(self.device)
+
+        combined_logits = torch.zeros(batch_size, self.num_items + 1, device=self.device)
+        combined_hidden_states = torch.zeros(batch_size, self.llm.config.hidden_size, device=self.device)
+
+        for i in range(self.num_lora_experts):
+            peft_model = self.peft_models[i]
+            
+            # LLMのフォワードパス
+            outputs = peft_model(**inputs, output_hidden_states=True)
+            
+            # 最終トークンの隠れ状態を取得
+            last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (batch_size, llm_hidden_size)
+
+            # 出力層でアイテムロジットを予測
+            expert_logits = self.output_layer(last_hidden_state) # (batch_size, num_items + 1)
+
+            # ゲーティングネットワークの重みを適用
+            combined_logits += expert_logits * gate_weights[:, i].unsqueeze(1)
+            combined_hidden_states += last_hidden_state * gate_weights[:, i].unsqueeze(1)
 
         return {
-            "ranking_scores": ranking_scores,
-            "embeddings": embeddings
+            "ranking_scores": combined_logits,
+            "embeddings": combined_hidden_states
         }
 
 if __name__ == "__main__":

@@ -3,5 +3,5 @@ embedding_loss_weight: 1.0
 ce_loss_weight: 1.0
 ranking_temperature: 2.0
 embedding_loss_type: mse # mse or cosine
-# teacher_checkpoint_path: null # 学習済み教師モデルのパス
+teacher_checkpoint_path: /workspace/result/result_20251117_022931/checkpoints/best_teacher_model.ckpt
 # student_checkpoint_path: null # 学習済み生徒モデルのパス (蒸留の初期化に使う場合)

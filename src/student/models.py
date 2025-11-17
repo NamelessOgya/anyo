@@ -6,13 +6,14 @@ class SASRec(nn.Module):
     """
     SASRec (Self-Attentive Sequential Recommendation) モデルの実装。
     """
-    def __init__(self, num_users: int, num_items: int, hidden_size: int, num_heads: int, num_layers: int, dropout_rate: float, max_seq_len: int):
+    def __init__(self, num_users: int, num_items: int, hidden_size: int, num_heads: int, num_layers: int, dropout_rate: float, max_seq_len: int, teacher_embedding_dim: int = None):
         super(SASRec, self).__init__()
 
         self.num_users = num_users
         self.num_items = num_items
         self.hidden_size = hidden_size
         self.max_seq_len = max_seq_len
+        self.teacher_embedding_dim = teacher_embedding_dim
 
         # ユーザーとアイテムの埋め込み層
         # 0番目のアイテムIDはパディング用として予約
@@ -29,18 +30,14 @@ class SASRec(nn.Module):
 
         self.layernorm = nn.LayerNorm(hidden_size)
 
-        # 出力層 (アイテム埋め込みとの内積を計算)
-        # SASRecでは通常、アイテム埋め込みを直接出力層として使用
-        # self.out_linear = nn.Linear(hidden_size, num_items + 1) # 別の出力層を使う場合
+        # 蒸留のために教師モデルの埋め込み次元に合わせるプロジェクション層
+        self.embedding_projection = None
+        if teacher_embedding_dim is not None and hidden_size != teacher_embedding_dim:
+            self.embedding_projection = nn.Linear(hidden_size, teacher_embedding_dim)
 
-    def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor):
+    def _get_last_item_representation(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor):
         """
-        Args:
-            item_seq (torch.Tensor): ユーザーのアイテムシーケンス (batch_size, max_seq_len)。
-                                     パディングは0。
-            item_seq_len (torch.Tensor): 各シーケンスの実際の長さ (batch_size)。
-        Returns:
-            torch.Tensor: 各シーケンスの最後のアイテムの表現 (batch_size, hidden_size)。
+        シーケンスの最後のアイテムの表現を計算します。
         """
         # アイテム埋め込み
         item_embeddings = self.item_embeddings(item_seq)
@@ -83,7 +80,21 @@ class SASRec(nn.Module):
             1,
             last_item_indices.view(-1, 1, 1).expand(-1, 1, self.hidden_size)
         ).squeeze(1)
+        return last_item_representation
 
+    def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor):
+        """
+        Args:
+            item_seq (torch.Tensor): ユーザーのアイテムシーケンス (batch_size, max_seq_len)。
+                                     パディングは0。
+            item_seq_len (torch.Tensor): 各シーケンスの実際の長さ (batch_size)。
+        Returns:
+            torch.Tensor: 各シーケンスの最後のアイテムの表現 (batch_size, hidden_size)。
+                          teacher_embedding_dimが指定されている場合はその次元にプロジェクションされる。
+        """
+        last_item_representation = self._get_last_item_representation(item_seq, item_seq_len)
+        if self.embedding_projection:
+            return self.embedding_projection(last_item_representation)
         return last_item_representation
 
     def predict(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor):
@@ -95,10 +106,11 @@ class SASRec(nn.Module):
         Returns:
             torch.Tensor: 各アイテムに対する推薦スコア (batch_size, num_items + 1)。
         """
-        last_item_representation = self.forward(item_seq, item_seq_len)
+        # predictではプロジェクション前の表現を使用
+        last_item_representation_for_prediction = self._get_last_item_representation(item_seq, item_seq_len)
         # 全アイテム埋め込みとの内積を計算
         # (batch_size, hidden_size) @ (hidden_size, num_items + 1) -> (batch_size, num_items + 1)
-        scores = torch.matmul(last_item_representation, self.item_embeddings.weight.transpose(0, 1))
+        scores = torch.matmul(last_item_representation_for_prediction, self.item_embeddings.weight.transpose(0, 1))
         return scores
 
 
@@ -198,6 +210,7 @@ if __name__ == "__main__":
     dropout_rate = 0.1
     max_seq_len = 50
     batch_size = 4
+    teacher_embedding_dim = 768 # 教師モデルの埋め込み次元
 
     # ダミーデータ
     # item_seq: (batch_size, max_seq_len)
@@ -214,20 +227,27 @@ if __name__ == "__main__":
     print(f"Item Sequence Shape: {item_seq.shape}")
     print(f"Item Sequence Lengths: {item_seq_len}")
 
-    # モデルのインスタンス化
-    model = SASRec(num_users, num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
-    print(f"Model: {model}")
+    # モデルのインスタンス化 (プロジェクションあり)
+    model_with_projection = SASRec(num_users, num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len, teacher_embedding_dim=teacher_embedding_dim)
+    print(f"Model with projection: {model_with_projection}")
 
-    # forwardパスのテスト
-    output_representation = model(item_seq, item_seq_len)
-    print(f"Output Representation Shape: {output_representation.shape}") # 期待: (batch_size, hidden_size)
+    # forwardパスのテスト (プロジェクションあり)
+    output_representation_proj = model_with_projection(item_seq, item_seq_len)
+    print(f"Output Representation (with projection) Shape: {output_representation_proj.shape}") # 期待: (batch_size, teacher_embedding_dim)
+    assert output_representation_proj.shape == (batch_size, teacher_embedding_dim)
 
-    # predictパスのテスト
-    prediction_scores = model.predict(item_seq, item_seq_len)
-    print(f"Prediction Scores Shape: {prediction_scores.shape}") # 期待: (batch_size, num_items + 1)
+    # predictパスのテスト (プロジェクションあり)
+    prediction_scores_proj = model_with_projection.predict(item_seq, item_seq_len)
+    print(f"Prediction Scores (with projection) Shape: {prediction_scores_proj.shape}") # 期待: (batch_size, num_items + 1)
+    assert prediction_scores_proj.shape == (batch_size, num_items + 1)
 
-    # 形状の確認
-    assert output_representation.shape == (batch_size, hidden_size)
-    assert prediction_scores.shape == (batch_size, num_items + 1)
+    # モデルのインスタンス化 (プロジェクションなし)
+    model_no_projection = SASRec(num_users, num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
+    print(f"Model without projection: {model_no_projection}")
+
+    # forwardパスのテスト (プロジェクションなし)
+    output_representation_no_proj = model_no_projection(item_seq, item_seq_len)
+    print(f"Output Representation (no projection) Shape: {output_representation_no_proj.shape}") # 期待: (batch_size, hidden_size)
+    assert output_representation_no_proj.shape == (batch_size, hidden_size)
 
     print("\nSASRec model test passed!")

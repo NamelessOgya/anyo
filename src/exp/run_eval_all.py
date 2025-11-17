@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 @hydra.main(config_path="../../conf", config_name="config", version_base="1.3")
 def run_eval_all(cfg: DictConfig):
     # 1. ロギング、シード、Git情報の初期化
-    output_dir = get_project_root() / "result" / cfg.hydra.run.dir.split('/')[-1]
+    output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
     git_info = get_git_info()
@@ -35,7 +35,7 @@ def run_eval_all(cfg: DictConfig):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.eval.batch_size, # 評価用のバッチサイズ
-        max_seq_len=cfg.model.max_seq_len,
+        max_seq_len=cfg.student.max_seq_len,
         num_workers=cfg.train.num_workers # 評価時もnum_workersを使用
     )
     dm.prepare_data()
@@ -51,11 +51,11 @@ def run_eval_all(cfg: DictConfig):
                 cfg.eval.baseline_student_checkpoint_path,
                 num_users=dm.num_items + 1,
                 num_items=dm.num_items,
-                hidden_size=cfg.model.hidden_size,
-                num_heads=cfg.model.num_heads,
-                num_layers=cfg.model.num_layers,
-                dropout_rate=cfg.model.dropout_rate,
-                max_seq_len=cfg.model.max_seq_len,
+                hidden_size=cfg.student.hidden_size,
+                num_heads=cfg.student.num_heads,
+                num_layers=cfg.student.num_layers,
+                dropout_rate=cfg.student.dropout_rate,
+                max_seq_len=cfg.student.max_seq_len,
                 learning_rate=cfg.train.learning_rate, # ダミー値
                 weight_decay=cfg.train.weight_decay, # ダミー値
                 metrics_k=cfg.eval.metrics_k
@@ -76,18 +76,20 @@ def run_eval_all(cfg: DictConfig):
             dummy_teacher_model_instance = create_teacher_model(
                 cfg,
                 num_items=dm.num_items,
-                max_seq_len=dm.max_seq_len
+                max_seq_len=cfg.student.max_seq_len,
+                item_id_to_name=dm.item_id_to_name,
+                padding_item_id=dm.padding_item_id
             )
             distilled_trainer = DistillationTrainer.load_from_checkpoint(
                 cfg.eval.distilled_student_checkpoint_path,
                 student_model=SASRec( # student_modelは再構築が必要
                     num_users=dm.num_items + 1,
                     num_items=dm.num_items,
-                    hidden_size=cfg.model.hidden_size,
-                    num_heads=cfg.model.num_heads,
-                    num_layers=cfg.model.num_layers,
-                    dropout_rate=cfg.model.dropout_rate,
-                    max_seq_len=cfg.model.max_seq_len
+                    hidden_size=cfg.student.hidden_size,
+                    num_heads=cfg.student.num_heads,
+                    num_layers=cfg.student.num_layers,
+                    dropout_rate=cfg.student.dropout_rate,
+                    max_seq_len=cfg.student.max_seq_len
                 ),
                 teacher_model=dummy_teacher_model_instance, # ダミーの教師モデルインスタンス
                 num_items=dm.num_items,
@@ -116,7 +118,9 @@ def run_eval_all(cfg: DictConfig):
             teacher_model_instance = create_teacher_model(
                 cfg,
                 num_items=dm.num_items,
-                max_seq_len=dm.max_seq_len
+                max_seq_len=cfg.student.max_seq_len,
+                item_id_to_name=dm.item_id_to_name,
+                padding_item_id=dm.padding_item_id
             )
             teacher_trainer = iLoRATrainer.load_from_checkpoint(
                 cfg.eval.teacher_checkpoint_path,
@@ -124,7 +128,18 @@ def run_eval_all(cfg: DictConfig):
                 num_items=dm.num_items,
                 learning_rate=cfg.train.learning_rate, # ダミー値
                 weight_decay=cfg.train.weight_decay, # ダミー値
-                metrics_k=cfg.eval.metrics_k
+                metrics_k=cfg.eval.metrics_k,
+                item_id_to_name=dm.item_id_to_name,
+                # iLoRAModelのハイパーパラメータを明示的に渡す
+                llm_model_name=cfg.teacher.llm_model_name,
+                num_lora_experts=cfg.teacher.num_lora_experts,
+                lora_r=cfg.teacher.lora_r,
+                lora_alpha=cfg.teacher.lora_alpha,
+                lora_dropout=cfg.teacher.lora_dropout,
+                hidden_size=cfg.teacher.hidden_size,
+                dropout_rate=cfg.teacher.dropout_rate,
+                max_seq_len=cfg.student.max_seq_len, # max_seq_lenはstudentから取得
+                padding_item_id=dm.padding_item_id
             )
             # 教師モデルの評価は、iLoRATrainerのtest_stepを直接呼び出す
             # SASRecEvaluatorはSASRecモデルを想定しているため、直接は使えない

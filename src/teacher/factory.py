@@ -1,8 +1,10 @@
 from omegaconf import DictConfig
 from src.teacher.interfaces import TeacherModel
 from src.teacher.ilora_model import iLoRAModel
+from src.teacher.mlp_projector import MLPProjector # MLPProjectorをインポート
 import torch
 from typing import Dict
+from transformers import AutoModelForCausalLM, AutoTokenizer # LLMとTokenizerをロードするために追加
 
 def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item_id_to_name: Dict[int, str], padding_item_id: int) -> TeacherModel:
     """
@@ -22,8 +24,14 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
 
     if model_type == "ilora":
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # LLMとTokenizerのロード
+        llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
+        tokenizer = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name)
+
         model = iLoRAModel(
-            llm_model_name=cfg.teacher.llm_model_name,
+            llm=llm, # LLMオブジェクトを渡す
+            tokenizer=tokenizer, # Tokenizerオブジェクトを渡す
             num_lora_experts=cfg.teacher.num_lora_experts,
             lora_r=cfg.teacher.lora_r,
             lora_alpha=cfg.teacher.lora_alpha,
@@ -33,8 +41,7 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
             hidden_size=cfg.teacher.hidden_size,
             dropout_rate=cfg.teacher.dropout_rate,
             item_id_to_name=item_id_to_name,
-            padding_item_id=padding_item_id, # 追加
-            device=device
+            padding_item_id=padding_item_id
         )
         return model
     else:

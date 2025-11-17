@@ -6,7 +6,11 @@ defaults:
   - distill: dllm2rec
   - eval: default
   - train: default
-  - hydra: default
 
 # Basic experiment settings
 seed: 42
+
+run:
+  dir: "result/result_${now:%Y%m%d_%H%M%S}"
+job:
+  chdir: true

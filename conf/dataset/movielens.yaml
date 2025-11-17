@@ -1,2 +1,3 @@
 name: movielens
 data_dir: ref_repositories/iLoRA/data/ref
+limit_data_rows: 160

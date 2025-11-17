@@ -112,3 +112,53 @@ docker exec ilora-dev-container bash -c "PYTHONPATH=/workspace poetry run python
 -   **実験の実行と分析**: `cmd/` スクリプトを用いた本格的な実験の実施。
 
 これらの実装を進めることで、プロジェクトの実験パイプラインが完成に近づきます。
+
+---
+
+## 5. エージェントによる引き継ぎノート (2025-11-17)
+
+### 5.1. 実施した作業の概要
+
+*   **データセット行数制限機能の導入**:
+    *   `conf/dataset/movielens.yaml` に `limit_data_rows` パラメータを追加し、データローダーが読み込むデータ行数を制限できるようにしました。
+    *   `src/exp/run_teacher.py` および `src/exp/run_distill.py` がこのパラメータを `SASRecDataModule` に正しく渡すように修正しました。
+    *   これにより、エポックあたりのステップ数を制御し、デバッグ時の実行時間を短縮できるようになりました。
+    *   関連ドキュメント (`docs/specification/02_development_notes_ja.md`, `docs/specification/04_execution_guide.md`) を更新しました。
+*   **教師モデル (`iLoRAModel`) のメモリ最適化**:
+    *   `src/teacher/ilora_model.py` において、`item_embeddings` 層が `llm.config.vocab_size` ではなく `hidden_size` を使用するように変更し、さらにLLMの入力次元に合わせるためのプロジェクション層 (`item_embedding_projection`) を追加しました。これにより、`CUDA out of memory` エラーを解消しました。
+    *   `src/teacher/factory.py` を修正し、`iLoRAModel` のコンストラクタに `llm` と `tokenizer` オブジェクトを渡すように変更しました。
+*   **蒸留選択ポリシーの修正**:
+    *   `src/distill/selection_policy.py` に `AllSamplesPolicy` クラスを追加しました。これは、`src/exp/run_distill.py` での `ImportError` を解消するためです。
+*   **メトリクス計算の修正**:
+    *   `src/distill/trainer_distill.py` において、`calculate_metrics` 関数に渡す `logits` と `next_item` の形式を `List[List[int]]` に変換するように修正しました。これにより、`RuntimeError: Boolean value of Tensor with more than one value is ambiguous` エラーを解消しました。
+*   **教師モデルのチェックポイントパスの更新**:
+    *   `run_teacher.py` の実行後、生成された教師モデルのチェックポイントパス (`/workspace/result/result_20251117_011905/checkpoints/best_teacher_model.ckpt`) を `conf/distill/dllm2rec.yaml` の `teacher_checkpoint_path` に設定しました。
+
+### 5.2. 現在の課題と次のエージェントへの依頼事項
+
+*   **`ModuleNotFoundError: No module named 'src.teacher.mlp_projector'` の継続**:
+    *   `src/teacher/ilora_model.py` 内での `MLPProjector` のインポートに関して、`from .mlp_projector import MLPProjector` および `from src.teacher.mlp_projector import MLPProjector` の両方を試しましたが、`python -m src.exp.run_distill` 実行時に `ModuleNotFoundError` が解消されていません。
+    *   この問題は、Pythonのモジュール解決メカニズムと `PYTHONPATH` の設定、および `python -m` での実行方法の組み合わせに起因している可能性があります。
+    *   **次のエージェントへの依頼**: この `ModuleNotFoundError` の根本原因を特定し、解決してください。`src/teacher/mlp_projector.py` が正しくインポートされるように、インポートパスまたはプロジェクトの実行方法を調整する必要があります。
+*   **蒸留実験の完了**:
+    *   上記の `ModuleNotFoundError` が解決され次第、蒸留実験 (`src/exp/run_distill.py`) を正常に完了させてください。
+    *   `limit_data_rows` は現在 `160` に設定されており、`batch_size: 32` の場合、1エポックあたり約5ステップで実行されるはずです。
+*   **`iLoRAModel` の `get_teacher_outputs` の改善**:
+    *   `src/teacher/ilora_model.py` の `get_teacher_outputs` メソッドでは、現在 `embeddings` として最後のアイテムの埋め込みを一時的に返しています。LLMの最終隠れ状態を適切に返すように修正する必要があります（コード内の `TODO` コメントを参照）。
+*   **ドキュメントの継続的な更新**:
+    *   今後の実装や変更についても、`docs/specification/02_development_notes_ja.md` に記録し、必要に応じて他の仕様書も更新してください。
+
+### 5.3. 最終的なファイルの状態
+
+*   `conf/dataset/movielens.yaml`: `limit_data_rows: 160`
+*   `conf/distill/dllm2rec.yaml`: `teacher_checkpoint_path` が設定済み
+*   `src/exp/run_teacher.py`: `limit_data_rows` を `SASRecDataModule` に渡すように修正済み
+*   `src/exp/run_distill.py`: `limit_data_rows` を `SASRecDataModule` に渡すように修正済み
+*   `src/distill/selection_policy.py`: `AllSamplesPolicy` を追加済み
+*   `src/distill/trainer_distill.py`: `calculate_metrics` の引数変換を修正済み
+*   `src/teacher/ilora_model.py`: `item_embeddings` のメモリ最適化、`output_layer` の次元修正、`MLPProjector` のインポート問題が残存
+*   `src/teacher/factory.py`: `llm`, `tokenizer`, `MLPProjector` を `iLoRAModel` に渡すように修正済み
+*   `docs/specification/02_development_notes_ja.md`: `limit_data_rows` の説明を追加済み
+*   `docs/specification/04_execution_guide.md`: `limit_data_rows` とメモリ問題に関する注意を追加済み
+
+この引き継ぎノートが、次のエージェントの開発をスムーズに進める一助となることを願っています。

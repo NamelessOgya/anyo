@@ -113,7 +113,17 @@ class DistillationTrainer(pl.LightningModule):
         loss = self.ce_loss_fn(logits, next_item)
         
         # メトリクスの計算
-        metrics = calculate_metrics(logits, next_item, k=self.metrics_k)
+        # logits (batch_size, num_items) -> predictions (List[List[int]])
+        # next_item (batch_size,) -> ground_truths (List[List[int]])
+        
+        # predictions: 各サンプルのトップKアイテムIDを取得
+        _, top_k_predictions = torch.topk(logits, k=self.metrics_k, dim=1)
+        predictions_list = top_k_predictions.tolist()
+
+        # ground_truths: 各サンプルの正解アイテムをリストのリストに変換
+        ground_truths_list = [[item_id.item()] for item_id in next_item]
+
+        metrics = calculate_metrics(predictions_list, ground_truths_list, k=self.metrics_k)
         
         self.log('val_loss', loss, on_epoch=True, prog_bar=True, logger=True)
         for metric_name, metric_value in metrics.items():
@@ -127,7 +137,14 @@ class DistillationTrainer(pl.LightningModule):
         logits = self.forward(item_seq, item_seq_len)
         
         # メトリクスの計算
-        metrics = calculate_metrics(logits, next_item, k=self.metrics_k)
+        # predictions: 各サンプルのトップKアイテムIDを取得
+        _, top_k_predictions = torch.topk(logits, k=self.metrics_k, dim=1)
+        predictions_list = top_k_predictions.tolist()
+
+        # ground_truths: 各サンプルの正解アイテムをリストのリストに変換
+        ground_truths_list = [[item_id.item()] for item_id in next_item]
+
+        metrics = calculate_metrics(predictions_list, ground_truths_list, k=self.metrics_k)
         
         for metric_name, metric_value in metrics.items():
             self.log(f'test_{metric_name}', metric_value, on_epoch=True, prog_bar=True, logger=True)

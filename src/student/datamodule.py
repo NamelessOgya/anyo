@@ -52,14 +52,16 @@ class SASRecDataModule(pl.LightningDataModule):
                  data_dir: str = "ref_repositories/iLoRA/data/ref",
                  batch_size: int = 32,
                  max_seq_len: int = 50,
-                 num_workers: int = 4):
+                 num_workers: int = 4,
+                 limit_data_rows: int = -1): # 新しい引数
         super().__init__()
         self.dataset_name = dataset_name
         self.data_dir = get_project_root() / data_dir / dataset_name
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
         self.num_workers = num_workers
-        self.padding_item_id = 0 # SASRecモデルのitem_embeddingsでpadding_idx=0を使用
+        self.padding_item_id = 0
+        self.limit_data_rows = limit_data_rows # 新しい引数を保存
 
         self.train_data: pd.DataFrame = None
         self.val_data: pd.DataFrame = None
@@ -93,9 +95,18 @@ class SASRecDataModule(pl.LightningDataModule):
             self.train_data = self.train_data[self.train_data['len_seq'] >= 3]
             self.val_data = self.val_data[self.val_data['len_seq'] >= 3]
 
+            # データ行数制限を適用
+            if self.limit_data_rows > 0:
+                self.train_data = self.train_data.head(self.limit_data_rows)
+                self.val_data = self.val_data.head(self.limit_data_rows)
+
         if stage == 'test' or stage is None:
             self.test_data = pd.read_pickle(self.data_dir / "Test_data.df")
             self.test_data = self.test_data[self.test_data['len_seq'] >= 3]
+            
+            # データ行数制限を適用
+            if self.limit_data_rows > 0:
+                self.test_data = self.test_data.head(self.limit_data_rows)
 
         # SASRecDatasetインスタンスの作成
         if self.train_data is not None:

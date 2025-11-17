@@ -27,6 +27,19 @@ class SelectionPolicy(ABC):
         """
         pass
 
+class AllSamplesPolicy(SelectionPolicy):
+    """
+    すべてのサンプルを蒸留に使用するポリシー。
+    """
+    def select(self, 
+               student_logits: torch.Tensor,
+               teacher_logits: torch.Tensor,
+               ground_truth: torch.Tensor) -> torch.Tensor:
+        """
+        すべてのサンプルを選択するためのブールマスクを返します。
+        """
+        return torch.ones(student_logits.shape[0], dtype=torch.bool, device=student_logits.device)
+
 class KLDivergencePolicy(SelectionPolicy):
     """
     教師モデルと生徒モデルの出力間のKLダイバージェンスが閾値を超えるサンプルのみを
@@ -91,6 +104,14 @@ if __name__ == "__main__":
     dummy_student_logits = torch.randn(batch_size, num_items)
     dummy_teacher_logits = torch.randn(batch_size, num_items)
     dummy_ground_truth = torch.randint(0, num_items, (batch_size,)) # ground_truthはKLDivergencePolicyでは直接使用しないが、インターフェースに合わせる
+
+    # AllSamplesPolicyのテスト
+    print("--- AllSamplesPolicy Test ---")
+    all_policy = AllSamplesPolicy()
+    all_mask = all_policy.select(dummy_student_logits, dummy_teacher_logits, dummy_ground_truth)
+    print(f"Distill mask (AllSamplesPolicy): {all_mask}")
+    assert torch.equal(all_mask, torch.tensor([True, True, True, True]))
+    print("AllSamplesPolicy test passed!")
 
     # KLDivergencePolicyのテスト
     print("--- KLDivergencePolicy Test ---")

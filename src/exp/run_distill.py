@@ -1,3 +1,4 @@
+from pathlib import Path
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
@@ -13,6 +14,7 @@ from src.core.git_info import get_git_info
 from src.student.datamodule import SASRecDataModule
 from src.student.models import SASRec
 from src.teacher.factory import create_teacher_model
+from src.teacher.trainer_ilora import iLoRATrainer # 追加
 from src.distill.trainer_distill import DistillationTrainer
 from src.distill.selection_policy import AllSamplesPolicy # 現状はこれのみ
 from src.student.evaluator import SASRecEvaluator # 生徒モデルの評価器
@@ -22,7 +24,7 @@ logger = logging.getLogger(__name__)
 @hydra.main(config_path="../../conf", config_name="config", version_base="1.3")
 def run_distill(cfg: DictConfig):
     # 1. ロギング、シード、Git情報の初期化
-    output_dir = get_project_root() / "result" / cfg.hydra.run.dir.split('/')[-1]
+    output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
     git_info = get_git_info()
@@ -34,32 +36,60 @@ def run_distill(cfg: DictConfig):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
-        max_seq_len=cfg.model.max_seq_len,
-        num_workers=cfg.train.num_workers
+        max_seq_len=cfg.student.max_seq_len,
+        num_workers=cfg.train.num_workers,
+        limit_data_rows=cfg.dataset.limit_data_rows
     )
     dm.prepare_data()
     dm.setup()
 
     # 3. 教師モデルのインスタンス化と学習済み重みのロード
     # 教師モデルは学習済みチェックポイントからロードすることを想定
-    teacher_model_instance = create_teacher_model(
-        cfg, 
-        num_items=dm.num_items, 
-        max_seq_len=dm.max_seq_len
-    )
-    # TODO: 教師モデルのチェックポイントパスをcfgから取得し、ロードする
-    # 例: teacher_model_instance.load_state_dict(torch.load(cfg.distill.teacher_checkpoint_path))
-    logger.warning("Teacher model checkpoint loading is not yet implemented. Using randomly initialized teacher model.")
+    if cfg.distill.teacher_checkpoint_path and cfg.distill.teacher_checkpoint_path != "???":
+        logger.info(f"Loading pre-trained teacher model from {cfg.distill.teacher_checkpoint_path}")
+        # iLoRATrainerのチェックポイントをロード
+        # ロード時に必要な引数を渡す
+        loaded_teacher_trainer = iLoRATrainer.load_from_checkpoint(
+            checkpoint_path=cfg.distill.teacher_checkpoint_path,
+            ilora_model=create_teacher_model(
+                cfg,
+                num_items=dm.num_items,
+                max_seq_len=cfg.student.max_seq_len,
+                item_id_to_name=dm.item_id_to_name,
+                padding_item_id=dm.padding_item_id
+            ),
+            num_items=dm.num_items,
+            learning_rate=cfg.train.learning_rate, # ダミー値、実際には使われない
+            weight_decay=cfg.train.weight_decay,   # ダミー値、実際には使われない
+            metrics_k=cfg.eval.metrics_k,
+            item_id_to_name=dm.item_id_to_name,
+            strict=False
+        )
+        teacher_model_instance = loaded_teacher_trainer.model
+        # 教師モデルのパラメータはフリーズする
+        for param in teacher_model_instance.parameters():
+            param.requires_grad = False
+        teacher_model_instance.eval() # 評価モードに設定
+    else:
+        logger.warning("No teacher_checkpoint_path provided or it's '???'. Using randomly initialized teacher model.")
+        teacher_model_instance = create_teacher_model(
+            cfg,
+            num_items=dm.num_items,
+            max_seq_len=cfg.student.max_seq_len,
+            item_id_to_name=dm.item_id_to_name,
+            padding_item_id=dm.padding_item_id
+        )
 
     # 4. 生徒モデル (SASRec) をインスタンス化
     student_model_instance = SASRec(
         num_users=dm.num_items + 1, # SASRecではユーザー数は直接使われないが、一応渡す
         num_items=dm.num_items,
-        hidden_size=cfg.model.hidden_size,
-        num_heads=cfg.model.num_heads,
-        num_layers=cfg.model.num_layers,
-        dropout_rate=cfg.model.dropout_rate,
-        max_seq_len=cfg.model.max_seq_len
+        hidden_size=cfg.student.hidden_size,
+        num_heads=cfg.student.num_heads,
+        num_layers=cfg.student.num_layers,
+        dropout_rate=cfg.student.dropout_rate,
+        max_seq_len=cfg.student.max_seq_len,
+        teacher_embedding_dim=teacher_model_instance.llm.config.hidden_size # 修正
     )
 
     # 5. DistillationTrainerのインスタンス化
@@ -118,18 +148,33 @@ def run_distill(cfg: DictConfig):
         # DistillationTrainerからSASRecモデルを抽出して評価器に渡す
         loaded_distill_trainer = DistillationTrainer.load_from_checkpoint(
             best_model_path,
-            student_model=student_model_instance, # student_modelは再構築が必要
-            teacher_model=teacher_model_instance, # teacher_modelも再構築が必要
+            student_model=SASRec( # student_modelは再構築が必要
+                num_users=dm.num_items + 1,
+                num_items=dm.num_items,
+                hidden_size=cfg.student.hidden_size,
+                num_heads=cfg.student.num_heads,
+                num_layers=cfg.student.num_layers,
+                dropout_rate=cfg.student.dropout_rate,
+                max_seq_len=cfg.student.max_seq_len,
+                teacher_embedding_dim=loaded_teacher_trainer.model.llm.config.hidden_size # 修正
+            ),
+            teacher_model=create_teacher_model( # teacher_modelも再構築が必要
+                cfg,
+                num_items=dm.num_items,
+                max_seq_len=cfg.student.max_seq_len,
+                item_id_to_name=dm.item_id_to_name,
+                padding_item_id=dm.padding_item_id
+            ),
             num_items=dm.num_items,
             ranking_loss_weight=cfg.distill.ranking_loss_weight,
             embedding_loss_weight=cfg.distill.embedding_loss_weight,
             ce_loss_weight=cfg.distill.ce_loss_weight,
             ranking_temperature=cfg.distill.ranking_temperature,
             embedding_loss_type=cfg.distill.embedding_loss_type,
-            learning_rate=cfg.train.learning_rate,
-            weight_decay=cfg.train.weight_decay,
+            learning_rate=cfg.train.learning_rate, # ダミー値
+            weight_decay=cfg.train.weight_decay, # ダミー値
             metrics_k=cfg.eval.metrics_k,
-            selection_policy=AllSamplesPolicy()
+            selection_policy=None # ロード時は不要
         )
         # 評価器には生徒モデルのみを渡す
         evaluator = SASRecEvaluator(loaded_distill_trainer.student_model, dm, metrics_k=cfg.eval.metrics_k)
