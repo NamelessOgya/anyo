@@ -92,14 +92,17 @@ poetry run python -m src.exp.run_student_baseline
 
 `iLoRA` モデルを学習・評価します。
 
-**注意:** iLoRAモデルは大規模なLLMを使用するため、十分なGPUメモリが必要です。`torch.OutOfMemoryError` が発生した場合は、以下の点を確認してください。
-*   `conf/teacher/ilora.yaml` の `hidden_size` を小さくする。
-*   `conf/teacher/ilora.yaml` の `llm_model_name` をより小さなモデル（例: `facebook/opt-125m` はOPTモデルで最小）に変更する。
-*   `src/teacher/ilora_model.py` 内の `item_embeddings` 層の次元が適切に設定されているか確認する（`llm.config.vocab_size` ではなく `hidden_size` を使用し、プロジェクション層を介してLLMの入力次元に合わせる）。
+**注意:**
+*   iLoRAモデルは大規模なLLMを使用するため、十分なGPUメモリが必要です。`torch.OutOfMemoryError` が発生した場合は、以下の点を確認してください。
+    *   `conf/teacher/ilora.yaml` の `hidden_size` を小さくする。
+    *   `conf/teacher/ilora.yaml` の `llm_model_name` をより小さなモデル（例: `facebook/opt-125m` はOPTモデルで最小）に変更する。
+    *   `src/teacher/ilora_model.py` 内の `item_embeddings` 層の次元が適切に設定されているか確認する（`llm.config.vocab_size` ではなく `hidden_size` を使用し、プロジェクション層を介してLLMの入力次元に合わせる）。
+*   **事前に学習済みのSASRecモデルのチェックポイントパスを指定する必要があります。** これは `conf/teacher/ilora.yaml` の `rec_model_checkpoint_path` で設定するか、コマンドライン引数で上書きします。
 
 **コマンド:**
 ```bash
 # poetry run を使用する場合
+# 例: poetry run python -m src.exp.run_teacher teacher.rec_model_checkpoint_path=/path/to/your/sasrec_checkpoint.ckpt
 poetry run python -m src.exp.run_teacher
 
 # または、cmd/ ディレクトリのスクリプトを使用する場合

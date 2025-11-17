@@ -1,7 +1,8 @@
 import pytest
 import torch
 import torch.nn.functional as F
-from src.distill.kd_losses import RankingDistillationLoss, EmbeddingDistillationLoss
+from src.distill.kd_losses import RankingDistillationLoss, EmbeddingDistillationLoss, PropensityScoreCalculator, DROLoss, WeightedBCELoss
+from collections import Counter
 
 def test_ranking_distillation_loss():
     """
@@ -79,3 +80,111 @@ def test_embedding_distillation_loss_cosine():
     target = torch.ones(batch_size)
     manual_loss = F.cosine_embedding_loss(student_embeddings, teacher_embeddings, target)
     assert torch.allclose(loss, manual_loss)
+
+def test_propensity_score_calculator():
+    """
+    PropensityScoreCalculatorのテスト。
+    """
+    item_num = 10
+    train_next_items = [1, 2, 2, 3, 3, 3, 4, 4, 4, 4]
+    power = 0.5
+    
+    calculator = PropensityScoreCalculator(item_num, train_next_items, power)
+    ps = calculator.get_ps()
+    
+    assert ps.shape == (item_num,)
+    # 特定のアイテムのpsが期待通りか (手計算で確認)
+    # freq = {1:1, 2:2, 3:3, 4:4}
+    # pop = [0, 1, 2, 3, 4, 0, 0, 0, 0, 0] (item 0, 5-9 have 0 freq)
+    # ps_raw = [1, 2, 3, 4, 5, 1, 1, 1, 1, 1]
+    # ps_norm = ps_raw / sum(ps_raw) = ps_raw / 20
+    # ps_powered = (ps_norm)^0.5
+    expected_ps_raw = torch.tensor([1, 2, 3, 4, 5, 1, 1, 1, 1, 1], dtype=torch.float)
+    expected_ps_norm = expected_ps_raw / expected_ps_raw.sum()
+    expected_ps = torch.pow(expected_ps_norm, power)
+    assert torch.allclose(ps, expected_ps, atol=1e-6)
+
+def test_dro_loss():
+    """
+    DROLossのテスト。
+    """
+    batch_size = 4
+    num_items = 10
+    ps = torch.rand(num_items)
+    ps = ps / ps.sum() # 正規化
+    beta = 1.0
+    
+    model_output = torch.randn(batch_size, num_items, requires_grad=True)
+    target = torch.randint(0, num_items, (batch_size, 1))
+    
+    dro_loss_fn = DROLoss(ps=ps, beta=beta)
+    loss = dro_loss_fn(model_output, target)
+    
+    assert loss.shape == torch.Size([]) # スカラーであること
+    assert loss.requires_grad # 勾配計算可能であること
+    
+    loss.backward()
+    assert model_output.grad is not None
+
+def test_weighted_bce_loss_no_dro():
+    """
+    WeightedBCELoss (DROなし) のテスト。
+    """
+    batch_size = 4
+    num_items = 10
+    num_candidates = 3
+    
+    student_logits = torch.randn(batch_size, num_items, requires_grad=True)
+    teacher_candidates = torch.randint(0, num_items, (batch_size, num_candidates))
+    weights = torch.rand(batch_size, num_candidates)
+    weights = weights / weights.sum(dim=1, keepdim=True) # 正規化
+    
+    loss_fn = WeightedBCELoss(alpha=0.0)
+    loss = loss_fn(student_logits, teacher_candidates, weights)
+    
+    assert loss.shape == torch.Size([])
+    assert loss.requires_grad
+    
+    loss.backward()
+    assert student_logits.grad is not None
+
+def test_weighted_bce_loss_with_dro():
+    """
+    WeightedBCELoss (DROあり) のテスト。
+    """
+    batch_size = 4
+    num_items = 10
+    num_candidates = 3
+    ps = torch.rand(num_items)
+    ps = ps / ps.sum() # 正規化
+    beta = 1.0
+    alpha = 0.5
+    
+    student_logits = torch.randn(batch_size, num_items, requires_grad=True)
+    teacher_candidates = torch.randint(0, num_items, (batch_size, num_candidates))
+    weights = torch.rand(batch_size, num_candidates)
+    weights = weights / weights.sum(dim=1, keepdim=True) # 正規化
+    
+    loss_fn = WeightedBCELoss(alpha=alpha, ps=ps, beta=beta)
+    loss = loss_fn(student_logits, teacher_candidates, weights)
+    
+    assert loss.shape == torch.Size([])
+    assert loss.requires_grad
+    
+    loss.backward()
+    assert student_logits.grad is not None
+
+def test_weighted_bce_loss_dro_alpha_zero_no_ps_error():
+    """
+    WeightedBCELossでalpha=0の場合、psがNoneでもエラーにならないことのテスト。
+    """
+    loss_fn = WeightedBCELoss(alpha=0.0, ps=None, beta=1.0)
+    assert loss_fn.alpha == 0.0
+    assert loss_fn.ps is None
+
+def test_weighted_bce_loss_dro_alpha_nonzero_no_ps_error():
+    """
+    WeightedBCELossでalpha>0の場合、psがNoneだとValueErrorが発生することのテスト。
+    """
+    with pytest.raises(ValueError, match="Propensity scores \(ps\) must be provided if alpha > 0 for DROLoss."):
+        WeightedBCELoss(alpha=0.1, ps=None, beta=1.0)

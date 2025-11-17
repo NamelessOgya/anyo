@@ -9,7 +9,6 @@ from src.core.metrics import calculate_metrics
 
 class SASRecTrainer(pl.LightningModule):
     def __init__(self, 
-                 num_users: int, 
                  num_items: int, 
                  hidden_size: int, 
                  num_heads: int, 
@@ -23,7 +22,6 @@ class SASRecTrainer(pl.LightningModule):
         self.save_hyperparameters()
 
         self.model = SASRec(
-            num_users=num_users,
             num_items=num_items,
             hidden_size=hidden_size,
             num_heads=num_heads,
@@ -38,8 +36,8 @@ class SASRecTrainer(pl.LightningModule):
         return self.model.predict(item_seq, item_seq_len)
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
+        item_seq = batch["seq"]
+        item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)
@@ -52,8 +50,8 @@ class SASRecTrainer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
+        item_seq = batch["seq"]
+        item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)
@@ -77,8 +75,8 @@ class SASRecTrainer(pl.LightningModule):
         return {"val_loss": loss}
 
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
+        item_seq = batch["seq"]
+        item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)

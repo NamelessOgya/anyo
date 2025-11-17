@@ -26,9 +26,9 @@ class SASRecDataset(Dataset):
         self.item_id_to_name = item_id_to_name
 
         # Special token IDs
-        self.his_token_id = self.tokenizer.additional_special_tokens_ids[self.tokenizer.additional_special_tokens.index('[HistoryEmb]')] if self.tokenizer else None
-        self.cans_token_id = self.tokenizer.additional_special_tokens_ids[self.tokenizer.additional_special_tokens.index('[CansEmb]')] if self.tokenizer else None
-        self.item_token_id = self.tokenizer.additional_special_tokens_ids[self.tokenizer.additional_special_tokens.index('[ItemEmb]')] if self.tokenizer else None
+        self.his_token_id = self.tokenizer.additional_special_tokens_ids[self.tokenizer.additional_special_tokens.index('[HistoryEmb]')] if self.tokenizer and '[HistoryEmb]' in self.tokenizer.additional_special_tokens else None
+        self.cans_token_id = self.tokenizer.additional_special_tokens_ids[self.tokenizer.additional_special_tokens.index('[CansEmb]')] if self.tokenizer and '[CansEmb]' in self.tokenizer.additional_special_tokens else None
+        self.item_token_id = self.tokenizer.additional_special_tokens_ids[self.tokenizer.additional_special_tokens.index('[ItemEmb]')] if self.tokenizer and '[ItemEmb]' in self.tokenizer.additional_special_tokens else None
 
     def __len__(self):
         return len(self.data)
@@ -50,29 +50,31 @@ class SASRecDataset(Dataset):
         padded_item_seq = [self.padding_item_id] * self.max_seq_len
         padded_item_seq[-seq_len:] = item_seq_ids
 
-        # プロンプトの構築
-        # [HistoryEmb] item_name_1, item_name_2, ... [ItemEmb] next_item_name
-        history_names = [self.item_id_to_name.get(item_id, "[UNK]") for item_id in item_seq_ids]
-        next_item_name = self.item_id_to_name.get(next_item_id, "[UNK]")
+        tokens = None
+        if self.tokenizer and self.item_id_to_name: # Only construct prompt if tokenizer and item_id_to_name are available
+            # プロンプトの構築
+            # [HistoryEmb] item_name_1, item_name_2, ... [ItemEmb] next_item_name
+            history_names = [self.item_id_to_name.get(item_id, "[UNK]") for item_id in item_seq_ids]
+            next_item_name = self.item_id_to_name.get(next_item_id, "[UNK]")
 
-        # MInterfaceのプロンプト構造を参考に、特殊トークンを埋め込む
-        # ここでは簡略化のため、[HistoryEmb]と[ItemEmb]のみを使用
-        # [CansEmb]は別途生成する必要があるが、ここではダミーで対応
-        prompt_text = f"{self.tokenizer.decode(self.his_token_id)} {', '.join(history_names)} {self.tokenizer.decode(self.item_token_id)} {next_item_name}"
+            # MInterfaceのプロンプト構造を参考に、特殊トークンを埋め込む
+            # ここでは簡略化のため、[HistoryEmb]と[ItemEmb]のみを使用
+            # [CansEmb]は別途生成する必要があるが、ここではダミーで対応
+            prompt_text = f"{self.tokenizer.decode(self.his_token_id)} {', '.join(history_names)} {self.tokenizer.decode(self.item_token_id)} {next_item_name}"
+            
+            # プロンプトをトークナイズ
+            tokens = self.tokenizer(
+                prompt_text,
+                return_tensors="pt",
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_gen_length # max_gen_lengthを使用
+            )
+            
+            # tokensはバッチの次元がないのでsqueeze
+            # input_ids = tokens["input_ids"].squeeze(0)
+            # attention_mask = tokens["attention_mask"].squeeze(0)
         
-        # プロンプトをトークナイズ
-        tokens = self.tokenizer(
-            prompt_text,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=self.max_gen_length # max_gen_lengthを使用
-        )
-        
-        # tokensはバッチの次元がないのでsqueeze
-        input_ids = tokens["input_ids"].squeeze(0)
-        attention_mask = tokens["attention_mask"].squeeze(0)
-
         # cans (候補アイテム) の生成
         # iLoRAのmovielens_data.pyでは、ネガティブサンプリングでcansを生成している
         # ここでは簡略化のため、ランダムなアイテムを生成
@@ -87,8 +89,7 @@ class SASRecDataset(Dataset):
         padded_cans[:len(cans_ids)] = cans_ids
         len_cans = len(cans_ids)
 
-        return {
-            "tokens": tokens, # Return BatchEncoding object directly
+        return_dict = {
             "seq": torch.tensor(padded_item_seq, dtype=torch.long),
             "len_seq": torch.tensor(seq_len, dtype=torch.long),
             "cans": torch.tensor(padded_cans, dtype=torch.long),
@@ -96,6 +97,10 @@ class SASRecDataset(Dataset):
             "item_id": torch.tensor(next_item_id, dtype=torch.long), # next_item_idをitem_idとして渡す
             "next_item": torch.tensor(next_item_id, dtype=torch.long)
         }
+        if tokens is not None:
+            return_dict["tokens"] = tokens
+        
+        return return_dict
 
 class SASRecDataModule(pl.LightningDataModule):
     def __init__(self, 

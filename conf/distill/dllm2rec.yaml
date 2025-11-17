@@ -10,3 +10,6 @@ gamma_position: 1.0
 gamma_confidence: 1.0
 gamma_consistency: 1.0
 candidate_topk: 10
+alpha: 0.0 # Weight for DRO loss. Set to > 0 to enable.
+beta: 1.0  # Parameter for DRO loss (robust radius).
+ps_power: 0.05 # Power for propensity score calculation.

@@ -39,7 +39,6 @@ def run_student_baseline(cfg: DictConfig):
 
     # 3. SASRecTrainerのインスタンス化
     trainer_model = SASRecTrainer(
-        num_users=dm.num_items + 1, # SASRecではユーザー数は直接使われないが、一応渡す
         num_items=dm.num_items,
         hidden_size=cfg.student.hidden_size,
         num_heads=cfg.student.num_heads,
@@ -92,7 +91,6 @@ def run_student_baseline(cfg: DictConfig):
         logger.info(f"Loading best model from {best_model_path} for evaluation.")
         loaded_model = SASRecTrainer.load_from_checkpoint(
             best_model_path,
-            num_users=dm.num_items + 1, # SASRecではユーザー数は直接使われないが、一応渡す
             num_items=dm.num_items,
             hidden_size=cfg.student.hidden_size,
             num_heads=cfg.student.num_heads,

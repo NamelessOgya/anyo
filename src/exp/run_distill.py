@@ -18,6 +18,7 @@ from src.teacher.trainer_ilora import iLoRATrainer # 追加
 from src.distill.trainer_distill import DistillationTrainer
 from src.distill.selection_policy import AllSamplesPolicy # 現状はこれのみ
 from src.student.evaluator import SASRecEvaluator # 生徒モデルの評価器
+from src.distill.kd_losses import PropensityScoreCalculator # PropensityScoreCalculatorを追加
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,17 @@ def run_distill(cfg: DictConfig):
             padding_item_id=dm.padding_item_id
         )
 
+    # 3.5. 傾向スコア (Propensity Scores) の計算
+    # PropensityScoreCalculatorは訓練データ全体のnext_itemを必要とする
+    train_next_items = [batch["next_item"].item() for batch in dm.train_dataloader()]
+    ps_calculator = PropensityScoreCalculator(
+        item_num=dm.num_items + 1, # num_items + 1 に修正
+        train_next_items=train_next_items,
+        power=cfg.distill.ps_power # 新しい設定項目
+    )
+    propensity_scores = ps_calculator.get_ps()
+    logger.info(f"Propensity scores calculated. Shape: {propensity_scores.shape}")
+
     # 4. 生徒モデル (SASRec) をインスタンス化
     student_model_instance = SASRec(
         num_items=dm.num_items,
@@ -110,7 +122,10 @@ def run_distill(cfg: DictConfig):
         gamma_confidence=cfg.distill.gamma_confidence,
         gamma_consistency=cfg.distill.gamma_consistency,
         candidate_topk=cfg.distill.candidate_topk,
-        ed_weight=cfg.distill.ed_weight
+        ed_weight=cfg.distill.ed_weight,
+        alpha=cfg.distill.alpha,
+        beta=cfg.distill.beta,
+        propensity_scores=propensity_scores
     )
 
     # 6. PyTorch Lightning Trainerのインスタンス化と学習の実行
@@ -184,7 +199,10 @@ def run_distill(cfg: DictConfig):
             gamma_confidence=cfg.distill.gamma_confidence,
             gamma_consistency=cfg.distill.gamma_consistency,
             candidate_topk=cfg.distill.candidate_topk,
-            ed_weight=cfg.distill.ed_weight
+            ed_weight=cfg.distill.ed_weight,
+            alpha=cfg.distill.alpha,
+            beta=cfg.distill.beta,
+            propensity_scores=propensity_scores # ロード時にもpsを渡す
         )
         # 評価器には生徒モデルのみを渡す
         evaluator = SASRecEvaluator(loaded_distill_trainer.student_model, dm, metrics_k=cfg.eval.metrics_k)

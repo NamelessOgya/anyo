@@ -115,7 +115,8 @@ limit_data_rows: 640
     *   `evaluator.py`: メトリクス計算用。
     *   `trainer_baseline.py`: ベースラインの学習ループ。
     *   `exp/run_student_baseline.py`: ベースライン実験を実行するためのエントリポイント。
-3.  **`src/teacher`**: iLoRAのロジックを実装します。これは最も複雑な部分です。
+    *   **注意**: iLoRA教師モデルのゲーティングネットワークで利用するため、このステップで学習したSASRecモデルのチェックポイントを保存してください。
+3.  **`src/teacher`**: iLoRAのロジックを実装します。この際、**ステップ2で学習したSASRecモデルのチェックポイントをロードして利用**するようにします。これは最も複雑な部分です。
 4.  **`src/distill`**: 教師モデルと生徒モデルの両方に依存する蒸留ロジックを実装します。
 
 ---
@@ -192,6 +193,19 @@ limit_data_rows: 640
 
 これらの修正により、`DistillationTrainer`の`training_step`が正常に動作し、関連するテストがパスするようになった。
 
+### 8.4. DLLM2Rec 埋め込み蒸留ロジックの再現性向上
+
+DLLM2Recの参照実装の埋め込み蒸留ロジックをより忠実に再現するため、`src/student/models.py` の `SASRec` モデルを修正しました。
+
+**修正内容:**
+*   `src/student/models.py` の `SASRec` クラスの `_get_last_item_representation` メソッドにおいて、`item_embeddings` と `position_embeddings` を加算した後の `input_embeddings` に、教師モデルの埋め込み (`teacher_embeddings`) を直接加算するように変更しました。
+*   これにより、DLLM2Recの参照実装 (`ref_repositories/DLLM2Rec/main.py`) と同様に、LLMからの埋め込みが生徒モデルの入力埋め込みに直接注入されるようになりました。
+*   `teacher_embeddings` の次元拡張も適切に行われるように修正し、`RuntimeError` を解消しました。
+
+**結果:**
+*   `tests/student/test_models.py` および `tests/distill/test_trainer_distill.py` の関連テストがすべてパスすることを確認しました。
+*   `docs/specification/06_difference_from_asis.md` の「項目: 埋め込み蒸留損失」の評価結果を更新し、再現性が向上したことを反映しました。
+
 ---
 
 ## 9. 評価・時間計測
@@ -257,3 +271,41 @@ limit_data_rows: 640
     *   `KLDivergencePolicy` のテストケースにおいて、`F.kl_div` の `log_target=True` の使用法が誤っていたため、`teacher_logits` も `F.log_softmax` で処理するように修正しました。これにより、KLダイバージェンスの計算が意図通りに行われ、テストが安定してパスするようになりました。
 
 上記の結果、データ関連処理の強化と選択的蒸留ポリシーの高度化が完了し、関連するすべての単体テストがパスする状態になりました。
+
+### 8.4. DLLM2Rec DRO損失の再現
+
+DLLM2RecのDRO (Distributionally Robust Optimization) 損失を再現するための実装を行いました。
+
+*   **`src/distill/kd_losses.py` の更新**:
+    *   `PropensityScoreCalculator` クラスを追加し、訓練データにおけるアイテムの出現頻度に基づいて傾向スコア (`ps`) を計算するようにしました。
+    *   `DROLoss` クラスを追加し、DLLM2Recの参照実装 (`ref_repositories/DLLM2Rec/main.py`) に基づいてDRO損失を計算するようにしました。
+    *   `WeightedBCELoss` クラスを修正し、`alpha` (DRO損失の重み)、`beta` (ロバスト半径)、`ps` を受け取るように変更しました。`alpha > 0` の場合、ランキング蒸留の各候補アイテムに対するBCE損失計算時に、内部でDRO損失も計算し、重み付けして結合するようにしました。
+*   **`src/distill/trainer_distill.py` の更新**:
+    *   `DistillationTrainer` の `__init__` メソッドに `alpha`, `beta`, `propensity_scores` パラメータを追加しました。
+    *   `alpha > 0` の場合、`DROLoss` のインスタンスを生成し、メインのCross-Entropy損失にDRO損失を結合するようにしました。
+    *   `WeightedBCELoss` のインスタンス化時に、DRO関連のパラメータ (`alpha`, `ps`, `beta`) を渡すように変更しました。
+*   **`src/exp/run_distill.py` の更新**:
+    *   `dm.train_dataloader()` から訓練データの `next_item` を抽出し、`PropensityScoreCalculator` を用いて傾向スコア (`propensity_scores`) を計算するようにしました。
+    *   `DistillationTrainer` のインスタンス化時および `load_from_checkpoint` 時に、計算された `propensity_scores` と設定ファイルからの `alpha`, `beta` を渡すように変更しました。
+*   **`conf/distill/dllm2rec.yaml` の更新**:
+    *   `alpha` (DRO損失の重み)、`beta` (DROロバスト半径)、`ps_power` (傾向スコア計算のべき乗) の新しい設定項目を追加しました。
+*   **テストの追加と修正**:
+    *   `tests/distill/test_kd_losses.py` に `PropensityScoreCalculator` と `DROLoss` の単体テスト、およびDROの有無による `WeightedBCELoss` のテストを追加しました。
+    *   `tests/distill/test_trainer_distill.py` を修正し、DROの有無を切り替えて `DistillationTrainer` の `training_step` が正しく動作することを確認するテストを追加しました。
+
+これらの変更により、DLLM2RecのDRO損失ロジックが本プロジェクトに統合され、関連するテストもパスする状態になりました。
+
+#### 5.5.2. 現在の課題と次のエージェントへの依頼事項
+
+iLoRAロジックのリファクタリングと関連するテストの修正は完了し、教師モデルの学習が正常に実行されることを確認しました。
+また、DLLM2RecのDRO損失の再現も完了しました。
+
+*   **iLoRA教師モデルにおけるSASRecの利用方法の変更**:
+    *   iLoRA教師モデルのゲーティングネットワークで利用するSASRecモデルは、**事前に学習済みの生徒モデルのチェックポイントをロードして利用**するように変更します。これにより、参照実装の意図と、SASRecの学習済みモデルを有効活用するという方針に合致させます。
+    *   これに伴い、`src/teacher/factory.py` を修正し、`rec_model_checkpoint_path` を設定で受け取り、そこからSASRecモデルをロードして凍結するようにします。
+    *   `conf/teacher/ilora.yaml` に `rec_model_checkpoint_path` の設定項目を追加します。
+*   **DLLM2Recの残りのロジックの再現性向上**:
+    *   DLLM2Recの残りのロジック（例: `lam` パラメータによるランキング蒸留損失の重み付け、`beta2` パラメータの利用など）の再現性向上に着手してください。特に、`06_difference_from_asis.md` に記載されているDLLM2Recのロジック差分を参考に、既存実装を修正してください。
+*   **ドキュメントの継続的な更新**:
+    *   今後の実装や変更についても、`docs/specification/02_development_notes_ja.md` および `docs/specification/06_difference_from_asis.md` を含め、関連するドキュメントを更新してください。
+

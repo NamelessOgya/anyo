@@ -93,6 +93,7 @@ docker exec ilora-dev-container bash -c "PYTHONPATH=/workspace poetry run python
     -   [x] **プロンプトエンジニアリング**: アイテム履歴を自然言語プロンプトに変換するロジックの実装。
     -   [x] **動的なLoRAアダプターの結合**: `peft`ライブラリを活用した、より効率的なフォワードパスの実装。
     -   [x] **出力のマッピング**: LLMの出力ロジットから推薦アイテムのスコアを計算するロジックの洗練。
+    -   [ ] **SASRecモデルの利用方法の変更**: iLoRA教師モデルのゲーティングネットワークで利用するSASRecモデルを、**事前に学習済みの生徒モデルのチェックポイントからロードして利用**するように変更する。
 
 2.  **データ関連処理の強化**:
     -   [x] **データブリッジ (`src/distill/data_bridge.py`) の実装**: 教師モデルと生徒モデル間のデータ形式の違いを吸収する層の実装。
@@ -104,18 +105,20 @@ docker exec ilora-dev-container bash -c "PYTHONPATH=/workspace poetry run python
 
 ### 4.2. 次にすべきこと
 
-上記のタスクリストに基づき、**次に着手すべき最優先タスクは「DLLM2Rec DRO損失の再現」**です。
+上記のタスクリストに基づき、**DLLM2Rec DRO損失の再現は完了しました。**
 
-具体的には、`docs/specification/06_difference_from_asis.md` に記載されているDLLM2Recのロジック差分を参考に、既存実装を修正してください。特に、DLLM2Recのランキング蒸留における複雑な重み付けロジックや、埋め込み蒸留の適用方法については、先行研究の意図を深く理解し、再現性を高めることを優先してください。
+次のエージェントは、以下のタスクに着手してください。
 
-*   **DLLM2Rec DRO損失の再現**:
-    *   `ref_repositories/DLLM2Rec/main.py` に実装されているDRO損失を `src/distill/kd_losses.py` に追加し、`src/distill/trainer_distill.py` で使用するように修正してください。
-*   **設定ファイルの更新**:
-    *   DLLM2Recのロジック再現に必要な新しいハイパーパラメータ（例: `ed_weight`, `lam`, `gamma_position` など）を `conf/distill/dllm2rec.yaml` に追加し、`src/distill/trainer_distill.py` のコンストラクタで受け取るように修正してください。
-*   **テストの追加と修正**:
-    *   DLLM2Recロジックの変更に伴い、`tests/distill/test_kd_losses.py` および `tests/distill/test_trainer_distill.py` に新しいテストケースを追加し、既存のテストケースを修正して、変更が正しく機能することを確認してください。
+*   **iLoRA教師モデルにおけるSASRecの利用方法の変更**:
+    *   iLoRA教師モデルのゲーティングネットワークで利用するSASRecモデルは、**事前に学習済みの生徒モデルのチェックポイントをロードして利用**するように変更します。これにより、参照実装の意図と、SASRecの学習済みモデルを有効活用するという方針に合致させます。
+    *   これに伴い、`src/teacher/factory.py` を修正し、`rec_model_checkpoint_path` を設定で受け取り、そこからSASRecモデルをロードして凍結するようにします。
+    *   `conf/teacher/ilora.yaml` に `rec_model_checkpoint_path` の設定項目を追加します。
+*   **DLLM2Recの残りのロジックの再現性向上**:
+    *   DLLM2Recの残りのロジック（例: `lam` パラメータによるランキング蒸留損失の重み付け、`beta2` パラメータの利用など）の再現性向上に着手してください。特に、`06_difference_from_asis.md` に記載されているDLLM2Recのロジック差分を参考に、既存実装を修正してください。
 *   **ドキュメントの継続的な更新**:
-    *   今後の実装や変更についても、`docs/specification/02_development_notes_ja.md` に記録し、必要に応じて他の仕様書も更新してください。
+    *   今後の実装や変更についても、`docs/specification/02_development_notes_ja.md` および `docs/specification/06_difference_from_asis.md` を含め、関連するドキュメントを更新してください。
+
+---
 
 ---
 
@@ -184,13 +187,12 @@ docker exec ilora-dev-container bash -c "PYTHONPATH=/workspace poetry run python
 #### 5.5.2. 現在の課題と次のエージェントへの依頼事項
 
 iLoRAロジックのリファクタリングと関連するテストの修正は完了し、教師モデルの学習が正常に実行されることを確認しました。
-次のエージェントは、DLLM2Recロジックの再現性向上に着手してください。
+また、DLLM2RecのDRO損失の再現も完了しました。
 
 *   **DLLM2Rec DRO損失の再現**:
-    *   `ref_repositories/DLLM2Rec/main.py` に実装されているDRO損失を `src/distill/kd_losses.py` に追加し、`src/distill/trainer_distill.py` で使用するように修正してください。
-*   **設定ファイルの更新**:
-    *   DLLM2Recのロジック再現に必要な新しいハイパーパラメータ（例: `ed_weight`, `lam`, `gamma_position` など）を `conf/distill/dllm2rec.yaml` に追加し、`src/distill/trainer_distill.py` のコンストラクタで受け取るように修正してください。
-*   **テストの追加と修正**:
-    *   DLLM2Recロジックの変更に伴い、`tests/distill/test_kd_losses.py` および `tests/distill/test_trainer_distill.py` に新しいテストケースを追加し、既存のテストケースを修正して、変更が正しく機能することを確認してください。
-*   **ドキュメントの継続的な更新**:
-    *   今後の実装や変更についても、`docs/specification/02_development_notes_ja.md` に記録し、必要に応じて他の仕様書も更新してください。
+    *   [x] `ref_repositories/DLLM2Rec/main.py` に実装されているDRO損失を `src/distill/kd_losses.py` に追加し、`src/distill/trainer_distill.py` で使用するように修正してください。
+    *   [x] DLLM2Recのロジック再現に必要な新しいハイパーパラメータ（例: `ed_weight`, `lam`, `gamma_position` など）を `conf/distill/dllm2rec.yaml` に追加し、`src/distill/trainer_distill.py` のコンストラクタで受け取るように修正してください。
+    *   [x] DLLM2Recロジックの変更に伴い、`tests/distill/test_kd_losses.py` および `tests/distill/test_trainer_distill.py` に新しいテストケースを追加し、既存のテストケースを修正して、変更が正しく機能することを確認してください。
+    *   [x] ドキュメントの継続的な更新 (`docs/specification/02_development_notes_ja.md` および `docs/specification/06_difference_from_asis.md`) を行いました。
+
+次のエージェントは、DLLM2Recの残りのロジック（例: `lam` パラメータによるランキング蒸留損失の重み付け、`beta2` パラメータの利用など）の再現性向上に着手してください。特に、`06_difference_from_asis.md` に記載されているDLLM2Recのロジック差分を参考に、既存実装を修正してください。

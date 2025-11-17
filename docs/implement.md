@@ -4,7 +4,7 @@
 - core/ : ログ・メトリクス・time計測まで実装済み
 - teacher/ilora_model.py : LoRAエキスパート定義まで、ゲート合成はTODO
 - student/models.py : SASRec 実装済み, Movielensで簡易テスト済み
-- distill/kd_losses.py : ランキング蒸留のみ実装, embedding蒸留は未完 など
+- distill/kd_losses.py : ランキング蒸留、埋め込み蒸留、DRO損失を実装済み。DLLM2Recロジックは完了。
 
 ## 2. コンテナ・環境
 - Python: 3.x

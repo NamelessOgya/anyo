@@ -8,7 +8,7 @@ from typing import Dict
 from transformers import AutoModelForCausalLM, AutoTokenizer # LLMとTokenizerをロードするために追加
 from src.student.models import SASRec # Import SASRec
 
-def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item_id_to_name: Dict[int, str], padding_item_id: int) -> TeacherModel:
+def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item_id_to_name: Dict[int, str], padding_item_id: int, candidate_topk: int) -> TeacherModel:
     """
     Hydraの設定に基づいて教師モデルのインスタンスを生成します。
 
@@ -18,6 +18,7 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
         max_seq_len (int): シーケンスの最大長。
         item_id_to_name (Dict[int, str]): アイテムIDから名前へのマッピング。
         padding_item_id (int): パディング用のアイテムID。
+        candidate_topk (int): 候補アイテムのトップK。
 
     Returns:
         TeacherModel: 構築された教師モデルのインスタンス。
@@ -38,14 +39,36 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
         llm.resize_token_embeddings(len(tokenizer)) # トークン埋め込み層のサイズを調整
 
         # rec_modelのロード
-        rec_model = SASRec(
-            num_items=num_items,
-            hidden_size=cfg.student.hidden_size,
-            num_heads=cfg.student.num_heads,
-            num_layers=cfg.student.num_layers,
-            dropout_rate=cfg.student.dropout_rate,
-            max_seq_len=max_seq_len,
-        ).to(device)
+        # Check if a pre-trained rec_model checkpoint path is provided
+        if cfg.teacher.get("rec_model_checkpoint_path"):
+            print(f"Loading pre-trained SASRec model from {cfg.teacher.rec_model_checkpoint_path}")
+            # Instantiate SASRec model first to load state_dict into it
+            rec_model = SASRec(
+                num_items=num_items,
+                hidden_size=cfg.student.hidden_size,
+                num_heads=cfg.student.num_heads,
+                num_layers=cfg.student.num_layers,
+                dropout_rate=cfg.student.dropout_rate,
+                max_seq_len=max_seq_len,
+            ).to(device)
+            # Load the state_dict
+            rec_model.load_state_dict(torch.load(cfg.teacher.rec_model_checkpoint_path, map_location=device))
+            rec_model.eval() # Set to eval mode
+        else:
+            print("No pre-trained SASRec checkpoint path provided. Initializing a new SASRec model.")
+            rec_model = SASRec(
+                num_items=num_items,
+                hidden_size=cfg.student.hidden_size,
+                num_heads=cfg.student.num_heads,
+                num_layers=cfg.student.num_layers,
+                dropout_rate=cfg.student.dropout_rate,
+                max_seq_len=max_seq_len,
+            ).to(device)
+        
+        # Freeze rec_model parameters
+        for param in rec_model.parameters():
+            param.requires_grad = False
+        print("SASRec model parameters frozen.")
         
         # projectorのインスタンス化
         projector = MLPProjector(
@@ -66,7 +89,8 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
             hidden_size=cfg.teacher.hidden_size,
             dropout_rate=cfg.teacher.dropout_rate,
             rec_model=rec_model, # Pass rec_model
-            projector=projector # Pass projector
+            projector=projector, # Pass projector
+            candidate_topk=candidate_topk # Pass candidate_topk
         )
         return model
     else:

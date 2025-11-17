@@ -48,6 +48,13 @@ class SASRec(nn.Module):
         item_embeddings = self.item_embeddings(item_seq)
 
 
+        # 位置埋め込み
+        positions = torch.arange(self.max_seq_len, device=item_seq.device).unsqueeze(0)
+        position_embeddings = self.position_embeddings(positions)
+
+        # 埋め込みの合計
+        input_embeddings = item_embeddings + position_embeddings
+
         # Add teacher embeddings for distillation
         if teacher_embeddings is not None and self.ed_weight > 0:
             if self.teacher_embedding_projection:
@@ -55,13 +62,10 @@ class SASRec(nn.Module):
             # Ensure teacher_embeddings are detached before adding to avoid breaking student's grad flow
             # Even if already no_grad, explicit detach can sometimes help autograd
             teacher_embeddings_detached = teacher_embeddings.detach()
-            item_embeddings = item_embeddings + self.ed_weight * teacher_embeddings_detached.unsqueeze(1)
-        # 位置埋め込み
-        positions = torch.arange(self.max_seq_len, device=item_seq.device).unsqueeze(0)
-        position_embeddings = self.position_embeddings(positions)
-
-        # 埋め込みの合計
-        input_embeddings = item_embeddings + position_embeddings
+            # teacher_embeddings_detached を (batch_size, max_seq_len, hidden_size) に拡張
+            teacher_embeddings_expanded = teacher_embeddings_detached.unsqueeze(1).expand(-1, self.max_seq_len, -1)
+            input_embeddings = input_embeddings + self.ed_weight * teacher_embeddings_expanded
+        
         input_embeddings = self.dropout(input_embeddings)
 
         # アテンションマスクの作成

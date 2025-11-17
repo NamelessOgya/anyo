@@ -75,11 +75,12 @@ def run_teacher(cfg: DictConfig):
 
     # 3. create_teacher_model を使用して iLoRAModel をインスタンス化
     ilora_model_instance = create_teacher_model(
-        cfg, 
-        num_items=dm.num_items, 
+        cfg,
+        num_items=dm.num_items,
         max_seq_len=cfg.student.max_seq_len,
         item_id_to_name=dm.item_id_to_name,
         padding_item_id=dm.padding_item_id,
+        candidate_topk=cfg.distill.candidate_topk
     )
 
     # 4. iLoRATrainerのインスタンス化

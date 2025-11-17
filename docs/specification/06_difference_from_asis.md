@@ -64,10 +64,10 @@
     *   **再現性**: 参照実装と同様に、推薦モデルの埋め込みをLLMの入力埋め込みに直接注入する方式が再現されています。
 
 #### 項目: 学習対象
-*   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/model_interface.py` の `configure_optimizers` で、`projector`、`router`、そして `llama_model` のパラメータ（`"gating" not in n` でフィルタリング）を学習対象としている。これにより、LoRAパラメータとゲーティングネットワークのパラメータのみが学習される。損失関数は `MInterface` の `configure_loss` で `lm` (Language Model) ロス、つまり次アイテム予測のCross-Entropy Lossを使用。
-*   **本プロジェクトの実装**: `iLoRAModel` の `__init__` でカスタムMoE LoRAレイヤーを使用しており、LoRAパラメータのみが学習可能に設定されている。`gating_network` と `output_layer` も `nn.Module` なので、これらも学習対象となる。損失関数は `src/teacher/trainer_ilora.py` で `torch.nn.CrossEntropyLoss()` を使用。
+*   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/model_interface.py` の `configure_optimizers` で、`projector`、`router`、そして `llama_model` のパラメータ（`"gating" not in n` でフィルタリング）を学習対象としている。これにより、LoRAパラメータとゲーティングネットワークのパラメータのみが学習される。**また、ゲーティングネットワークの入力となる推薦モデル（SASRec）は事前に学習済みであり、そのパラメータは凍結されている。**損失関数は `MInterface` の `configure_loss` で `lm` (Language Model) ロス、つまり次アイテム予測のCross-Entropy Lossを使用。
+*   **本プロジェクトの実装**: `iLoRAModel` の `__init__` でカスタムMoE LoRAレイヤーを使用しており、LoRAパラメータのみが学習可能に設定されている。`gating_network` と `output_layer` も `nn.Module` なので、これらも学習対象となる。**ゲーティングネットワークの入力となる推薦モデル（SASRec）は、事前に学習済みのチェックポイントからロードされ、そのパラメータは凍結される。**損失関数は `src/teacher/trainer_ilora.py` で `torch.nn.CrossEntropyLoss()` を使用。
 *   **差分と再現性評価**:
-    *   **再現性**: LoRAパラメータとゲーティングネットワークのパラメータが学習対象となり、LLMの基盤モデルがフリーズされるという点は再現されています。損失関数も次アイテム予測のCross-Entropy Lossを使用しており、この点も再現されています。
+    *   **再現性**: LoRAパラメータとゲーティングネットワークのパラメータが学習対象となり、LLMの基盤モデルがフリーズされるという点は再現されています。損失関数も次アイテム予測のCross-Entropy Lossを使用しており、この点も再現されています。**ゲーティングネットワークに利用される推薦モデルが事前に学習済みであり、凍結される点も参照実装と一致します。**
 
 #### 項目: 教師出力
 *   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/model_interface.py` の `generate` メソッドや `validation_step`, `test_step` で生成された出力が、最終的にランキングスコアや埋め込みに変換されると推測される。
@@ -102,26 +102,32 @@
 ### 3.3. 評価結果
 
 #### 項目: ランキング蒸留損失
-*   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` では、LLMからの候補アイテム (`all_candidate`) と信頼度 (`llm_confidence`) を使用し、ポジション、共通アイテム、信頼度に基づく重み (`weight_rank`, `weight_com`, `weight_confidence`) を合成して、各候補アイテムに対するBCE損失を重み付け加算する形式。
-*   **本プロジェクトの実装**: `src/distill/kd_losses.py` の `RankingDistillationLoss` は、教師モデルと生徒モデルのロジットをソフトターゲットとしてKLダイバージェンスを計算。温度 `T` を使用してソフトマックスを適用し、KLダイバージェンスを計算。
+*   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` では、LLMからの候補アイテム (`all_candidate`) と信頼度 (`llm_confidence`) を使用し、ポジション、共通アイテム、信頼度に基づく重み (`weight_rank`, `weight_com`, `weight_confidence`) を合成して、各候補アイテムに対するBCE損失を重み付け加算する形式。さらに、このBCE損失にはDRO損失が結合される。
+*   **本プロジェクトの実装**: `src/distill/kd_losses.py` の `WeightedBCELoss` は、参照実装の重み付けBCE損失のロジックを再現し、各候補アイテムに対するBCE損失を計算する。`alpha > 0` の場合、このBCE損失にDRO損失が結合される。`src/distill/trainer_distill.py` では、`ranking_loss_weight` でこの結合された損失をスケーリングする。
 *   **差分と再現性評価**:
-    *   **損失の形式**: 参照実装は重み付けされたBCE損失の合計ですが、本プロジェクトはKLダイバージェンスです。DLLM2Recの論文では、ランキング蒸留にKLダイバージェンスを使用するアプローチも一般的ですが、参照実装のコードはより複雑な重み付けBCE損失を採用しています。
-    *   **重み付け**: 参照実装はポジション、共通アイテム、信頼度に基づく複雑な重み付けを行っていますが、本プロジェクトの `RankingDistillationLoss` はそのような重み付けを直接行いません。`src/distill/trainer_distill.py` でも、`ranking_loss_weight` という単一の重みでランキング蒸留損失全体をスケーリングしています。
-    *   **再現性**: ランキング蒸留の目的（教師のランキング情報を生徒に伝える）は共通していますが、その具体的な損失関数と重み付けロジックが大きく異なります。特に、参照実装の複雑な重み付けはDLLM2Recの重要な特徴の一つであるため、この部分の再現性の違いは大きいと考えられます。
+    *   **損失の形式**: 本プロジェクトの `WeightedBCELoss` は、参照実装の重み付けBCE損失の形式を再現し、DRO損失も結合する。以前のKLダイバージェンスベースの `RankingDistillationLoss` は使用しない。
+    *   **重み付け**: 参照実装と同様に、ポジション、共通アイテム、信頼度に基づく重み付けを `src/distill/trainer_distill.py` で計算し、`WeightedBCELoss` に渡すことで再現されている。
+    *   **再現性**: 参照実装のランキング蒸留ロジック（重み付けBCE損失とDRO損失の結合）は、本プロジェクトで高いレベルで再現されている。
 
 #### 項目: 埋め込み蒸留損失
 *   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` の `GRU`, `Caser`, `SASRec` モデルの `forward` メソッド内で、`input_emb = input_emb + args.ed_weight * llm_emb` のように、LLMからの埋め込みを推薦モデルのアイテム埋め込みに直接加算することで、埋め込み空間を近づけようとしている。
-*   **本プロジェクトの実装**: `src/distill/kd_losses.py` の `EmbeddingDistillationLoss` は、`MSELoss` または `CosineEmbeddingLoss` を使用して、生徒モデルの埋め込みと教師モデルの埋め込み間の距離を直接最小化。
+*   **本プロジェクトの実装**: `src/student/models.py` の `SASRec` モデルの `_get_last_item_representation` メソッド内で、`item_embeddings` と `position_embeddings` を加算した `input_embeddings` に、教師モデルの埋め込み (`teacher_embeddings`) を直接加算するロジックを実装。`src/distill/kd_losses.py` の `EmbeddingDistillationLoss` は、この直接加算ロジックとは独立して、生徒モデルの出力埋め込みと教師モデルの出力埋め込みの距離を最小化する損失として引き続き使用される。
 *   **差分と再現性評価**:
-    *   **損失の適用方法**: 参照実装はLLM埋め込みを生徒モデルの入力埋め込みに直接加算することで埋め込み蒸留を実現していますが、本プロジェクトは別途損失関数を定義し、生徒モデルの出力埋め込みと教師モデルの出力埋め込みの距離を計算しています。これは実装アプローチの違いであり、最終的な目的（埋め込み空間を近づける）は同じですが、DLLM2Recの参照実装の「加算」というロジックとは異なります。
-    *   **再現性**: 埋め込み空間を近づけるという目的は共通していますが、その実現方法が異なります。
+    *   **損失の適用方法**: 参照実装と同様に、LLM埋め込みを生徒モデルの入力埋め込みに直接注入するロジックを `src/student/models.py` に実装しました。これにより、DLLM2Recの埋め込み蒸留の主要なロジックが再現されました。`EmbeddingDistillationLoss` は、この直接加算の効果を補完する形で、出力埋め込みレベルでの蒸留を継続します。
+    *   **再現性**: DLLM2Recの埋め込み蒸留の主要なロジックは高いレベルで再現されました。
+
+#### 項目: DRO損失
+*   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` では、アイテムの出現頻度に基づく傾向スコア (`ps`) を用いて、DRO損失 (`loss_dro`) を計算し、メインのBCE損失およびランキング蒸留損失に結合している。DRO損失の計算には `model_output * model_output` や `(model_output - 1) * (model_output - 1)` といったロジットの二乗項が含まれる。
+*   **本プロジェクトの実装**: `src/distill/kd_losses.py` に `PropensityScoreCalculator` と `DROLoss` を実装。`PropensityScoreCalculator` は参照実装と同様に傾向スコアを計算。`DROLoss` は参照実装のDRO損失計算ロジックを再現し、数値安定性のために `exp` の引数と `torch.log` の引数をクランプしている。`src/distill/trainer_distill.py` では、メインのCross-Entropy損失と `WeightedBCELoss` (ランキング蒸留損失) の両方にこのDRO損失を結合している。
+*   **差分と再現性評価**:
+    *   **再現性**: 参照実装のDRO損失計算ロジックは、数値安定性のためのクランプ処理を除き、高いレベルで再現されている。傾向スコアの計算方法、DRO損失の数式、およびメインタスク損失とランキング蒸留損失への結合方法が一致している。
 
 #### 項目: 損失の合成
 *   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` の学習ループ内で、基本的なBCE損失に、dros loss (`args.alpha * torch.mean(loss_dro)`)、そしてランキング蒸留損失 (`args.lam * (loss_all_rd)`) が加算され、複数の損失が合成されている。
-*   **本プロジェクトの実装**: `src/distill/trainer_distill.py` の `DistillationTrainer` クラスの `training_step` で、`ranking_kd_loss` (`ranking_loss_weight` で重み付け)、`embedding_kd_loss` (`embedding_loss_weight` で重み付け)、`ce_loss` (`ce_loss_weight` で重み付け) の3つの損失が合成されている。
+*   **本プロジェクトの実装**: `src/distill/trainer_distill.py` の `DistillationTrainer` クラスの `training_step` で、通常のCross-Entropy LossにDRO損失が結合され、さらに `ranking_kd_loss` (`ranking_loss_weight` で重み付け)、`embedding_kd_loss` (`embedding_loss_weight` で重み付け) が合成されている。
 *   **差分と再現性評価**:
-    *   **損失の種類**: 参照実装のdros lossは含まれていません。代わりに、本プロジェクトでは通常のCross-Entropy Lossを生徒モデルのタスク損失として使用しています。
-    *   **再現性**: 複数の損失を重み付けして合成するという点は共通していますが、その構成要素が異なります。
+    *   **損失の種類**: 参照実装と同様に、メインタスク損失（Cross-Entropy）とランキング蒸留損失の両方にDRO損失が結合され、さらに埋め込み蒸留損失が合成される。
+    *   **再現性**: 複数の損失を重み付けして合成するという点、およびDRO損失の適用箇所において、参照実装のロジックが再現されている。
 
 #### 項目: 蒸留サンプル選択ポリシー
 *   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` には、蒸留サンプルを選択する明示的なポリシーは確認できず、すべてのサンプルに対して損失を計算している。

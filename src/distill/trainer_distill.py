@@ -1,11 +1,11 @@
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from src.student.models import SASRec
 from src.teacher.interfaces import TeacherModel
-from src.distill.kd_losses import RankingDistillationLoss, EmbeddingDistillationLoss, WeightedBCELoss
+from src.distill.kd_losses import RankingDistillationLoss, EmbeddingDistillationLoss, WeightedBCELoss, DROLoss, PropensityScoreCalculator
 from src.distill.selection_policy import SelectionPolicy
 from src.core.metrics import calculate_metrics
 
@@ -27,7 +27,11 @@ class DistillationTrainer(pl.LightningModule):
                  gamma_confidence: float,
                  gamma_consistency: float,
                  candidate_topk: int,
-                 ed_weight: float):
+                 ed_weight: float,
+                 alpha: float = 0.0, # DRO loss weight
+                 beta: float = 1.0,  # DRO robust radius
+                 propensity_scores: Optional[torch.Tensor] = None # Pre-calculated ps
+                 ):
         super().__init__()
         self.student_model_module = student_model # Registered as a submodule
         self.teacher_model = teacher_model
@@ -44,12 +48,21 @@ class DistillationTrainer(pl.LightningModule):
         self.gamma_consistency = gamma_consistency
         self.candidate_topk = candidate_topk
         self.student_model_module.ed_weight = ed_weight
+        self.alpha = alpha
+        self.beta = beta
+        self.propensity_scores = propensity_scores
         self.student_model_module.train() # Explicitly set to train mode here
 
         # 損失関数
-        self.ranking_kd_loss_fn = WeightedBCELoss()
+        self.ranking_kd_loss_fn = WeightedBCELoss(alpha=self.alpha, ps=self.propensity_scores, beta=self.beta)
         self.embedding_kd_loss_fn = EmbeddingDistillationLoss(loss_type=embedding_loss_type)
         self.ce_loss_fn = torch.nn.CrossEntropyLoss()
+        if self.alpha > 0:
+            if self.propensity_scores is None:
+                raise ValueError("Propensity scores must be provided if alpha > 0 for DROLoss.")
+            self.dro_loss_fn = DROLoss(ps=self.propensity_scores, beta=self.beta)
+        else:
+            self.dro_loss_fn = None
 
         # 教師モデルは評価モードに設定し、パラメータをフリーズ
         self.teacher_model.eval()
@@ -141,9 +154,13 @@ class DistillationTrainer(pl.LightningModule):
             total_loss += self.embedding_loss_weight * embedding_kd_loss
             self.log('train_embedding_kd_loss', embedding_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
-        # 4.3. 元のタスク損失 (Cross-Entropy)
+        # 4.3. 元のタスク損失 (Cross-Entropy + DRO)
         if self.ce_loss_weight > 0:
             ce_loss = self.ce_loss_fn(student_logits, next_item)
+            if self.alpha > 0 and self.dro_loss_fn is not None:
+                dro_loss = self.dro_loss_fn(student_logits, next_item.unsqueeze(1))
+                ce_loss = ce_loss + self.alpha * dro_loss
+                self.log('train_ce_dro_loss', dro_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
             total_loss += self.ce_loss_weight * ce_loss
             self.log('train_ce_loss', ce_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         self.log('train_total_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
