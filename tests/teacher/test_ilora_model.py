@@ -58,7 +58,8 @@ def ilora_model_and_data():
         hidden_size=hidden_size,
         dropout_rate=dropout_rate,
         rec_model=dummy_rec_model,
-        projector=dummy_projector
+        projector=dummy_projector,
+        candidate_topk=10  # Add dummy value
     ).to(device)
 
     # ダミーのバッチデータを作成

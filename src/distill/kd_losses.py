@@ -63,6 +63,7 @@ class EmbeddingDistillationLoss(nn.Module):
             target = torch.ones(student_embeddings.size(0), device=student_embeddings.device)
             loss = self.loss_fn(student_embeddings, teacher_embeddings, target)
         else: # mse
+            loss = self.loss_fn(student_embeddings, teacher_embeddings)
         return loss
 
 class WeightedBCELoss(nn.Module):

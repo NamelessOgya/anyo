@@ -1,7 +1,7 @@
 # テストケース仕様書
 
 このドキュメントは、本プロジェクトの各モジュールに対するテストケースを定義します。
-**現状、すべてのテストがパスしており (`24 passed`)、プロジェクトの基本的な健全性が担保されています。**
+**現状、一部のテストが失敗しています。詳細は各セクションを参照してください。**
 
 ---
 
@@ -53,7 +53,7 @@
   - 返される値が `None` ではないことを確認する。
 
 - **`test_get_git_info_outside_repo`**:
-  - Gitリポジトリ外（またはGitがインストールされていない環境）で `get_git_info()` を呼び出した場合、すべての値が `None` となることを確認する（要モック）。
+  - Gitリポジリ外（またはGitがインストールされていない環境）で `get_git_info()` を呼び出した場合、すべての値が `None` となることを確認する（要モック）。
 
 ### 1.5. `test_metrics.py` (`src/core/metrics.py` のテスト)
 
@@ -118,10 +118,11 @@
 - **`test_training_step`**:
   - `training_step` がスカラーの損失テンソルを返すことを確認する。
   - 損失が計算され、`nan` や `inf` にならないことを確認する。
+  - **更新:** 教師モデルのLLMパラメータが学習中に更新されないことを確認するテストが追加され、現在パスしています。
 
 ---
 
-## 4. `src/distill` (完了: 5/5 passed)
+## 4. `src/distill` (一部失敗: 4/5 passed)
 
 ### 4.1. `test_kd_losses.py` (`src/distill/kd_losses.py` のテスト)
 
@@ -143,6 +144,7 @@
 ### 4.3. `test_trainer_distill.py` (`src/distill/trainer_distill.py` のテスト)
 
 - **`test_distill_training_step`**:
+  - **現状:** `RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn` により失敗しています。
   - `training_step` がスカラーの損失テンソルを返すことを確認する。
   - 各損失（ranking, embedding, ce）が正しく計算され、合計損失に反映されることを確認する。
   - 教師モデルのパラメータが学習中に更新されないことを確認する。

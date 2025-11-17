@@ -137,6 +137,7 @@ class SASRecDataModule(pl.LightningDataModule):
         
         self.item_id_to_name = self._get_movie_id2name(item_path)
         self.num_items = max(self.item_id_to_name.keys())
+        self.padding_item_id = self.num_items + 1 # Set padding_item_id here
 
         # トークナイザーが渡されていない場合、LLMモデル名からロード
         if self.tokenizer is None and self.llm_model_name:
@@ -245,6 +246,31 @@ class SASRecDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
         )
+
+    def calculate_propensity_score(self) -> torch.Tensor:
+        """
+        訓練データから各アイテムの傾向スコアを計算します。
+        """
+        if self.train_data is None:
+            raise RuntimeError("Train data is not loaded. Call setup() first.")
+
+        pop_dict = {}
+        for seq_with_ratings in self.train_data['seq']:
+            for item_id, rating in seq_with_ratings:
+                if item_id in pop_dict:
+                    pop_dict[item_id] += 1
+                else:
+                    pop_dict[item_id] = 1
+        
+        # アイテムIDの最大値まで考慮
+        pop = torch.zeros(self.num_items + 1)
+        for item_id, count in pop_dict.items():
+            pop[item_id] = count
+
+        ps = pop + 1
+        ps = ps / torch.sum(ps)
+        ps = torch.pow(ps, 0.05)
+        return ps
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer, AutoModelForCausalLM

@@ -171,13 +171,30 @@ limit_data_rows: 640
 ### `src/exp` の実装状況:
 
 *   `run_teacher.py`: iLoRA教師モデルの学習と評価を実行するためのエントリポイントスクリプトを実装済み。
-*   `run_student_baseline.py`: SASRec生徒モデルのベースライン学習と評価を実行するためのエントリポイントスクリプトを実装済み。
+*   `run_student_baseline.py`: SASRec生徒モデルのベースライン学習と評価を実行するためのエントriポイントスクリプトを実装済み。
 *   `run_distill.py`: 知識蒸留の学習と評価を実行するためのエントリポイントスクリプトを実装済み。
 *   `run_eval_all.py`: 複数の学習済みモデルをまとめて評価するためのエントリポイントスクリプトを実装済み。
 
+### 8.3. `RuntimeError`の解決と`nn.Embedding`の勾配追跡問題
+
+`DistillationTrainer`の`training_step`で発生していた`RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn`について、以下のデバッグと解決を行いました。
+
+**問題の特定:**
+1.  `SASRec`モデルの`nn.Embedding`レイヤーの`weight`パラメータは`requires_grad=True`であったが、`self.item_embeddings(item_seq)`という埋め込みルックアップ操作の出力テンソル（`item_embeddings`）が`requires_grad=False`となっていたことが判明。これが`RuntimeError`の直接的な原因であった。
+2.  `SASRec`の`nn.Embedding`初期化で`padding_idx`を削除し、`num_items + 2`を`num_items + 1`に変更した際に`IndexError`が発生した。これは埋め込みテーブルのサイズとパディングインデックスの不整合が原因であった。
+
+**解決策:**
+1.  **`IndexError`の修正**: `nn.Embedding`の初期化を`nn.Embedding(num_items + 2, hidden_size, padding_idx=padding_item_id)`に戻すことで`IndexError`を解消した。
+2.  **勾配追跡問題の解決**:
+    *   `item_embeddings.requires_grad`が`False`であった問題に対し、`SASRec._get_last_item_representation`内で`item_embeddings = self.item_embeddings(item_seq)`の直後に`item_embeddings.requires_grad_(True)`を追加して勾配追跡を強制した。
+    *   これにより、`RuntimeError: a leaf Variable that requires grad is being used in an in-place operation.`が発生した。これは、`item_embeddings += self.ed_weight * teacher_embeddings_detached.unsqueeze(1)`というインプレース操作が原因であった。
+    *   インプレース操作を`item_embeddings = item_embeddings + self.ed_weight * teacher_embeddings_detached.unsqueeze(1)`というアウトオブプレース操作に変更することで、`RuntimeError`は完全に解決された。
+
+これらの修正により、`DistillationTrainer`の`training_step`が正常に動作し、関連するテストがパスするようになった。
+
 ---
 
-## 7. iLoRAモデルの実装とテスト環境修正
+## 9. 評価・時間計測
 
 `05_handover_notes.md` に記載のあった最優先タスク「教師モデル (`iLoRAModel`) の詳細実装」を完了しました。以下にその概要と、関連する修正作業を記録します。
 

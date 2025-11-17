@@ -26,9 +26,10 @@ class DistillationTrainer(pl.LightningModule):
                  gamma_position: float,
                  gamma_confidence: float,
                  gamma_consistency: float,
-                 candidate_topk: int):
+                 candidate_topk: int,
+                 ed_weight: float):
         super().__init__()
-        self.student_model = student_model
+        self.student_model_module = student_model # Registered as a submodule
         self.teacher_model = teacher_model
         self.num_items = num_items
         self.ranking_loss_weight = ranking_loss_weight
@@ -42,6 +43,8 @@ class DistillationTrainer(pl.LightningModule):
         self.gamma_confidence = gamma_confidence
         self.gamma_consistency = gamma_consistency
         self.candidate_topk = candidate_topk
+        self.student_model_module.ed_weight = ed_weight
+        self.student_model_module.train() # Explicitly set to train mode here
 
         # 損失関数
         self.ranking_kd_loss_fn = WeightedBCELoss()
@@ -56,11 +59,17 @@ class DistillationTrainer(pl.LightningModule):
         # save_hyperparameters() は pl.LightningModule の機能
         # self.save_hyperparameters(ignore=['student_model', 'teacher_model', 'selection_policy'])
 
+    def on_train_start(self):
+        """
+        Called at the beginning of training to ensure student model is in train mode.
+        """
+        self.student_model_module.train()
+
     def forward(self, item_seq, item_seq_len):
-        return self.student_model.predict(item_seq, item_seq_len)
+        return self.student_model_module.predict(item_seq, item_seq_len)
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        self.student_model.train()
+        self.student_model_module.train()
         item_seq = batch["seq"]
         item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
@@ -75,8 +84,8 @@ class DistillationTrainer(pl.LightningModule):
         teacher_confidence = teacher_outputs_raw.get("confidence") # (batch_size, candidate_topk)
 
         # 2. 生徒モデルの出力を取得
-        student_embeddings = self.student_model(item_seq, item_seq_len)
-        student_logits = self.student_model.predict(item_seq, item_seq_len)
+        student_embeddings = self.student_model_module(item_seq, item_seq_len, teacher_embeddings=teacher_embeddings)
+        student_logits = self.student_model_module.predict(item_seq, item_seq_len)
 
         # 3. 蒸留サンプルを選択
         distill_mask = self.selection_policy.select(
@@ -96,9 +105,9 @@ class DistillationTrainer(pl.LightningModule):
             _K = self.candidate_topk
             weight_static = torch.arange(1, _K + 1, dtype=torch.float32, device=self.device)
             weight_static = torch.exp(-weight_static / _lambda) # 1/exp(r)
-            weight_static = weight_static.unsqueeze(0) # [1, k]
+            weight_static = torch.unsqueeze(weight_static, 0) # [1, k]
             weight_static = weight_static.repeat(student_logits.size(0), 1)
-            weight_rank = weight_static / torch.sum(weight_static, dim=1).unsqueeze(1)
+            weight_rank = weight_static / torch.sum(weight_static, dim=1, keepdim=True)
             
             # weight_com
             cf_rank_top = (-student_logits).argsort(dim=1)[:, :_K]
@@ -109,11 +118,11 @@ class DistillationTrainer(pl.LightningModule):
 
             # weight_confidence
             weight_confidence = torch.exp(-teacher_confidence) + 1e-8
-            weight_confidence = weight_confidence / torch.sum(weight_confidence, dim=1).unsqueeze(1)
+            weight_confidence = weight_confidence / torch.sum(weight_confidence, dim=1, keepdim=True)
 
             # weight_fin
             weight_fin = self.gamma_position * weight_rank + self.gamma_confidence * weight_confidence + self.gamma_consistency * weight_com
-            weights = weight_fin / torch.sum(weight_fin, dim=1).unsqueeze(1)
+            weights = weight_fin / torch.sum(weight_fin, dim=1, keepdim=True)
 
             ranking_kd_loss = self.ranking_kd_loss_fn(
                 student_logits[distill_mask],
@@ -137,7 +146,6 @@ class DistillationTrainer(pl.LightningModule):
             ce_loss = self.ce_loss_fn(student_logits, next_item)
             total_loss += self.ce_loss_weight * ce_loss
             self.log('train_ce_loss', ce_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-
         self.log('train_total_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return total_loss
 
@@ -188,7 +196,7 @@ class DistillationTrainer(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
-            self.student_model.parameters(),
+            self.student_model_module.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay
         )

@@ -16,7 +16,7 @@ def sasrec_datamodule():
 
     dm = SASRecDataModule(
         dataset_name="movielens",
-        data_dir="ref_repositories/iLoRA/data/ref",
+        data_dir="ref_repositories/iLoRA/data/ref/movielens",
         batch_size=4,
         max_seq_len=50,
         num_workers=0, # テスト時は0に設定

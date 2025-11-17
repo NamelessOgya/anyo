@@ -82,14 +82,14 @@ def run_distill(cfg: DictConfig):
 
     # 4. 生徒モデル (SASRec) をインスタンス化
     student_model_instance = SASRec(
-        num_users=dm.num_items + 1, # SASRecではユーザー数は直接使われないが、一応渡す
         num_items=dm.num_items,
         hidden_size=cfg.student.hidden_size,
         num_heads=cfg.student.num_heads,
         num_layers=cfg.student.num_layers,
         dropout_rate=cfg.student.dropout_rate,
         max_seq_len=cfg.student.max_seq_len,
-        teacher_embedding_dim=teacher_model_instance.llm.config.hidden_size # 修正
+        teacher_embedding_dim=teacher_model_instance.llm.config.hidden_size,
+        padding_item_id=dm.padding_item_id
     )
 
     # 5. DistillationTrainerのインスタンス化
@@ -105,7 +105,12 @@ def run_distill(cfg: DictConfig):
         learning_rate=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
         metrics_k=cfg.eval.metrics_k,
-        selection_policy=AllSamplesPolicy() # TODO: cfgからポリシーを生成
+        selection_policy=AllSamplesPolicy(), # TODO: cfgからポリシーを生成
+        gamma_position=cfg.distill.gamma_position,
+        gamma_confidence=cfg.distill.gamma_confidence,
+        gamma_consistency=cfg.distill.gamma_consistency,
+        candidate_topk=cfg.distill.candidate_topk,
+        ed_weight=cfg.distill.ed_weight
     )
 
     # 6. PyTorch Lightning Trainerのインスタンス化と学習の実行
@@ -149,14 +154,14 @@ def run_distill(cfg: DictConfig):
         loaded_distill_trainer = DistillationTrainer.load_from_checkpoint(
             best_model_path,
             student_model=SASRec( # student_modelは再構築が必要
-                num_users=dm.num_items + 1,
                 num_items=dm.num_items,
                 hidden_size=cfg.student.hidden_size,
                 num_heads=cfg.student.num_heads,
                 num_layers=cfg.student.num_layers,
                 dropout_rate=cfg.student.dropout_rate,
                 max_seq_len=cfg.student.max_seq_len,
-                teacher_embedding_dim=loaded_teacher_trainer.model.llm.config.hidden_size # 修正
+                teacher_embedding_dim=loaded_teacher_trainer.model.llm.config.hidden_size,
+                padding_item_id=dm.padding_item_id
             ),
             teacher_model=create_teacher_model( # teacher_modelも再構築が必要
                 cfg,
@@ -174,7 +179,12 @@ def run_distill(cfg: DictConfig):
             learning_rate=cfg.train.learning_rate, # ダミー値
             weight_decay=cfg.train.weight_decay, # ダミー値
             metrics_k=cfg.eval.metrics_k,
-            selection_policy=None # ロード時は不要
+            selection_policy=None, # ロード時は不要
+            gamma_position=cfg.distill.gamma_position,
+            gamma_confidence=cfg.distill.gamma_confidence,
+            gamma_consistency=cfg.distill.gamma_consistency,
+            candidate_topk=cfg.distill.candidate_topk,
+            ed_weight=cfg.distill.ed_weight
         )
         # 評価器には生徒モデルのみを渡す
         evaluator = SASRecEvaluator(loaded_distill_trainer.student_model, dm, metrics_k=cfg.eval.metrics_k)

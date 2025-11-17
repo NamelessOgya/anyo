@@ -47,7 +47,6 @@ def distill_trainer_and_data():
 
     # 生徒モデルのインスタンス化
     student_model_instance = SASRec(
-        num_users=1000, # ダミー
         num_items=dm.num_items,
         hidden_size=64,
         num_heads=2,
@@ -56,6 +55,11 @@ def distill_trainer_and_data():
         max_seq_len=20,
         teacher_embedding_dim=llm.config.hidden_size
     ).to(device)
+    student_model_instance.train() # Explicitly set to train mode
+
+    print(f"Student model training status before trainer: {student_model_instance.training}")
+    for name, param in student_model_instance.named_parameters():
+        print(f"Student model param {name} requires_grad: {param.requires_grad}")
 
     teacher_model_instance = iLoRAModel(
         llm=llm,
@@ -73,7 +77,8 @@ def distill_trainer_and_data():
             output_dim=llm.config.hidden_size,
             hidden_size=teacher_cfg.hidden_size,
             dropout_rate=teacher_cfg.dropout_rate
-        )
+        ),
+        candidate_topk=10
     )
     # 蒸留トレーナーのインスタンス化
     distill_trainer = DistillationTrainer(
@@ -88,7 +93,12 @@ def distill_trainer_and_data():
         learning_rate=1e-3,
         weight_decay=0.01,
         metrics_k=10,
-        selection_policy=AllSamplesPolicy()
+        selection_policy=AllSamplesPolicy(),
+        gamma_position=1.0,
+        gamma_confidence=1.0,
+        gamma_consistency=1.0,
+        candidate_topk=10,
+        ed_weight=0.1
     )
 
     return {
@@ -96,35 +106,35 @@ def distill_trainer_and_data():
         "datamodule": dm
     }
 
-# def test_distill_training_step(distill_trainer_and_data):
-#     """
-#     DistillationTrainerのtraining_stepが正しく動作するかテストします。
-#     """
-#     trainer_model = distill_trainer_and_data["trainer_model"]
-#     dm = distill_trainer_and_data["datamodule"]
-# 
-#     # PyTorch Lightning Trainer
-#     trainer = pl.Trainer(
-#         max_epochs=1,
-#         accelerator="cpu", # テスト用にCPUを使用
-#         devices=1,
-#         logger=False,
-#         enable_checkpointing=False,
-#         limit_train_batches=1 # 1バッチのみ実行
-#     )
-# 
-#     # training_stepを実行
-#     trainer.fit(trainer_model, dm.train_dataloader())
-#     
-#     # 損失がスカラーであり、nanやinfでないことを確認
-#     assert isinstance(trainer_model.trainer.callback_metrics["train_total_loss"], torch.Tensor)
-#     assert not torch.isnan(trainer_model.trainer.callback_metrics["train_total_loss"])
-#     assert not torch.isinf(trainer_model.trainer.callback_metrics["train_total_loss"])
-# 
-#     # 教師モデルのパラメータが更新されていないことを確認 (勾配がNoneまたはゼロ)
-#     # iLoRAModelのパラメータはpeftによってラップされているため、直接アクセスが難しい場合がある
-#     # ここでは、ilora_model_instanceのパラメータが更新されていないことを確認する
-#     # (DistillationTrainerの__init__でteacher_model.eval()しているため、勾配計算されないはず)
-#     for param in trainer_model.teacher_model.parameters():
-#         if param.requires_grad:
-#             assert param.grad is None or torch.all(param.grad == 0)
+def test_distill_training_step(distill_trainer_and_data):
+    """
+    DistillationTrainerのtraining_stepが正しく動作するかテストします。
+    """
+    trainer_model = distill_trainer_and_data["trainer_model"]
+    dm = distill_trainer_and_data["datamodule"]
+
+    # PyTorch Lightning Trainer
+    trainer = pl.Trainer(
+        max_epochs=1,
+        accelerator="cpu", # テスト用にCPUを使用
+        devices=1,
+        logger=False,
+        enable_checkpointing=False,
+        limit_train_batches=1 # 1バッチのみ実行
+    )
+
+    # training_stepを実行
+    trainer.fit(trainer_model, dm.train_dataloader())
+    
+    # 損失がスカラーであり、nanやinfでないことを確認
+    assert isinstance(trainer_model.trainer.callback_metrics["train_total_loss"], torch.Tensor)
+    assert not torch.isnan(trainer_model.trainer.callback_metrics["train_total_loss"])
+    assert not torch.isinf(trainer_model.trainer.callback_metrics["train_total_loss"])
+
+    # 教師モデルのパラメータが更新されていないことを確認 (勾配がNoneまたはゼロ)
+    # iLoRAModelのパラメータはpeftによってラップされているため、直接アクセスが難しい場合がある
+    # ここでは、ilora_model_instanceのパラメータが更新されていないことを確認する
+    # (DistillationTrainerの__init__でteacher_model.eval()しているため、勾配計算されないはず)
+    for param in trainer_model.teacher_model.parameters():
+        if param.requires_grad:
+            assert param.grad is None or torch.all(param.grad == 0)

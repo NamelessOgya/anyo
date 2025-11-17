@@ -57,6 +57,9 @@ class iLoRAModel(nn.Module):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.llm = llm.to(self.device)
+        # Freeze all parameters of the base LLM
+        for param in self.llm.parameters():
+            param.requires_grad = False
         self.tokenizer = tokenizer
         self.rec_model = rec_model.to(self.device)
         self.projector = projector.to(self.device)

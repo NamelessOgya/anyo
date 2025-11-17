@@ -6,17 +6,18 @@ class SASRec(nn.Module):
     """
     SASRec (Self-Attentive Sequential Recommendation) モデルの実装。
     """
-    def __init__(self, num_items: int, hidden_size: int, num_heads: int, num_layers: int, dropout_rate: float, max_seq_len: int, teacher_embedding_dim: int = None):
+    def __init__(self, num_items: int, hidden_size: int, num_heads: int, num_layers: int, dropout_rate: float, max_seq_len: int, teacher_embedding_dim: int = None, ed_weight: float = 0.0, padding_item_id: int = 0):
         super(SASRec, self).__init__()
 
         self.num_items = num_items
         self.hidden_size = hidden_size
         self.max_seq_len = max_seq_len
         self.teacher_embedding_dim = teacher_embedding_dim
+        self.ed_weight = ed_weight
 
         # ユーザーとアイテムの埋め込み層
         # 0番目のアイテムIDはパディング用として予約
-        self.item_embeddings = nn.Embedding(num_items + 1, hidden_size, padding_idx=0)
+        self.item_embeddings = nn.Embedding(num_items + 2, hidden_size, padding_idx=padding_item_id)
         self.position_embeddings = nn.Embedding(max_seq_len, hidden_size)
 
         self.dropout = nn.Dropout(dropout_rate)
@@ -34,13 +35,27 @@ class SASRec(nn.Module):
         if teacher_embedding_dim is not None and hidden_size != teacher_embedding_dim:
             self.embedding_projection = nn.Linear(hidden_size, teacher_embedding_dim)
 
-    def _get_last_item_representation(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor):
+        # For embedding distillation
+        self.teacher_embedding_projection = None
+        if teacher_embedding_dim is not None and hidden_size != teacher_embedding_dim:
+            self.teacher_embedding_projection = nn.Linear(teacher_embedding_dim, hidden_size)
+
+    def _get_last_item_representation(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
         """
         シーケンスの最後のアイテムの表現を計算します。
         """
         # アイテム埋め込み
         item_embeddings = self.item_embeddings(item_seq)
 
+
+        # Add teacher embeddings for distillation
+        if teacher_embeddings is not None and self.ed_weight > 0:
+            if self.teacher_embedding_projection:
+                teacher_embeddings = self.teacher_embedding_projection(teacher_embeddings)
+            # Ensure teacher_embeddings are detached before adding to avoid breaking student's grad flow
+            # Even if already no_grad, explicit detach can sometimes help autograd
+            teacher_embeddings_detached = teacher_embeddings.detach()
+            item_embeddings = item_embeddings + self.ed_weight * teacher_embeddings_detached.unsqueeze(1)
         # 位置埋め込み
         positions = torch.arange(self.max_seq_len, device=item_seq.device).unsqueeze(0)
         position_embeddings = self.position_embeddings(positions)
@@ -81,17 +96,18 @@ class SASRec(nn.Module):
         ).squeeze(1)
         return last_item_representation
 
-    def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor):
+    def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
         """
         Args:
             item_seq (torch.Tensor): ユーザーのアイテムシーケンス (batch_size, max_seq_len)。
                                      パディングは0。
             item_seq_len (torch.Tensor): 各シーケンスの実際の長さ (batch_size)。
+            teacher_embeddings (torch.Tensor): 教師モデルの埋め込み (batch_size, teacher_embedding_dim)。
         Returns:
             torch.Tensor: 各シーケンスの最後のアイテムの表現 (batch_size, hidden_size)。
                           teacher_embedding_dimが指定されている場合はその次元にプロジェクションされる。
         """
-        last_item_representation = self._get_last_item_representation(item_seq, item_seq_len)
+        last_item_representation = self._get_last_item_representation(item_seq, item_seq_len, teacher_embeddings)
         if self.embedding_projection:
             return self.embedding_projection(last_item_representation)
         return last_item_representation
@@ -109,7 +125,7 @@ class SASRec(nn.Module):
         last_item_representation_for_prediction = self._get_last_item_representation(item_seq, item_seq_len)
         # 全アイテム埋め込みとの内積を計算
         # (batch_size, hidden_size) @ (hidden_size, num_items + 1) -> (batch_size, num_items + 1)
-        scores = torch.matmul(last_item_representation_for_prediction, self.item_embeddings.weight.transpose(0, 1))
+        scores = torch.matmul(last_item_representation_for_prediction, self.item_embeddings.weight[:-1].transpose(0, 1))
         return scores
 
 
@@ -227,7 +243,7 @@ if __name__ == "__main__":
     print(f"Item Sequence Lengths: {item_seq_len}")
 
     # モデルのインスタンス化 (プロジェクションあり)
-    model_with_projection = SASRec(num_users, num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len, teacher_embedding_dim=teacher_embedding_dim)
+    model_with_projection = SASRec(num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len, teacher_embedding_dim=teacher_embedding_dim)
     print(f"Model with projection: {model_with_projection}")
 
     # forwardパスのテスト (プロジェクションあり)
@@ -241,7 +257,7 @@ if __name__ == "__main__":
     assert prediction_scores_proj.shape == (batch_size, num_items + 1)
 
     # モデルのインスタンス化 (プロジェクションなし)
-    model_no_projection = SASRec(num_users, num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
+    model_no_projection = SASRec(num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
     print(f"Model without projection: {model_no_projection}")
 
     # forwardパスのテスト (プロジェクションなし)

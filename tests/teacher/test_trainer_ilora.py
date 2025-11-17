@@ -46,12 +46,12 @@ def ilora_trainer_and_data():
 
     # ダミーのrec_modelとprojectorを作成
     class DummyRecModel(nn.Module):
-        def __init__(self, hidden_size_rec, num_items_rec):
+        def __init__(self, hidden_size_rec, num_items_rec, padding_item_id): # Add padding_item_id
             super().__init__()
-            self.item_embeddings = nn.Embedding(num_items_rec + 1, hidden_size_rec)
+            self.item_embeddings = nn.Embedding(num_items_rec + 2, hidden_size_rec, padding_idx=padding_item_id) # Adjust size and padding_idx
             self.cacu_x = lambda x: self.item_embeddings(x)
             self.cacul_h = lambda x, y: torch.randn(x.shape[0], hidden_size_rec).to(x.device)
-    dummy_rec_model = DummyRecModel(ilora_cfg.hidden_size, dm.num_items).to(device)
+    dummy_rec_model = DummyRecModel(ilora_cfg.hidden_size, dm.num_items, dm.padding_item_id).to(device) # Pass padding_item_id
     dummy_projector = MLPProjector(
         input_dim=ilora_cfg.hidden_size,
         output_dim=llm.config.hidden_size,
@@ -70,7 +70,8 @@ def ilora_trainer_and_data():
         hidden_size=ilora_cfg.hidden_size,
         dropout_rate=ilora_cfg.dropout_rate,
         rec_model=dummy_rec_model,
-        projector=dummy_projector
+        projector=dummy_projector,
+        candidate_topk=10
     ).to(device)
     # iLoRATrainerのインスタンス化
     trainer_model = iLoRATrainer(
@@ -111,3 +112,11 @@ def test_ilora_training_step(ilora_trainer_and_data):
     assert isinstance(trainer_model.trainer.callback_metrics["train_loss_step"], torch.Tensor)
     assert not torch.isnan(trainer_model.trainer.callback_metrics["train_loss_step"])
     assert not torch.isinf(trainer_model.trainer.callback_metrics["train_loss_step"])
+
+    # 教師モデルのパラメータが更新されていないことを確認 (勾配がNoneまたはゼロ)
+    # iLoRAModelのパラメータはpeftによってラップされているため、直接アクセスが難しい場合がある
+    # ここでは、ilora_model_instanceのパラメータが更新されていないことを確認する
+    # (DistillationTrainerの__init__でteacher_model.eval()しているため、勾配計算されないはず)
+    # Check a specific base LLM parameter that should be frozen
+    base_llm_param = trainer_model.model.llm.model.decoder.layers[0].self_attn.q_proj.weight
+    assert not base_llm_param.requires_grad or (base_llm_param.grad is None or torch.all(base_llm_param.grad == 0))
