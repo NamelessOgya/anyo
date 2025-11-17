@@ -1,9 +1,10 @@
 model_type: ilora
 llm_model_name: facebook/opt-125m # 小さなモデルでテスト
 num_lora_experts: 3
-lora_r: 8
+lora_r: 9
 lora_alpha: 16
 lora_dropout: 0.05
 hidden_size: 64 # ゲーティングネットワーク用
 dropout_rate: 0.1
+max_gen_length: 20
 # teacher_checkpoint_path: null # 学習済みモデルのパス (run_distill, run_eval_allで使用)

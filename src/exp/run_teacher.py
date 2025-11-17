@@ -14,6 +14,10 @@ from src.student.datamodule import SASRecDataModule # 教師モデルも同じ�
 from src.teacher.factory import create_teacher_model
 from src.teacher.trainer_ilora import iLoRATrainer
 from src.student.evaluator import SASRecEvaluator # 評価は生徒モデルの評価器を流用
+from src.teacher.mlp_projector import MLPProjector # Added import
+from transformers import AutoModelForCausalLM, AutoTokenizer # Added import
+import torch.nn as nn # Added import
+import torch # Added import
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +32,46 @@ def run_teacher(cfg: DictConfig):
     logger.info(f"Config: {OmegaConf.to_yaml(cfg)}")
 
     # 2. SASRecDataModuleのインスタンス化とデータ準備
+    # LLMとTokenizerのロード (SASRecDataModuleに渡すため)
+    llm_for_dm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
+    tokenizer_for_dm = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name)
+    if tokenizer_for_dm.pad_token is None:
+        tokenizer_for_dm.pad_token = tokenizer_for_dm.eos_token
+    tokenizer_for_dm.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
+    llm_for_dm.resize_token_embeddings(len(tokenizer_for_dm))
+
     dm = SASRecDataModule(
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
         max_seq_len=cfg.student.max_seq_len, # 教師モデルも同じmax_seq_lenを使用
         num_workers=cfg.train.num_workers,
-        limit_data_rows=cfg.dataset.limit_data_rows
+        limit_data_rows=cfg.dataset.limit_data_rows,
+        llm_model_name=cfg.teacher.llm_model_name, # Pass llm_model_name
+        tokenizer=tokenizer_for_dm, # Pass tokenizer
+        max_gen_length=cfg.teacher.max_gen_length # Pass max_gen_length
     )
     dm.prepare_data()
     dm.setup()
+
+    # rec_modelのロード
+    from src.student.models import SASRec # 適切なモデルをインポート
+    rec_model_instance = SASRec(
+        num_items=dm.num_items,
+        hidden_size=cfg.student.hidden_size,
+        num_heads=cfg.student.num_heads,
+        num_layers=cfg.student.num_layers,
+        dropout_rate=cfg.student.dropout_rate,
+        max_seq_len=cfg.student.max_seq_len,
+    ).to(llm_for_dm.device) # deviceを合わせる
+    
+    # projectorのインスタンス化
+    projector_instance = MLPProjector(
+        input_dim=cfg.student.hidden_size, # rec_modelの出力次元
+        output_dim=llm_for_dm.config.hidden_size, # LLMの入力次元
+        hidden_size=cfg.teacher.hidden_size,
+        dropout_rate=cfg.teacher.dropout_rate
+    ).to(llm_for_dm.device) # deviceを合わせる
 
     # 3. create_teacher_model を使用して iLoRAModel をインスタンス化
     ilora_model_instance = create_teacher_model(
@@ -45,7 +79,7 @@ def run_teacher(cfg: DictConfig):
         num_items=dm.num_items, 
         max_seq_len=cfg.student.max_seq_len,
         item_id_to_name=dm.item_id_to_name,
-        padding_item_id=dm.padding_item_id # 追加
+        padding_item_id=dm.padding_item_id,
     )
 
     # 4. iLoRATrainerのインスタンス化
@@ -82,7 +116,7 @@ def run_teacher(cfg: DictConfig):
     )
 
     logger.info("Starting iLoRA teacher model training...")
-    trainer.fit(trainer_model, dm.train_dataloader(), dm.val_dataloader())
+    trainer.fit(trainer_model, dm) # Pass the datamodule directly
     logger.info("iLoRA teacher model training finished.")
 
     # 6. 学習済みモデルの保存 (ベストモデルはModelCheckpointで保存される)
@@ -104,7 +138,8 @@ def run_teacher(cfg: DictConfig):
             metrics_k=cfg.eval.metrics_k,
             item_id_to_name=dm.item_id_to_name,
             # iLoRAModelのハイパーパラメータを明示的に渡す
-            llm_model_name=cfg.teacher.llm_model_name,
+            llm=llm_for_dm, # Pass llm
+            tokenizer=tokenizer_for_dm, # Pass tokenizer
             num_lora_experts=cfg.teacher.num_lora_experts,
             lora_r=cfg.teacher.lora_r,
             lora_alpha=cfg.teacher.lora_alpha,
@@ -112,7 +147,9 @@ def run_teacher(cfg: DictConfig):
             hidden_size=cfg.teacher.hidden_size,
             dropout_rate=cfg.teacher.dropout_rate,
             max_seq_len=cfg.student.max_seq_len, # max_seq_lenはstudentから取得
-            padding_item_id=dm.padding_item_id
+            padding_item_id=dm.padding_item_id,
+            rec_model=rec_model_instance, # Pass rec_model
+            projector=projector_instance # Pass projector
         )
     else:
         logger.warning("No best teacher model checkpoint found. Using final model for evaluation.")
@@ -125,7 +162,7 @@ def run_teacher(cfg: DictConfig):
     # iLoRATrainer自体を評価器として使うラッパーが必要。
     # 簡略化のため、ここではiLoRATrainerのtest_stepを直接呼び出す
     logger.info("Running test_step for teacher model...")
-    trainer.test(loaded_model, dm.test_dataloader())
+    trainer.test(loaded_model, dm) # Pass the datamodule directly
     logger.info("iLoRA teacher model evaluation finished.")
 
 if __name__ == "__main__":

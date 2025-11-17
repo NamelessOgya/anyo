@@ -105,7 +105,7 @@
 ### 3.1. `test_ilora_model.py` (`src/teacher/ilora_model.py` のテスト)
 
 - **`test_ilora_forward_shape`**:
-  - `iLoRAModel` の `forward` メソッドが、プロンプト変換、LoRAエキスパートの動的結合を経て、期待される形状 `(batch_size, num_items + 1)` の最終ロジットを返すことを確認する。
+  - `iLoRAModel` の `forward` メソッドが、プロンプト変換、カスタムMoE LoRAレイヤーの動的結合を経て、期待される形状 `(batch_size, num_items + 1)` の最終ロジットを返すことを確認する。
 
 - **`test_ilora_get_teacher_outputs_shape`**:
   - `get_teacher_outputs` メソッドが返す辞書の各要素（`ranking_scores`, `embeddings`）が期待される形状であることを確認する（`ranking_scores` は `(batch_size, num_items + 1)`、`embeddings` は `(batch_size, llm_hidden_size)`）。

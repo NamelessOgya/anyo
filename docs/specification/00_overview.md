@@ -86,7 +86,6 @@
 * Hydra (1.3系)
 * TensorBoard
 * numpy / pandas
-* LoRA 実装用に `peft` など（必要に応じて）
 
 ### 2.3 実験環境
 

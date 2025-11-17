@@ -1,5 +1,6 @@
 import pytest
 import torch
+from transformers import AutoTokenizer # Added import
 from src.student.datamodule import SASRecDataModule
 
 @pytest.fixture
@@ -7,12 +8,19 @@ def sasrec_datamodule():
     """
     テスト用のSASRecDataModuleを準備するフィクスチャ。
     """
+    # ダミーのtokenizerを作成
+    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
+
     dm = SASRecDataModule(
         dataset_name="movielens",
         data_dir="ref_repositories/iLoRA/data/ref",
         batch_size=4,
         max_seq_len=50,
-        num_workers=0 # テスト時は0に設定
+        num_workers=0, # テスト時は0に設定
+        tokenizer=tokenizer # Pass tokenizer
     )
     dm.prepare_data()
     dm.setup()
@@ -44,16 +52,16 @@ def test_dataloader_batch_shape(sasrec_datamodule):
     batch_size = dm.batch_size
     max_seq_len = dm.max_seq_len
     
-    assert "item_seq" in batch
-    assert "item_seq_len" in batch
+    assert "seq" in batch
+    assert "len_seq" in batch
     assert "next_item" in batch
     
-    assert batch["item_seq"].shape == (batch_size, max_seq_len)
-    assert batch["item_seq_len"].shape == (batch_size,)
+    assert batch["seq"].shape == (batch_size, max_seq_len)
+    assert batch["len_seq"].shape == (batch_size,)
     assert batch["next_item"].shape == (batch_size,)
     
-    assert batch["item_seq"].dtype == torch.long
-    assert batch["item_seq_len"].dtype == torch.long
+    assert batch["seq"].dtype == torch.long
+    assert batch["len_seq"].dtype == torch.long
     assert batch["next_item"].dtype == torch.long
 
 def test_dataloader_padding(sasrec_datamodule):
@@ -64,8 +72,8 @@ def test_dataloader_padding(sasrec_datamodule):
     train_loader = dm.train_dataloader()
     batch = next(iter(train_loader))
     
-    item_seq = batch["item_seq"]
-    item_seq_len = batch["item_seq_len"]
+    item_seq = batch["seq"]
+    item_seq_len = batch["len_seq"]
     
     for i in range(dm.batch_size):
         seq_len = item_seq_len[i].item()

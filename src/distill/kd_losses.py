@@ -63,9 +63,36 @@ class EmbeddingDistillationLoss(nn.Module):
             target = torch.ones(student_embeddings.size(0), device=student_embeddings.device)
             loss = self.loss_fn(student_embeddings, teacher_embeddings, target)
         else: # mse
-            loss = self.loss_fn(student_embeddings, teacher_embeddings)
         return loss
 
+class WeightedBCELoss(nn.Module):
+    """
+    重み付きBCE損失を計算します。
+    """
+    def __init__(self):
+        super().__init__()
+        self.bce_loss = nn.BCEWithLogitsLoss(reduction='none')
+
+    def forward(self, student_logits: torch.Tensor, teacher_candidates: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            student_logits (torch.Tensor): 生徒モデルの出力ロジット (batch_size, num_items)。
+            teacher_candidates (torch.Tensor): 教師モデルからの候補アイテム (batch_size, num_candidates)。
+            weights (torch.Tensor): 各候補アイテムに対する重み (batch_size, num_candidates)。
+
+        Returns:
+            torch.Tensor: 重み付きBCE損失。
+        """
+        loss = 0
+        num_candidates = teacher_candidates.size(1)
+        for i in range(num_candidates):
+            target = teacher_candidates[:, i:i+1]
+            pos_scores = torch.gather(student_logits, 1, target)
+            pos_labels = torch.ones_like(pos_scores)
+            loss_bce = self.bce_loss(pos_scores, pos_labels)
+            weighted_loss = (weights[:, i:i+1] * loss_bce).mean()
+            loss += weighted_loss
+        return loss
 if __name__ == "__main__":
     # テスト用のダミーデータ
     batch_size = 4

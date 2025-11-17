@@ -155,9 +155,11 @@ limit_data_rows: 640
 ### `src/teacher` の実装状況:
 
 *   `interfaces.py`: 教師モデルが満たすべきインターフェース (`TeacherModel`) を定義済み。
-*   `ilora_model.py`: iLoRA (Instance-wise LoRA) ロジックを再現したLLMベースのシーケンシャルレコメンダのスケルトンを実装済み。LLMのロード、LoRAアダプターの準備、ゲーティングメカニズムの基本的な構造を含みます。
+*   `gating.py`: iLoRAのゲーティングネットワークを実装済み。
+*   `moe_lora_model.py`: `peft`ライブラリに依存しない、iLoRAのMoE (Mixture of Experts) LoRAレイヤーを実装済み。
+*   `ilora_model.py`: iLoRA (Instance-wise LoRA) ロジックを完全に実装済み。`peft`ライブラリへの依存を排除し、`moe_lora_model.py`のカスタムMoEレイヤーを使用。
 *   `trainer_ilora.py`: `iLoRAModel` をラップし、学習ロジックをカプセル化する `pytorch_lightning.LightningModule` を実装済み。
-*   `factory.py`: Hydraの設定に基づいて教師モデルのインスタンスを生成するファクトリ関数 (`create_teacher_model`) を実装済み。
+*   `factory.py`: Hydraの設定に基づいて教師モデルのインスタンスを生成するファクトリ関数 (`create_teacher_model`) を実装済み。`SASRec`モデルを内部でインスタンス化する。
 
 ### `src/distill` の実装状況:
 
@@ -181,21 +183,21 @@ limit_data_rows: 640
 
 ### 7.1. `iLoRAModel` の実装 (`src/teacher/ilora_model.py`)
 
-スケルトン実装だった `forward` メソッドに、iLoRAの主要ロジックを実装しました。
+`peft`ライブラリへの依存を排除し、iLoRAのロジックを完全に再現する形で`iLoRAModel`を実装しました。
 
-*   **プロンプトエンジニアリング**:
-    *   入力されたアイテムIDシーケンス (`item_seq`) を、`SASRecDataModule` から受け取った `item_id_to_name` マッピングを用いて、自然言語のプロンプトに変換します。
-    *   例: `[1, 2, 3]` → `"item_name_1, item_name_2, item_name_3"`
+*   **カスタムMoE LoRAレイヤー**:
+    *   `src/teacher/moe_lora_model.py` にて、`peft`に依存しない`Linear`レイヤーを実装。
+    *   `iLoRAModel`は、`_find_and_replace`メソッドを用いて、LLM内の`q_proj`と`v_proj`をこのカスタム`Linear`レイヤーに置き換えます。
 *   **動的なLoRAエキスパートの結合**:
-    *   ゲーティングネットワーク (`gating_network`) が計算した重み (`gate_weights`) に基づき、複数のLoRAエキスパート (`peft_models`) の推論結果（ロジット）を動的に結合します。
-    *   各エキスパートで推論を実行し、その出力ロジットを重み付け加算することで、最終的な出力ロジットを生成します。
-*   **依存関係の注入**:
-    *   プロンプト生成に必要な `item_id_to_name` とパディング処理に必要な `padding_item_id` をコンストラクタで受け取るように変更しました。
-    *   この変更に伴い、`factory.py`, `run_teacher.py`, `trainer_ilora.py` および関連するテストコードのインスタンス生成部分を修正しました。
+    *   `encode_users`メソッドでユーザー埋め込みを生成し、それを用いて`gating_network`が各LoRAエキスパートの重み (`gate_weights`) を計算します。
+    *   この`gate_weights`は、カスタム`Linear`レイヤーの`forward`メソッドに渡され、エキスパートの出力を動的に結合するために使用されます。
+*   **依存関係の整理**:
+    *   `iLoRAModel`は、`rec_model` (`SASRec`)と`projector` (`MLPProjector`)をコンストラクタで受け取るように変更されました。
+    *   これにより、`factory.py`で`SASRec`と`MLPProjector`がインスタンス化され、`iLoRAModel`に注入されます。
 
 ### 7.2. テスト環境の修正とデバッグ
 
-`iLoRAModel` の実装後、`pytest` を実行して発覚した問題を修正しました。
+`iLoRAModel`の実装後、`pytest`を実行して発覚した問題を修正しました。
 
 *   **`ModuleNotFoundError` の解決**:
     *   テスト実行時に `src` ディレクトリがPythonのパスに含まれておらず、モジュールが見つからない問題がありました。
@@ -204,14 +206,15 @@ limit_data_rows: 640
 *   **`pytest` の探索範囲の限定**:
     *   `pytest` が `ref_repositories/` 内のテストまで収集しようとしてエラーが発生していました。
     *   `pyproject.toml` に `norecursedirs = ["ref_repositories"]` を追加し、`pytest` の探索範囲から除外しました。
-*   **テストフィクスチャの修正**:
-    *   `iLoRAModel` のコンストラクタ変更に伴い、`tests/teacher/test_ilora_model.py` などのテストファイルで `TypeError` が発生していました。
-    *   テスト用の `iLoRAModel` インスタンスを生成する箇所で、必要な引数 (`item_id_to_name`, `padding_item_id`) を渡すようにフィクスチャを修正しました。
-*   **`peft` モデルの呼び出し修正**:
-    *   当初、`PeftModel` の `forward` を直接呼び出そうとして `AttributeError` が発生しました。
-    *   `PeftModel` インスタンスを関数のように呼び出す (`model(input_ids)`) ことで、正しく推論が実行されるように修正しました。
+*   **デバイス不整合エラー (`RuntimeError: Expected all tensors to be on the same device`) の解決**:
+    *   `rec_model` (`SASRec`)のパラメータがGPUに正しく転送されていなかったため、CPUとGPU間でテンソルのデバイスが不整合になる問題が発生していました。
+    *   `src/teacher/factory.py`で`SASRec`モデルをインスタンス化する際に、`.to(device)`を呼び出して明示的にGPUに転送することで解決しました。
+*   **LoRAの次元に関するエラー (`RuntimeError: shape is invalid for input of size`) の解決**:
+    *   LoRAレイヤーの`lora_r`がエキスパート数`num_moe`で割り切れない場合に、reshapeでエラーが発生していました。
+    *   `conf/teacher/ilora.yaml`の`lora_r`を`num_lora_experts`で割り切れる値（例: 8 -> 9）に修正することで解決しました。
 
-上記の結果、`iLoRAModel` の実装が完了し、関連するすべての単体テストがパスする状態になりました。
+上記の結果、`iLoRAModel`の実装が完了し、関連するすべての単体テストがパスする状態になりました。
+また、`cmd/run_teacher.sh`を実行することで、教師モデルの学習が正常に完了することを確認済みです。
 ---
 
 ## 8. データ関連処理の強化と選択的蒸留ポリシーの高度化

@@ -5,7 +5,7 @@ from typing import Dict, Any
 
 from src.student.models import SASRec
 from src.teacher.interfaces import TeacherModel
-from src.distill.kd_losses import RankingDistillationLoss, EmbeddingDistillationLoss
+from src.distill.kd_losses import RankingDistillationLoss, EmbeddingDistillationLoss, WeightedBCELoss
 from src.distill.selection_policy import SelectionPolicy
 from src.core.metrics import calculate_metrics
 
@@ -22,7 +22,11 @@ class DistillationTrainer(pl.LightningModule):
                  learning_rate: float,
                  weight_decay: float,
                  metrics_k: int,
-                 selection_policy: SelectionPolicy):
+                 selection_policy: SelectionPolicy,
+                 gamma_position: float,
+                 gamma_confidence: float,
+                 gamma_consistency: float,
+                 candidate_topk: int):
         super().__init__()
         self.student_model = student_model
         self.teacher_model = teacher_model
@@ -34,9 +38,13 @@ class DistillationTrainer(pl.LightningModule):
         self.weight_decay = weight_decay
         self.metrics_k = metrics_k
         self.selection_policy = selection_policy
+        self.gamma_position = gamma_position
+        self.gamma_confidence = gamma_confidence
+        self.gamma_consistency = gamma_consistency
+        self.candidate_topk = candidate_topk
 
         # 損失関数
-        self.ranking_kd_loss_fn = RankingDistillationLoss(temperature=ranking_temperature)
+        self.ranking_kd_loss_fn = WeightedBCELoss()
         self.embedding_kd_loss_fn = EmbeddingDistillationLoss(loss_type=embedding_loss_type)
         self.ce_loss_fn = torch.nn.CrossEntropyLoss()
 
@@ -52,16 +60,19 @@ class DistillationTrainer(pl.LightningModule):
         return self.student_model.predict(item_seq, item_seq_len)
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
+        self.student_model.train()
+        item_seq = batch["seq"]
+        item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
 
         # 1. 教師モデルからソフトターゲットと埋め込みを取得
         with torch.no_grad():
-            teacher_outputs_raw = self.teacher_model.get_teacher_outputs(item_seq, item_seq_len)
+            teacher_outputs_raw = self.teacher_model.get_teacher_outputs(batch)
         
         teacher_logits = teacher_outputs_raw.get("ranking_scores")
         teacher_embeddings = teacher_outputs_raw.get("embeddings")
+        teacher_candidates = teacher_outputs_raw.get("candidates") # (batch_size, candidate_topk)
+        teacher_confidence = teacher_outputs_raw.get("confidence") # (batch_size, candidate_topk)
 
         # 2. 生徒モデルの出力を取得
         student_embeddings = self.student_model(item_seq, item_seq_len)
@@ -79,9 +90,35 @@ class DistillationTrainer(pl.LightningModule):
         
         # 4.1. ランキング蒸留損失
         if self.ranking_loss_weight > 0 and distill_mask.any():
+            # 重みの計算
+            # weight_rank
+            _lambda = 1
+            _K = self.candidate_topk
+            weight_static = torch.arange(1, _K + 1, dtype=torch.float32, device=self.device)
+            weight_static = torch.exp(-weight_static / _lambda) # 1/exp(r)
+            weight_static = weight_static.unsqueeze(0) # [1, k]
+            weight_static = weight_static.repeat(student_logits.size(0), 1)
+            weight_rank = weight_static / torch.sum(weight_static, dim=1).unsqueeze(1)
+            
+            # weight_com
+            cf_rank_top = (-student_logits).argsort(dim=1)[:, :_K]
+            common_tensor = torch.zeros_like(teacher_candidates, device=self.device)
+            common_mask = teacher_candidates.unsqueeze(2) == cf_rank_top.unsqueeze(1)
+            common_tensor = common_mask.any(dim=2).int() + 1e-8
+            weight_com = common_tensor.to(self.device)
+
+            # weight_confidence
+            weight_confidence = torch.exp(-teacher_confidence) + 1e-8
+            weight_confidence = weight_confidence / torch.sum(weight_confidence, dim=1).unsqueeze(1)
+
+            # weight_fin
+            weight_fin = self.gamma_position * weight_rank + self.gamma_confidence * weight_confidence + self.gamma_consistency * weight_com
+            weights = weight_fin / torch.sum(weight_fin, dim=1).unsqueeze(1)
+
             ranking_kd_loss = self.ranking_kd_loss_fn(
                 student_logits[distill_mask],
-                teacher_logits[distill_mask]
+                teacher_candidates[distill_mask],
+                weights[distill_mask]
             )
             total_loss += self.ranking_loss_weight * ranking_kd_loss
             self.log('train_ranking_kd_loss', ranking_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)

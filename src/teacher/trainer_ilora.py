@@ -25,15 +25,13 @@ class iLoRATrainer(pl.LightningModule):
         self.metrics_k = metrics_k
         # self.item_id_to_name = item_id_to_name # ilora_modelが持つので不要
 
-    def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> torch.Tensor:
-        return self.model(item_seq, item_seq_len)
+    def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
+        return self.model(batch)
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
-        next_item = batch["next_item"]
+        next_item = batch["next_item"] # next_itemは損失計算に必要
 
-        logits = self.forward(item_seq, item_seq_len)
+        logits = self.forward(batch) # batch全体を渡す
         
         # iLoRAの学習では、次アイテム予測のCE損失を計算
         loss = self.loss_fn(logits, next_item)
@@ -41,11 +39,9 @@ class iLoRATrainer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
-        next_item = batch["next_item"]
+        next_item = batch["next_item"] # next_itemは損失計算に必要
 
-        logits = self.forward(item_seq, item_seq_len)
+        logits = self.forward(batch) # batch全体を渡す
         loss = self.loss_fn(logits, next_item)
 
         _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
@@ -62,11 +58,9 @@ class iLoRATrainer(pl.LightningModule):
         return {"val_loss": loss}
 
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
-        next_item = batch["next_item"]
+        next_item = batch["next_item"] # next_itemは損失計算に必要
 
-        logits = self.forward(item_seq, item_seq_len)
+        logits = self.forward(batch) # batch全体を渡す
         loss = self.loss_fn(logits, next_item)
 
         _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
@@ -94,13 +88,9 @@ if __name__ == "__main__":
     from omegaconf import OmegaConf
     from pytorch_lightning import Trainer
     from pytorch_lightning.callbacks import LearningRateMonitor
+    from transformers import AutoModelForCausalLM, AutoTokenizer # LLMとTokenizerをロードするために追加
 
-    # ダミーデータモジュール
-    dm = SASRecDataModule(batch_size=4, max_seq_len=50, num_workers=0)
-    dm.prepare_data()
-    dm.setup()
-
-    # iLoRAModelのインスタンス化 (ダミー設定)
+    # iLoRAModelのダミー設定
     ilora_cfg = OmegaConf.create({
         "llm_model_name": "facebook/opt-125m",
         "num_lora_experts": 3,
@@ -110,8 +100,47 @@ if __name__ == "__main__":
         "hidden_size": 64,
         "dropout_rate": 0.1
     })
-    ilora_model_instance = iLoRAModel(
+
+    # LLMとTokenizerをロード
+    llm = AutoModelForCausalLM.from_pretrained(ilora_cfg.llm_model_name)
+    tokenizer = AutoTokenizer.from_pretrained(ilora_cfg.llm_model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
+    llm.resize_token_embeddings(len(tokenizer))
+
+    # ダミーデータモジュール
+    dm = SASRecDataModule(
+        batch_size=4, 
+        max_seq_len=50, 
+        num_workers=0,
         llm_model_name=ilora_cfg.llm_model_name,
+        tokenizer=tokenizer,
+        max_gen_length=64
+    )
+    dm.prepare_data()
+    dm.setup()
+
+    # ダミーのrec_modelとprojectorを作成
+    class DummyRecModel(nn.Module):
+        def __init__(self, hidden_size_rec, num_items_rec):
+            super().__init__()
+            self.item_embeddings = nn.Embedding(num_items_rec + 1, hidden_size_rec)
+            self.cacu_x = lambda x: self.item_embeddings(x)
+            self.cacul_h = lambda x, y: torch.randn(x.shape[0], hidden_size_rec)
+    
+    dummy_rec_model = DummyRecModel(ilora_cfg.hidden_size, dm.num_items).to(llm.device)
+    dummy_projector = MLPProjector(
+        input_dim=ilora_cfg.hidden_size,
+        output_dim=llm.config.hidden_size,
+        hidden_size=ilora_cfg.hidden_size,
+        dropout_rate=ilora_cfg.dropout_rate
+    ).to(llm.device)
+
+    # iLoRAModelのインスタンス化
+    ilora_model_instance = iLoRAModel(
+        llm=llm,
+        tokenizer=tokenizer,
         num_lora_experts=ilora_cfg.num_lora_experts,
         lora_r=ilora_cfg.lora_r,
         lora_alpha=ilora_cfg.lora_alpha,
@@ -119,7 +148,11 @@ if __name__ == "__main__":
         num_items=dm.num_items,
         max_seq_len=dm.max_seq_len,
         hidden_size=ilora_cfg.hidden_size,
-        dropout_rate=ilora_cfg.dropout_rate
+        dropout_rate=ilora_cfg.dropout_rate,
+        item_id_to_name=dm.item_id_to_name,
+        padding_item_id=tokenizer.pad_token_id,
+        rec_model=dummy_rec_model,
+        projector=dummy_projector
     )
 
     # iLoRATrainerのインスタンス化

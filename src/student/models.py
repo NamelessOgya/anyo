@@ -6,10 +6,9 @@ class SASRec(nn.Module):
     """
     SASRec (Self-Attentive Sequential Recommendation) モデルの実装。
     """
-    def __init__(self, num_users: int, num_items: int, hidden_size: int, num_heads: int, num_layers: int, dropout_rate: float, max_seq_len: int, teacher_embedding_dim: int = None):
+    def __init__(self, num_items: int, hidden_size: int, num_heads: int, num_layers: int, dropout_rate: float, max_seq_len: int, teacher_embedding_dim: int = None):
         super(SASRec, self).__init__()
 
-        self.num_users = num_users
         self.num_items = num_items
         self.hidden_size = hidden_size
         self.max_seq_len = max_seq_len

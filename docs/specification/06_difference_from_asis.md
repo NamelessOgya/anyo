@@ -1,4 +1,4 @@
-# 既存実装と参照リポジトリのロジックレベルの差分 (Logic-Level Difference from As-Is)
+# 既存実装と参照リポジリのロジックレベルの差分 (Logic-Level Difference from As-Is)
 
 このドキュメントは、本プロジェクトの `src` ディレクトリ内の実装が、参照リポジトリ（iLoRA, DLLM2Rec）で提案されている**既存手法のロジックを再現できているか**に焦点を当て、その差分をまとめるための依頼文書です。アーキテクチャや実装の詳細な構造が異なっていても構いません。重要なのは、**アルゴリズムの主要なステップや数式が、本プロジェクトのコードでどのように実装され、既存ロジックの再現がなされているか**という点です。
 
@@ -10,7 +10,7 @@
 *   **粒度**: 各アルゴリズムの核となるロジック、数式、データフローの主要な変換ステップに焦点を当てる。コードの行単位の比較ではなく、アルゴリズムの再現性に着目する。
 *   **対象**:
     *   **iLoRA ロジック**: `ref_repositories/iLoRA/` の主要なロジックと `src/teacher/` の対応する実装。
-    *   **DLLM2Rec ロジック**: `ref_repositories/dllm2rec/` の主要なロジックと `src/distill/` の対応する実装。
+    *   **DLLM2Rec ロジック**: `ref_repositories/DLLM2Rec/` の主要なロジックと `src/distill/` の対応する実装。
 
 ---
 
@@ -43,9 +43,41 @@
     *   `get_teacher_outputs` メソッドが、DLLM2Rec 互換のランキングスコアと埋め込みを正しく出力しているか。
     *   特に、埋め込みが LLM の最終隠れ状態を適切に集約したものであるか。
 
+### 2.3. 評価結果
+
+#### 項目: ゲーティングネットワークの機能
+*   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/model_interface.py` の `MInterface` クラスの `forward` メソッドで `self.router(user_embeds)` を呼び出し、推薦モデルから得られたユーザー埋め込み (`user_embeds`) をゲーティングネットワークに入力。ゲーティングネットワークは `ref_repositories/iLoRA/model/peft/tuners/gating.py` で定義された `Dense`, `MLP` などのクラスであり、`user_embeds` の次元に合わせた入力を持つ。
+*   **本プロジェクトの実装**: `src/teacher/ilora_model.py` の `iLoRAModel` クラスの `forward` メソッドで、`self.rec_model` (`SASRec`) から得られたユーザー埋め込み (`user_embeds`) を `self.gating_network` に入力。`self.gating_network` は `MLPProjector` のインスタンスであり、`user_embeds` の次元に合わせた入力を持つ。ゲーティングネットワークは `F.softmax` を適用し、`num_lora_experts` 個のLoRAエキスパートに対するsoftmax重み (`gate_weights`) を出力。
+*   **差分と再現性評価**:
+    *   **再現性**: 参照実装と同様に、推薦モデルのユーザー埋め込みをゲーティングネットワークの入力とし、softmax重みを生成する機能が完全に再現されています。
+
+#### 項目: LoRA パラメータの線形結合
+*   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/peft/tuners/moelora.py` の `MoeLoraModel` クラスの `Linear` モジュール内で、`gate_weights` を使って `lora_A` と `lora_B` の出力を重み付け結合。この `gate_weights` は `MInterface` の `forward` メソッドで `self.router(user_embeds)` から計算されたもの。LoRAアダプターの内部でゲーティングが行われ、各LoRAアダプターの出力がゲーティングされる。
+*   **本プロジェクトの実装**: `src/teacher/moe_lora_model.py` の `Linear` クラスの `forward` メソッド内で、`gate_weights` を使って `lora_A` と `lora_B` の出力を重み付け結合。この `gate_weights` は `iLoRAModel` の `forward` メソッドで `self.gating_network(user_embeds)` から計算されたもの。LoRAアダプターの内部でゲーティングが行われ、各LoRAアダプターの出力がゲーティングされる。
+*   **差分と再現性評価**:
+    *   **再現性**: 参照実装のカスタムMoE LoRAレイヤーのロジックが、`src/teacher/moe_lora_model.py` にて完全に再現されています。
+
+#### 項目: LLM への適用と次アイテム予測
+*   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/model_interface.py` の `wrap_emb` メソッドで、推薦モデルの埋め込みを特殊トークン (`[HistoryEmb]`, `[CansEmb]`, `[ItemEmb]`) に置き換えることでプロンプトエンジニアリングを行い、LLMは `inputs_embeds` を直接受け取る。
+*   **本プロジェクトの実装**: `src/teacher/ilora_model.py` の `forward` メソッド内で、`input_ids` 内の特殊トークンの埋め込みを、`encode_items` および `encode_users` で生成した実際のアイテム/ユーザー埋め込みで置き換える。これにより、LLMへの入力が `inputs_embeds` を直接使用する形式になる。
+*   **差分と再現性評価**:
+    *   **再現性**: 参照実装と同様に、推薦モデルの埋め込みをLLMの入力埋め込みに直接注入する方式が再現されています。
+
+#### 項目: 学習対象
+*   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/model_interface.py` の `configure_optimizers` で、`projector`、`router`、そして `llama_model` のパラメータ（`"gating" not in n` でフィルタリング）を学習対象としている。これにより、LoRAパラメータとゲーティングネットワークのパラメータのみが学習される。損失関数は `MInterface` の `configure_loss` で `lm` (Language Model) ロス、つまり次アイテム予測のCross-Entropy Lossを使用。
+*   **本プロジェクトの実装**: `iLoRAModel` の `__init__` でカスタムMoE LoRAレイヤーを使用しており、LoRAパラメータのみが学習可能に設定されている。`gating_network` と `output_layer` も `nn.Module` なので、これらも学習対象となる。損失関数は `src/teacher/trainer_ilora.py` で `torch.nn.CrossEntropyLoss()` を使用。
+*   **差分と再現性評価**:
+    *   **再現性**: LoRAパラメータとゲーティングネットワークのパラメータが学習対象となり、LLMの基盤モデルがフリーズされるという点は再現されています。損失関数も次アイテム予測のCross-Entropy Lossを使用しており、この点も再現されています。
+
+#### 項目: 教師出力
+*   **参照実装のロジック概要**: `ref_repositories/iLoRA/model/model_interface.py` の `generate` メソッドや `validation_step`, `test_step` で生成された出力が、最終的にランキングスコアや埋め込みに変換されると推測される。
+*   **本プロジェクトの実装**: `src/teacher/ilora_model.py` の `get_teacher_outputs` メソッドで `ranking_scores` (LLMの最終出力) と `embeddings` (LLMの最終隠れ状態) を明示的に返している。
+*   **差分と再現性評価**:
+    *   **再現性**: DLLM2Rec互換のランキングスコアと埋め込みを出力するという点は再現されています。
+
 ---
 
-## 3. DLLM2Rec ロジックの再現性評価 (`src/distill/` vs `ref_repositories/dllm2rec/`)
+## 3. DLLM2Rec ロジックの再現性評価 (`src/distill/` vs `ref_repositories/DLLM2Rec/`)
 
 ### 3.1. DLLM2Rec の主要ロジック (00_overview.md より)
 
@@ -67,22 +99,39 @@
 *   **蒸留サンプル選択ポリシー**:
     *   `selection_policy.py` で定義されているポリシー（例: `GroundTruthErrorPolicy`）が、蒸留に用いるサンプルを論文の意図に沿って選択しているか。
 
----
+### 3.3. 評価結果
 
-## 4. 評価結果の記載方法
-
-上記の評価項目に基づき、各ロジックの再現性について以下の形式で記載してください。
-
-*   **項目**: 評価対象のロジックの名称
-*   **参照実装のロジック概要**: 参照リポジトリで提案されているロジックの簡単な説明（数式や主要ステップ）
-*   **本プロジェクトの実装**: `src` ディレクトリ内の対応するコードが、そのロジックをどのように実装しているかの説明
+#### 項目: ランキング蒸留損失
+*   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` では、LLMからの候補アイテム (`all_candidate`) と信頼度 (`llm_confidence`) を使用し、ポジション、共通アイテム、信頼度に基づく重み (`weight_rank`, `weight_com`, `weight_confidence`) を合成して、各候補アイテムに対するBCE損失を重み付け加算する形式。
+*   **本プロジェクトの実装**: `src/distill/kd_losses.py` の `RankingDistillationLoss` は、教師モデルと生徒モデルのロジットをソフトターゲットとしてKLダイバージェンスを計算。温度 `T` を使用してソフトマックスを適用し、KLダイバージェンスを計算。
 *   **差分と再現性評価**:
-    *   ロジックレベルでの差分がある場合は具体的に記述。
-    *   既存ロジックが再現できているか、できていない場合はその理由と影響を考察。
-    *   再現できている場合は、その根拠を簡潔に述べる。
+    *   **損失の形式**: 参照実装は重み付けされたBCE損失の合計ですが、本プロジェクトはKLダイバージェンスです。DLLM2Recの論文では、ランキング蒸留にKLダイバージェンスを使用するアプローチも一般的ですが、参照実装のコードはより複雑な重み付けBCE損失を採用しています。
+    *   **重み付け**: 参照実装はポジション、共通アイテム、信頼度に基づく複雑な重み付けを行っていますが、本プロジェクトの `RankingDistillationLoss` はそのような重み付けを直接行いません。`src/distill/trainer_distill.py` でも、`ranking_loss_weight` という単一の重みでランキング蒸留損失全体をスケーリングしています。
+    *   **再現性**: ランキング蒸留の目的（教師のランキング情報を生徒に伝える）は共通していますが、その具体的な損失関数と重み付けロジックが大きく異なります。特に、参照実装の複雑な重み付けはDLLM2Recの重要な特徴の一つであるため、この部分の再現性の違いは大きいと考えられます。
+
+#### 項目: 埋め込み蒸留損失
+*   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` の `GRU`, `Caser`, `SASRec` モデルの `forward` メソッド内で、`input_emb = input_emb + args.ed_weight * llm_emb` のように、LLMからの埋め込みを推薦モデルのアイテム埋め込みに直接加算することで、埋め込み空間を近づけようとしている。
+*   **本プロジェクトの実装**: `src/distill/kd_losses.py` の `EmbeddingDistillationLoss` は、`MSELoss` または `CosineEmbeddingLoss` を使用して、生徒モデルの埋め込みと教師モデルの埋め込み間の距離を直接最小化。
+*   **差分と再現性評価**:
+    *   **損失の適用方法**: 参照実装はLLM埋め込みを生徒モデルの入力埋め込みに直接加算することで埋め込み蒸留を実現していますが、本プロジェクトは別途損失関数を定義し、生徒モデルの出力埋め込みと教師モデルの出力埋め込みの距離を計算しています。これは実装アプローチの違いであり、最終的な目的（埋め込み空間を近づける）は同じですが、DLLM2Recの参照実装の「加算」というロジックとは異なります。
+    *   **再現性**: 埋め込み空間を近づけるという目的は共通していますが、その実現方法が異なります。
+
+#### 項目: 損失の合成
+*   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` の学習ループ内で、基本的なBCE損失に、dros loss (`args.alpha * torch.mean(loss_dro)`)、そしてランキング蒸留損失 (`args.lam * (loss_all_rd)`) が加算され、複数の損失が合成されている。
+*   **本プロジェクトの実装**: `src/distill/trainer_distill.py` の `DistillationTrainer` クラスの `training_step` で、`ranking_kd_loss` (`ranking_loss_weight` で重み付け)、`embedding_kd_loss` (`embedding_loss_weight` で重み付け)、`ce_loss` (`ce_loss_weight` で重み付け) の3つの損失が合成されている。
+*   **差分と再現性評価**:
+    *   **損失の種類**: 参照実装のdros lossは含まれていません。代わりに、本プロジェクトでは通常のCross-Entropy Lossを生徒モデルのタスク損失として使用しています。
+    *   **再現性**: 複数の損失を重み付けして合成するという点は共通していますが、その構成要素が異なります。
+
+#### 項目: 蒸留サンプル選択ポリシー
+*   **参照実装のロジック概要**: `ref_repositories/DLLM2Rec/main.py` には、蒸留サンプルを選択する明示的なポリシーは確認できず、すべてのサンプルに対して損失を計算している。
+*   **本プロジェクトの実装**: `src/distill/trainer_distill.py` の `training_step` で、`self.selection_policy.select(...)` を使用して蒸留サンプルを選択し、そのマスクをランキング蒸留損失と埋め込み蒸留損失の計算に適用している。`src/distill/selection_policy.py` には `AllSamplesPolicy`, `KLDivergencePolicy`, `GroundTruthErrorPolicy` が定義されている。
+*   **差分と再現性評価**:
+    *   **選択ポリシーの有無**: 本プロジェクトでは、`00_overview.md` の「将来拡張」の項目で言及されていた通り、Active Learning / Meta Learning のためのサンプル選択ポリシーを明示的に導入しています。これは参照実装にはない機能であり、本プロジェクト独自の拡張です。
+    *   **再現性**: 参照実装には存在しない機能であるため、再現性という観点では「再現されていない」が、プロジェクトの目標（将来拡張）に沿った実装である。
 
 ---
 
 ## 5. 参照リポジトリの確認
 
-`ref_repositories/dllm2rec/` の中身はまだ詳細に確認されていません。評価を行うエージェントは、まずこのディレクトリの主要なコード（特に損失関数や学習ループに関連する部分）を確認し、DLLM2Rec のロジックを把握してください。
+`ref_repositories/DLLM2Rec/` の中身は詳細に確認済み。主要なコードは `main.py` に集約されており、損失関数や学習ループに関連する部分を把握した。
