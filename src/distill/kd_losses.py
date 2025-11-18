@@ -156,41 +156,45 @@ class WeightedBCELoss(nn.Module):
         if self.alpha > 0 and self.ps is None:
             raise ValueError("Propensity scores (ps) must be provided if alpha > 0 for DROLoss.")
 
-    def forward(self, student_logits: torch.Tensor, teacher_candidates: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    def forward(self, student_logits: torch.Tensor, teacher_candidates: torch.Tensor, weights: torch.Tensor, neg_samples: torch.Tensor) -> torch.Tensor:
         """
         Args:
             student_logits (torch.Tensor): 生徒モデルの出力ロジット (batch_size, num_items)。
             teacher_candidates (torch.Tensor): 教師モデルからの候補アイテム (batch_size, num_candidates)。
             weights (torch.Tensor): 各候補アイテムに対する重み (batch_size, num_candidates)。
+            neg_samples (torch.Tensor): ネガティブサンプリングされたアイテム (batch_size, num_neg_samples)。
 
         Returns:
             torch.Tensor: 重み付きBCE損失とDRO損失の結合。
         """
         total_ranking_loss = 0
         num_candidates = teacher_candidates.size(1)
-        batch_size = student_logits.size(0)
-
-        # negtive item sampling (DLLM2Rec main.pyから移植)
-        # ここでは、ネガティブサンプリングはバッチ全体で一度行われることを想定
-        # ただし、DLLM2Recのmain.pyでは、各候補アイテムに対してネガティブサンプリングが行われているように見える
-        # ここでは、簡略化のため、各候補アイテムに対してネガティブサンプリングは行わず、
-        # BCE損失の計算にはポジティブスコアのみを使用する。
-        # もしネガティブサンプリングが必要な場合は、trainer_distill.py側で生成し、ここに渡す必要がある。
-        # 参照実装のloss_bce_rdはpos_labelsとneg_labelsを使っているが、neg_scoresはどこから来るのか不明。
-        # ここでは、pos_labelsとpos_scoresのみでBCEを計算する。
-        # 参照実装のloss_bce_rd: -(pos_labels*torch.log(torch.sigmoid(pos_scores)) + (1-neg_labels)*torch.log(torch.sigmoid(1-neg_scores)))
-        # これはBCEWithLogitsLoss(reduction='none')と等価ではない。
-        # BCEWithLogitsLossは内部でsigmoidを適用し、log_sigmoid(x) - 2*x*target + x^2 のような計算をする。
-        # 参照実装のloss_bce_rdは、ポジティブサンプルとネガティブサンプルを明示的に分けて計算している。
-        # ここでは、ポジティブサンプルに対するBCE損失のみを計算する。
+        num_neg_samples = neg_samples.size(1)
 
         for i in range(num_candidates):
             target = teacher_candidates[:, i:i+1] # (batch_size, 1)
             pos_scores = torch.gather(student_logits, 1, target) # (batch_size, 1)
             pos_labels = torch.ones_like(pos_scores) # (batch_size, 1)
+
+            # ネガティブスコアを取得
+            # (batch_size, num_neg_samples)
+            neg_scores = torch.gather(student_logits, 1, neg_samples)
+            neg_labels = torch.zeros_like(neg_scores) # (batch_size, num_neg_samples)
+
+            # 参照実装のBCE損失計算を再現
+            # -(pos_labels*torch.log(torch.sigmoid(pos_scores)) + (1-neg_labels)*torch.log(torch.sigmoid(1-neg_scores)))
+            # 1-neg_labelsは常に1なので、単にlog(1-sigmoid(neg_scores))となる
+            # torch.log(torch.sigmoid(x)) は F.logsigmoid(x) で計算可能
+            # torch.log(1 - torch.sigmoid(x)) は F.logsigmoid(-x) で計算可能
             
+            # ポジティブサンプルに対する損失
+            loss_pos = F.logsigmoid(pos_scores) # (batch_size, 1)
+            
+            # ネガティブサンプルに対する損失
+            loss_neg = F.logsigmoid(-neg_scores).mean(dim=1, keepdim=True) # (batch_size, 1)
+
             # BCE損失
-            loss_bce_rd = self.bce_loss(pos_scores, pos_labels) # (batch_size, 1)
+            loss_bce_rd = -(loss_pos + loss_neg) # (batch_size, 1)
 
             current_ranking_loss = (weights[:, i:i+1] * loss_bce_rd).mean()
 

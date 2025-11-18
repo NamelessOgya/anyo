@@ -2,8 +2,10 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from typing import Dict, Any, Optional
+from torch.utils.data import DataLoader # Import DataLoader
 
 from src.student.models import SASRec
+from src.student.datamodule import SASRecDataModule
 from src.teacher.interfaces import TeacherModel
 from src.distill.kd_losses import RankingDistillationLoss, EmbeddingDistillationLoss, WeightedBCELoss, DROLoss, PropensityScoreCalculator
 from src.distill.selection_policy import SelectionPolicy
@@ -13,6 +15,7 @@ class DistillationTrainer(pl.LightningModule):
     def __init__(self,
                  student_model: SASRec,
                  teacher_model: TeacherModel,
+                 datamodule: SASRecDataModule,
                  num_items: int,
                  ranking_loss_weight: float,
                  embedding_loss_weight: float,
@@ -28,14 +31,17 @@ class DistillationTrainer(pl.LightningModule):
                  gamma_consistency: float,
                  candidate_topk: int,
                  ed_weight: float,
+                 num_neg_samples: int, # Add num_neg_samples parameter
                  alpha: float = 0.0, # DRO loss weight
                  beta: float = 1.0,  # DRO robust radius
                  propensity_scores: Optional[torch.Tensor] = None, # Pre-calculated ps
-                 lam: float = 1.0 # Weight for importance-aware ranking distillation
+                 lam: float = 1.0, # Weight for importance-aware ranking distillation
+                 teacher_output_dataloader: Optional[DataLoader] = None # Pre-generated teacher outputs dataloader
                  ):
         super().__init__()
         self.student_model_module = student_model # Registered as a submodule
         self.teacher_model = teacher_model
+        self.datamodule = datamodule
         self.num_items = num_items
         self.ranking_loss_weight = ranking_loss_weight
         self.embedding_loss_weight = embedding_loss_weight
@@ -53,6 +59,9 @@ class DistillationTrainer(pl.LightningModule):
         self.beta = beta
         self.propensity_scores = propensity_scores
         self.lam = lam
+        self.num_neg_samples = num_neg_samples # Store num_neg_samples
+        self.teacher_output_dataloader = teacher_output_dataloader # Store pre-generated teacher outputs dataloader
+        self.teacher_output_iterator = None # Will be initialized in on_train_epoch_start
         self.student_model_module.train() # Explicitly set to train mode here
 
         # 損失関数
@@ -80,6 +89,15 @@ class DistillationTrainer(pl.LightningModule):
         """
         self.student_model_module.train()
 
+    def on_train_epoch_start(self):
+        """
+        Called at the beginning of each training epoch.
+        Initializes the iterator for teacher outputs.
+        """
+        if self.teacher_output_dataloader is not None:
+            self.teacher_output_iterator = iter(self.teacher_output_dataloader)
+        self.student_model_module.train() # Ensure student model is in train mode
+
     def forward(self, item_seq, item_seq_len):
         return self.student_model_module.predict(item_seq, item_seq_len)
 
@@ -89,14 +107,35 @@ class DistillationTrainer(pl.LightningModule):
         item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
 
+        print(f"Debug: Batch size from dm.train_dataloader(): {item_seq.size(0)}")
+
         # 1. 教師モデルからソフトターゲットと埋め込みを取得
-        with torch.no_grad():
-            teacher_outputs_raw = self.teacher_model.get_teacher_outputs(batch)
-        
-        teacher_logits = teacher_outputs_raw.get("ranking_scores")
-        teacher_embeddings = teacher_outputs_raw.get("embeddings")
-        teacher_candidates = teacher_outputs_raw.get("candidates") # (batch_size, candidate_topk)
-        teacher_confidence = teacher_outputs_raw.get("confidence") # (batch_size, candidate_topk)
+        if self.teacher_output_dataloader is not None:
+            # 事前生成された教師出力を利用
+            teacher_outputs_for_current_batch = next(self.teacher_output_iterator)
+            
+            teacher_logits = teacher_outputs_for_current_batch["ranking_scores"].to(self.device)
+            teacher_embeddings = teacher_outputs_for_current_batch["embeddings"].to(self.device)
+            teacher_candidates = teacher_outputs_for_current_batch["candidates"].to(self.device)
+            teacher_confidence = teacher_outputs_for_current_batch["confidence"].to(self.device)
+            
+            print(f"Debug: Batch size from teacher_output_dataloader(): {teacher_embeddings.size(0)}")
+            
+            teacher_outputs_raw = {
+                "ranking_scores": teacher_logits,
+                "embeddings": teacher_embeddings,
+                "candidates": teacher_candidates,
+                "confidence": teacher_confidence,
+            }
+        else:
+            # オンザフライで教師出力を生成
+            with torch.no_grad():
+                teacher_outputs_raw = self.teacher_model.get_teacher_outputs(batch)
+            
+            teacher_logits = teacher_outputs_raw.get("ranking_scores")
+            teacher_embeddings = teacher_outputs_raw.get("embeddings")
+            teacher_candidates = teacher_outputs_raw.get("candidates") # (batch_size, candidate_topk)
+            teacher_confidence = teacher_outputs_raw.get("confidence") # (batch_size, candidate_topk)
 
         # 2. 生徒モデルの出力を取得
         student_embeddings = self.student_model_module(item_seq, item_seq_len, teacher_embeddings=teacher_embeddings)
@@ -109,10 +148,46 @@ class DistillationTrainer(pl.LightningModule):
             ground_truth=next_item
         )
 
-        # 4. 損失の計算
+        # 4. ネガティブサンプリング (DLLM2Rec main.pyから移植)
+        # item_seqはpadding_item_idを含む可能性があるため、num_items+1のサイズでマスクを作成
+        # next_itemはpadding_item_idを含まないため、そのまま使用
+        real_batch_size = item_seq.size(0)
+        num_items_total = self.num_items # item_num in DLLM2Rec
+        
+        # 既にインタラクションがあったアイテムと、現在の正解アイテムをマスク
+        # item_seqはpadding_item_idを含む可能性があるため、num_items+1のサイズでマスクを作成
+        # next_itemはpadding_item_idを含まないため、そのまま使用
+        # item_seqのpadding_item_idはnum_itemsにマッピングされていると仮定
+        
+        # zeros_tensorのサイズをnum_items_total + 1 に変更
+        zeros_tensor = torch.zeros((real_batch_size, num_items_total + 1), device=self.device)
+        
+        # item_seqに含まれるアイテムを1に設定
+        # item_seqの要素がnum_items_totalを超えることはないはずだが、念のためクランプ
+        clamped_item_seq = torch.clamp(item_seq, max=num_items_total)
+        zeros_tensor.scatter_(1, clamped_item_seq, 1)
+        
+        # next_itemを1に設定
+        zeros_tensor.scatter_(1, next_item.unsqueeze(1), 1)
+        
+        # 最後の列（padding_item_idに対応する可能性のある部分）を除外
+        zeros_tensor = zeros_tensor[:, :num_items_total]
+        
+        neg_tensor = 1 - zeros_tensor # 0がサンプリング対象
+        
+        # num_neg_samplesが0の場合、torch.multinomialはエラーになるため、条件分岐
+        if self.num_neg_samples > 0:
+            neg_samples = torch.multinomial(
+                neg_tensor, self.num_neg_samples, replacement=True
+            )
+        else:
+            # ネガティブサンプルが不要な場合は空のテンソルを生成
+            neg_samples = torch.empty((real_batch_size, 0), dtype=torch.long, device=self.device)
+
+        # 5. 損失の計算
         total_loss = 0
         
-        # 4.1. ランキング蒸留損失
+        # 5.1. ランキング蒸留損失
         if self.ranking_loss_weight > 0 and distill_mask.any():
             # 重みの計算
             # weight_rank
@@ -142,12 +217,13 @@ class DistillationTrainer(pl.LightningModule):
             ranking_kd_loss = self.ranking_kd_loss_fn(
                 student_logits[distill_mask],
                 teacher_candidates[distill_mask],
-                weights[distill_mask]
+                weights[distill_mask],
+                neg_samples[distill_mask] # Pass neg_samples here
             )
             total_loss += self.lam * self.ranking_loss_weight * ranking_kd_loss
             self.log('train_ranking_kd_loss', ranking_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
-        # 4.2. 埋め込み蒸留損失
+        # 5.2. 埋め込み蒸留損失
         if self.embedding_loss_weight > 0 and distill_mask.any():
             embedding_kd_loss = self.embedding_kd_loss_fn(
                 student_embeddings[distill_mask],
@@ -156,7 +232,7 @@ class DistillationTrainer(pl.LightningModule):
             total_loss += self.embedding_loss_weight * embedding_kd_loss
             self.log('train_embedding_kd_loss', embedding_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
-        # 4.3. 元のタスク損失 (Cross-Entropy + DRO)
+        # 5.3. 元のタスク損失 (Cross-Entropy + DRO)
         if self.ce_loss_weight > 0:
             ce_loss = self.ce_loss_fn(student_logits, next_item)
             if self.alpha > 0 and self.dro_loss_fn is not None:
@@ -168,6 +244,7 @@ class DistillationTrainer(pl.LightningModule):
         self.log('train_total_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return total_loss
 
+    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int):
         item_seq = batch["seq"]
         item_seq_len = batch["len_seq"]
         next_item = batch["next_item"]
@@ -184,33 +261,18 @@ class DistillationTrainer(pl.LightningModule):
         predictions_list = top_k_predictions.tolist()
 
         # ground_truths: 各サンプルの正解アイテムをリストのリストに変換
-        ground_truths_list = [[item_id.item()] for item_id in next_item]
-
+        # padding_item_idを除外
+        ground_truths_list = []
+        for item_id_tensor in next_item:
+            item_id = item_id_tensor.item()
+            if item_id != self.datamodule.padding_item_id:
+                ground_truths_list.append([item_id])
+        
         metrics = calculate_metrics(predictions_list, ground_truths_list, k=self.metrics_k)
         
         self.log('val_loss', loss, on_epoch=True, prog_bar=True, logger=True)
         for metric_name, metric_value in metrics.items():
             self.log(f'val_{metric_name}', metric_value, on_epoch=True, prog_bar=True, logger=True)
-
-    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int):
-        item_seq = batch["item_seq"]
-        item_seq_len = batch["item_seq_len"]
-        next_item = batch["next_item"]
-
-        logits = self.forward(item_seq, item_seq_len)
-        
-        # メトリクスの計算
-        # predictions: 各サンプルのトップKアイテムIDを取得
-        _, top_k_predictions = torch.topk(logits, k=self.metrics_k, dim=1)
-        predictions_list = top_k_predictions.tolist()
-
-        # ground_truths: 各サンプルの正解アイテムをリストのリストに変換
-        ground_truths_list = [[item_id.item()] for item_id in next_item]
-
-        metrics = calculate_metrics(predictions_list, ground_truths_list, k=self.metrics_k)
-        
-        for metric_name, metric_value in metrics.items():
-            self.log(f'test_{metric_name}', metric_value, on_epoch=True, prog_bar=True, logger=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(

@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 def run_teacher(cfg: DictConfig):
     # 1. ロギング、シード、Git情報の初期化
     output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
+    output_dir.mkdir(parents=True, exist_ok=True) # Ensure the output directory exists
+    
+    # Save the Hydra config to the experiment directory
+    with open(output_dir / "config.yaml", "w") as f:
+        f.write(OmegaConf.to_yaml(cfg))
+
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
     git_info = get_git_info()
@@ -32,14 +38,6 @@ def run_teacher(cfg: DictConfig):
     logger.info(f"Config: {OmegaConf.to_yaml(cfg)}")
 
     # 2. SASRecDataModuleのインスタンス化とデータ準備
-    # LLMとTokenizerのロード (SASRecDataModuleに渡すため)
-    llm_for_dm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
-    tokenizer_for_dm = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name)
-    if tokenizer_for_dm.pad_token is None:
-        tokenizer_for_dm.pad_token = tokenizer_for_dm.eos_token
-    tokenizer_for_dm.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
-    llm_for_dm.resize_token_embeddings(len(tokenizer_for_dm))
-
     dm = SASRecDataModule(
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
@@ -47,9 +45,9 @@ def run_teacher(cfg: DictConfig):
         max_seq_len=cfg.student.max_seq_len, # 教師モデルも同じmax_seq_lenを使用
         num_workers=cfg.train.num_workers,
         limit_data_rows=cfg.dataset.limit_data_rows,
-        llm_model_name=cfg.teacher.llm_model_name, # Pass llm_model_name
-        tokenizer=tokenizer_for_dm, # Pass tokenizer
-        max_gen_length=cfg.teacher.max_gen_length # Pass max_gen_length
+        train_file="train.csv",
+        val_file="val.csv",
+        test_file="test.csv"
     )
     dm.prepare_data()
     dm.setup()
@@ -63,15 +61,15 @@ def run_teacher(cfg: DictConfig):
         num_layers=cfg.student.num_layers,
         dropout_rate=cfg.student.dropout_rate,
         max_seq_len=cfg.student.max_seq_len,
-    ).to(llm_for_dm.device) # deviceを合わせる
+    )
     
     # projectorのインスタンス化
     projector_instance = MLPProjector(
         input_dim=cfg.student.hidden_size, # rec_modelの出力次元
-        output_dim=llm_for_dm.config.hidden_size, # LLMの入力次元
+        output_dim=cfg.teacher.hidden_size, # LLMの入力次元 (暫定、ilora_model内でLLMロード後に取得)
         hidden_size=cfg.teacher.hidden_size,
         dropout_rate=cfg.teacher.dropout_rate
-    ).to(llm_for_dm.device) # deviceを合わせる
+    )
 
     # 3. create_teacher_model を使用して iLoRAModel をインスタンス化
     ilora_model_instance = create_teacher_model(
@@ -97,8 +95,8 @@ def run_teacher(cfg: DictConfig):
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir / "checkpoints",
         filename="best_teacher_model",
-        monitor=f"val_recall@{cfg.eval.metrics_k}",
-        mode="max",
+        monitor="val_loss",
+        mode="min",
         save_top_k=1,
         verbose=True
     )
@@ -113,7 +111,8 @@ def run_teacher(cfg: DictConfig):
         logger=tb_logger,
         enable_checkpointing=True,
         val_check_interval=cfg.train.val_check_interval,
-        log_every_n_steps=cfg.train.log_every_n_steps
+        log_every_n_steps=cfg.train.log_every_n_steps,
+        enable_progress_bar=False
     )
 
     logger.info("Starting iLoRA teacher model training...")
@@ -139,8 +138,6 @@ def run_teacher(cfg: DictConfig):
             metrics_k=cfg.eval.metrics_k,
             item_id_to_name=dm.item_id_to_name,
             # iLoRAModelのハイパーパラメータを明示的に渡す
-            llm=llm_for_dm, # Pass llm
-            tokenizer=tokenizer_for_dm, # Pass tokenizer
             num_lora_experts=cfg.teacher.num_lora_experts,
             lora_r=cfg.teacher.lora_r,
             lora_alpha=cfg.teacher.lora_alpha,
@@ -165,6 +162,43 @@ def run_teacher(cfg: DictConfig):
     logger.info("Running test_step for teacher model...")
     trainer.test(loaded_model, dm) # Pass the datamodule directly
     logger.info("iLoRA teacher model evaluation finished.")
+
+    # 8. 訓練データセットに対する教師出力を生成し、保存
+    logger.info("Generating teacher outputs for the training dataset...")
+    
+    teacher_outputs_batches_dir = output_dir / "teacher_outputs_batches"
+    teacher_outputs_batches_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure the model is on the correct device and in eval mode
+    loaded_model.model.eval()
+    loaded_model.model.to(loaded_model.device)
+
+    batch_idx = 0
+    with torch.no_grad():
+        for batch in dm.train_dataloader():
+            # Move batch to device
+            for key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    batch[key] = value.to(loaded_model.device)
+                elif isinstance(value, dict) and "input_ids" in value:
+                    batch[key]["input_ids"] = value["input_ids"].to(loaded_model.device)
+                    batch[key]["attention_mask"] = value["attention_mask"].to(loaded_model.device)
+                    if "labels" in value:
+                        batch[key]["labels"] = value["labels"].to(loaded_model.device)
+
+            teacher_outputs = loaded_model.model.get_teacher_outputs(batch)
+            
+            # Save each batch's output to a separate file
+            batch_output_path = teacher_outputs_batches_dir / f"batch_{batch_idx:05d}.pt"
+            torch.save({
+                "ranking_scores": teacher_outputs["ranking_scores"].cpu(),
+                "embeddings": teacher_outputs["embeddings"].cpu(),
+                "candidates": teacher_outputs["candidates"].cpu(),
+                "confidence": teacher_outputs["confidence"].cpu(),
+            }, batch_output_path)
+            batch_idx += 1
+            
+    logger.info(f"Teacher outputs for {batch_idx} batches saved to {teacher_outputs_batches_dir}")
 
 if __name__ == "__main__":
     run_teacher()

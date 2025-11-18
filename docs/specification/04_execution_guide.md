@@ -42,6 +42,19 @@ docker exec -it ilora-dev-container bash
 poetry run python -m src.exp.run_student_baseline train=student train.batch_size=64
 ```
 
+### 1.3. データセットの準備
+
+本プロジェクトでは MovieLens 1M データセットを使用します。
+以下のスクリプトを実行することで、データセットのダウンロードと展開が自動的に行われます。
+
+```bash
+./data/download_movielens.sh
+```
+
+このスクリプトは、`data/ml-1m/` ディレクトリに `ratings.dat` などのデータファイルを配置します。
+
+**注意:** `conf/dataset/movielens.yaml` ファイル内の `data_dir` が、上記で展開されたパス (`data/ml-1m`) を正しく指していることを確認してください。
+
 ---
 
 ## 2. テストの実行

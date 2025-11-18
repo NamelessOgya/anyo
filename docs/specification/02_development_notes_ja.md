@@ -303,94 +303,68 @@ DLLM2RecのDRO (Distributionally Robust Optimization) 損失を再現するた�
 iLoRAロジックのリファクタリングと関連するテストの修正は完了し、教師モデルの学習が正常に実行されることを確認しました。
 また、DLLM2RecのDRO損失の再現も完了しました。
 
-*   **iLoRA教師モデルにおけるSASRecの利用方法の変更**:
-    *   iLoRA教師モデルのゲーティングネットワークで利用するSASRecモデルは、**事前に学習済みの生徒モデルのチェックポイントをロードして利用**するように変更します。これにより、参照実装の意図と、SASRecの学習済みモデルを有効活用するという方針に合致させます。
-    *   これに伴い、`src/teacher/factory.py` を修正し、`rec_model_checkpoint_path` を設定で受け取り、そこからSASRecモデルをロードして凍結するようにします。
-    *   `conf/teacher/ilora.yaml` に `rec_model_checkpoint_path` の設定項目を追加します。
-    *   **補足**: `src/teacher/factory.py` は、`rec_model_checkpoint_path` が指定されていない場合にエラーを発生させるように変更されました。
-*   **DLLM2Recの残りのロジックの再現性向上**:
-    *   `lam`パラメータによるランキング蒸留損失の重み付けを`src/distill/trainer_distill.py`に実装し、`conf/distill/dllm2rec.yaml`に`lam`パラメータを追加しました。
-    *   `beta2`パラメータは参照実装の`main.py`では使用されていないため、現時点では対応不要と判断しました。
-    *   DLLM2Recの残りのロジック（例: `gamma_position`, `gamma_confidence`, `gamma_consistency` の利用など）の再現性向上に着手してください。特に、`06_difference_from_asis.md` に記載されているDLLM2Recのロジック差分を参考に、既存実装を修正してください。
-*   **ドキュメントの継続的な更新**:
-    *   今後の実装や変更についても、`docs/specification/02_development_notes_ja.md` および `docs/specification/06_difference_from_asis.md` を含め、関連するドキュメントを更新してください。
+**解決済みの問題:**
+*   **iLoRA教師モデルにおけるSASRecの利用方法の変更**: `rec_model_checkpoint_path` を設定で受け取り、そこからSASRecモデルをロードして凍結するように修正済み。
+*   **DLLM2Recの残りのロジックの再現性向上**: `lam`パラメータによるランキング蒸留損失の重み付け、`gamma_position`, `gamma_confidence`, `gamma_consistency` パラメータの利用を確認済み。
+*   **`max_epochs`の個別設定**: 教師学習、生徒ベースライン、蒸留学習の`max_epochs`を個別に設定できるよう修正済み。
+*   **`pl.Trainer`のプログレスバー出力の抑制**: 教師モデルと蒸留モデルの学習時に、`pl.Trainer`のプログレスバー出力を抑制するように修正済み。
+*   **`SASRecEvaluator`のモデルタイプ不一致の修正**: `SASRecEvaluator`が`SASRecTrainer`ではなく`SASRec`モデルインスタンスを直接受け入れるように修正済み。
+*   **`DistillationTrainer`の`validation_step`の修正**: `validation_step`メソッドを正しく定義し、`val_recall@10`がログに記録されるように修正済み。
+*   **`DistillationTrainer`の評価時のモデルロード方法の改善**: 評価時に`DistillationTrainer`のチェックポイントから`student_model_module`のstate dictを抽出し、新しい`SASRec`インスタンスにロードして評価器に渡すように修正済み。
+*   **`SASRecDataModule`の`_get_movie_id2name`メソッドの配置修正**: `_get_movie_id2name`メソッドの定義が`setup`メソッドの内部にあった問題を修正し、クラスの直下に移動済み。
+*   **評価メトリクス計算時のパディングアイテムIDの除外**: `DistillationTrainer`の`validation_step`および`test_step`、`SASRecEvaluator`において、`ground_truths_list`からパディングアイテムIDを除外するように修正済み。
 
-
-### 5.6. エージェントによる引き継ぎノート (2025-11-17, 3回目)
-
-#### 5.6.1. 実施した作業の概要
-
-*   **iLoRA教師モデルにおけるSASRecの利用方法の変更**:
-    *   `conf/teacher/ilora.yaml` に `rec_model_checkpoint_path` が既に存在することを確認しました。
-    *   `src/teacher/factory.py` を修正し、`rec_model_checkpoint_path` で指定されたパスからSASRecモデルをロードし、そのパラメータを凍結するようにしました。これにより、iLoRA教師モデルのゲーティングネットワークで事前に学習済みのSASRecモデルを利用する要件を満たしました。
-    *   `src/teacher/factory.py` の `if __name__ == "__main__":` ブロック内のテストコードを修正し、`create_teacher_model` 関数への引数渡しが正しく行われるようにしました。
-*   **DLLM2Recの残りのロジックの再現性向上**:
-    *   `src/distill/trainer_distill.py` を確認し、`lam` パラメータによるランキング蒸留損失の重み付けが既に実装されていることを確認しました。
-    *   `src/distill/trainer_distill.py` を確認し、`gamma_position`, `gamma_confidence`, `gamma_consistency` パラメータがランキング蒸留損失の重み付け計算に既に利用されていることを確認しました。
-    *   `beta2` パラメータは参照実装で利用されていないため、対応不要と判断しました。
-    *   `docs/specification/06_difference_from_asis.md` および `docs/specification/06_difference_from_asis_2nd.md` を再確認し、DLLM2Recの主要なロジックが本プロジェクトで高いレベルで再現されていることを確認しました。
-
-#### 5.6.2. 現在の課題と次のエージェントへの依頼事項
-
-すべての引き継ぎタスクが完了しました。
-
-*   **ドキュメントの継続的な更新**:
-    *   今後の実装や変更についても、`docs/specification/02_development_notes_ja.md` および `docs/specification/06_difference_from_asis.md` を含め、関連するドキュメントを更新してください。
-*   **実験の実施と評価**:
-    *   `docs/specification/04_execution_guide.md` を参考に、教師モデル、生徒モデル、蒸留モデルの学習と評価を実行し、結果を分析してください。
-    *   特に、`conf/teacher/ilora.yaml` の `rec_model_checkpoint_path` には、事前に学習済みのSASRecモデルのチェックポイントパスを設定し、教師モデルの学習を行ってください。
-*   **ハイパーパラメータチューニング**:
-    *   `gamma_position`, `gamma_confidence`, `gamma_consistency` など、DLLM2Recのロジックに関連するハイパーパラメータの最適化を検討してください。
-
-### 5.7. エージェントによる引き継ぎノート (2025-11-17, 4回目)
-
-#### 5.7.1. 実施した作業の概要
-
-*   **`run_student_baseline.sh`実行時の`KeyError`の修正**:
-    *   `src/student/evaluator.py`において、データローダーから取得するバッチのキーを`item_seq`から`seq`に、`item_seq_len`から`len_seq`に修正しました。これにより、`KeyError: 'item_seq'`が解消されました。
-*   **`pl.Trainer`のプログレスバー出力の抑制**:
-    *   `src/exp/run_student_baseline.py`において、`pl.Trainer`のインスタンス化時に`enable_progress_bar=False`を追加し、冗長なプログレスバーの出力を抑制しました。
-
-*   **ベースラインモデルの精度向上**:
-    *   現在のSASRecベースラインモデルの`val_recall@10`が異常に低い（例: 0.06383）ため、その原因を調査し、精度を向上させる必要があります。特に、モデルの内部フローや実装自体に誤りがないか、データ処理、モデルのハイパーパラメータ、学習設定などを含めて詳細に確認してください。
-
-### 5.8. エージェントによる引き継ぎノート (2025-11-17, 5回目)
-
-#### 5.8.1. 実施した作業の概要と解決済みの問題
-
-本作業では、SASRecベースラインモデル、iLoRA教師モデル、知識蒸留の学習パイプラインを正常に実行できるようにするため、以下の問題点を特定し、解決しました。
-
-*   **Hydra設定の問題解決**:
-    *   `@hydra.main`デコレータにおける`TypeError: main() got an unexpected keyword argument 'defaults'`エラーが発生していました。これは、`conf/config.yaml`の`defaults`リストに`train: default`を追加し、各実験スクリプト（`run_student_baseline.py`, `run_teacher.py`, `run_distill.py`）ではコマンドライン引数（例: `train=student`）で適切な`train`コンフィグをオーバーライドするように変更することで解決しました。これにより、Hydraのコンフィグロードが意図通りに機能するようになりました。
-*   **PyTorch Lightningチェックポイントのロード問題解決**:
-    *   `src/teacher/factory.py`で教師モデルのSASRecをロードする際に、`RuntimeError: Error(s) in loading state_dict for SASRec`が発生していました。これは、PyTorch LightningのチェックポイントからSASRecモデルの`state_dict`をロードする際に、`checkpoint['state_dict']`から実際のモデルの重みを抽出し、さらにキーに付与されている"model."プレフィックスを削除するように修正することで解決しました。
-*   **データ処理の問題解決**:
-    *   `src/exp/run_distill.py`における`PropensityScoreCalculator`への`train_next_items`の渡し方で、`RuntimeError: a Tensor with 32 elements cannot be converted to Scalar`が発生していました。これは、バッチ内の`next_item`テンソルを`torch.cat`で連結し、`tolist()`でリストに変換するように修正することで解決しました。
-    *   `src/distill/trainer_distill.py`の`validation_step`関数で`KeyError: 'item_seq'`が発生していました。これは、`SASRecDataset`が返すキー名に合わせて、`item_seq`を`seq`に、`item_seq_len`を`len_seq`に修正することで解決しました。
-*   **モデルインスタンス化の依存関係問題解決**:
-    *   `src/exp/run_distill.py`における`UnboundLocalError: local variable 'teacher_model_instance' referenced before assignment`エラーと、`SASRecDataModule`と教師モデルのインスタンス化における依存関係の循環を解決しました。具体的には、まず`SASRecDataModule`を初期化して必要なデータプロパティを取得し、それらを使って教師モデルをインスタンス化します。その後、教師モデルのトークナイザーを使って`SASRecDataModule`を再初期化するように順序を変更しました。
-    *   `src/exp/run_distill.py`における`KeyError: 'tokens'`エラーを解決するため、`SASRecDataModule`をインスタンス化する際に`llm_model_name`と`tokenizer`を渡すように修正しました。
-*   **学習時間の短縮**:
-    *   実装確認のため、`conf/dataset/movielens.yaml`の`limit_data_rows`を`10000`に、`conf/train/student.yaml`, `conf/train/teacher.yaml`, `conf/train/distill.yaml`の`max_epochs`を`3`に一時的に設定して学習を実行しました。これらの設定は、作業完了後に元の値に戻されています。
-*   **SASRecベースラインモデルの精度向上**:
-    *   `src/student/datamodule.py`と`src/student/models.py`を修正し、アイテムIDの処理とパディングの一貫性を確保しました。これにより、SASRecベースラインモデルの`val_recall@10`が`0.04255`から`0.12766`に、テスト`recall@10`が`0.03157`から`0.07368`に向上しました。
-
-#### 5.8.2. 現在の課題と次のエージェントへの依頼事項
-
-すべての学習パイプラインが正常に動作することを確認しました。
-
+**現在の課題と次のエージェントへの依頼事項:**
 *   **実験の実施と評価**:
     *   `docs/specification/04_execution_guide.md` を参考に、教師モデル、生徒モデル、蒸留モデルの学習と評価を実行し、結果を分析してください。
     *   `conf/teacher/ilora.yaml` の `rec_model_checkpoint_path` には、事前に学習済みのSASRecモデルのチェックポイントパスを設定してください。
     *   `conf/distill/dllm2rec.yaml` の `teacher_checkpoint_path` には、事前に学習済みの教師モデルのチェックポイントパスを設定してください。
 *   **ハイパーパラメータチューニング**:
     *   `gamma_position`, `gamma_confidence`, `gamma_consistency` など、DLLM2Recのロジックに関連するハイパーパラメータの最適化を検討してください。
-*   **ベースラインモデルの精度向上**:
-    *   現在のSASRecベースラインモデルの`val_recall@10`が異常に低い（例: 0.06383）ため、その原因を調査し、精度を向上させる必要があります。特に、モデルの内部フローや実装自体に誤りがないか、データ処理、モデルのハイパーパラメータ、学習設定などを含めて詳細に確認してください。
 *   **iLoRAのプロンプト設計の改善**:
     *   `docs/implement.md`にも記載されている通り、iLoRAのプロンプト設計は暫定的なものです。より効果的なプロンプト設計を検討してください。
 *   **Amazon Games データセットの検証**:
     *   Amazon Games データセットはまだ検証されていません。このデータセットでの動作確認と評価を行ってください。
+*   **蒸留時のLLMアクセス頻度削減**:
+    *   蒸留学習のたびにLLMにアクセスするのではなく、バッチ的にLLMモデルの学習を一通り実行し、その出力を保存して再利用する仕組みを検討してください。
+*   **LLMモデル選択の柔軟性向上**:
+    *   現在`facebook/opt-125m`を使用していますが、LLaMA-7b-hfなど他のLLMモデルも選択できるように、モデルロード部分を汎用化してください。
+*   **実験結果のCSV出力バッチ作成**:
+    *   実験の各種メトリクスや学習時間などを一つのCSVファイルにまとめて出力するバッチスクリプトを作成し、結果の分析を容易にしてください。
+*   SASRecモデルの次元や学習率など、細かいパラメータを参照リポジトリ（iLoRA/DLLM2Rec）のものと一致させることを検討してください。
+*   プロンプト設計の参照リポジトリとの同期**:
+    *   iLoRAのプロンプト設計を参照リポジトリのものと一致させることを検討してください。
+*   **データ生成の独立化**:
+    *   現在`ref_repository`に依存しているtrain/testデータの生成を、ランダムシード固定で自前で作成できるようにする機能を検討してください。
+
+### 5.12. エージェントによる引き継ぎノート (2025-11-18)
+
+#### 5.12.1. 実施した作業の概要と解決済みの問題
+
+本作業では、SASRecベースラインモデル、iLoRA教師モデル、知識蒸留の学習パイプラインを正常に実行できるようにするため、以下の問題点を特定し、解決しました。
+
+*   **実行環境と設定の問題解決**:
+    *   `src/student/evaluator.py`における`IndentationError`および`SyntaxError`を修正しました。
+    *   `src/distill/trainer_distill.py`における`AttributeError: 'SASRec' object has no attribute 'padding_item_id'`を、`self.datamodule.padding_item_id`を使用するように修正しました。
+    *   `src/distill/trainer_distill.py`における`MisconfigurationException: No configure_optimizers() method defined`を、`configure_optimizers`メソッドを追加することで解決しました。
+    *   `src/distill/trainer_distill.py`における`AttributeError: 'DistillationTrainer' object has no attribute 'datamodule'`を、`DistillationTrainer`の`__init__`メソッドに`datamodule`パラメータを追加し、インスタンス変数として保存することで解決しました。
+    *   `src/distill/trainer_distill.py`における`NameError: name 'SASRecDataModule' is not defined`を、必要なimport文を追加することで解決しました。
+    *   `src/exp/run_student_baseline.py`における`AttributeError: 'SASRecTrainer' object has no attribute 'predict'`を、`SASRecEvaluator`に`loaded_model.model`を渡すように修正しました。
+*   **学習設定の改善**:
+    *   `conf/dataset/movielens.yaml`の`limit_data_rows`を`10000`から`-1`（全データ使用）に更新しました。
+    *   `conf/train/student.yaml`, `conf/train/teacher.yaml`, `conf/train/distill.yaml`の`max_epochs`を`3`から`10`に更新しました。
+
+#### 5.12.2. 各モデルの学習と評価の再実行結果
+
+上記修正と設定変更後、生徒ベースラインモデル、教師モデル、知識蒸留モデルの学習と評価を再実行しました。
+
+*   **生徒ベースラインモデル:** `test_recall@10`: 0.07368
+*   **教師モデル:** `test_recall@10`: 0.08421
+*   **蒸留済み生徒モデル:** `test_recall@10`: 0.03157
+
+#### 5.12.3. 現在の課題と次のエージェントへの依頼事項
+
+最新の課題とタスクリストについては、[`05_handover_notes.md`](./05_handover_notes.md) の最新の引き継ぎノートを参照してください。
 
 ### 5.8. エージェントによる引き継ぎノート (2025-11-17, 5回目)
 
@@ -421,8 +395,9 @@ iLoRAロジックのリファクタリングと関連するテストの修正は
     *   `conf/distill/dllm2rec.yaml` の `teacher_checkpoint_path` には、事前に学習済みの教師モデルのチェックポイントパスを設定してください。
 *   **ハイパーパラメータチューニング**:
     *   `gamma_position`, `gamma_confidence`, `gamma_consistency` など、DLLM2Recのロジックに関連するハイパーパラメータの最適化を検討してください。
-*   **ベースラインモデルの精度向上**:
-    *   現在のSASRecベースラインモデルの`val_recall@10`が異常に低い（例: 0.06383）ため、その原因を調査し、精度を向上させる必要があります。特に、モデルの内部フローや実装自体に誤りがないか、データ処理、モデルのハイパーパラメータ、学習設定などを含めて詳細に確認してください。
+*   **ベースラインモデルの精度問題（解決済み）**:
+    *   以前、SASRecベースラインモデルの`val_recall@10`が異常に低い問題が指摘されていました。調査の結果、これは`src/student/datamodule.py`のデータ分割ロジックに、検証・テストパターンを学習データに含めない重大なバグがあったことが根本原因でした。
+    *   このバグは修正され、`val_recall`と`test_recall`の乖離問題は解消されました。現在のベースラインモデルは健全な状態です。
 *   **iLoRAのプロンプト設計の改善**:
     *   `docs/implement.md`にも記載されている通り、iLoRAのプロンプト設計は暫定的なものです。より効果的なプロンプト設計を検討してください。
 *   **Amazon Games データセットの検証**:

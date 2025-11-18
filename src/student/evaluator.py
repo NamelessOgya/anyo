@@ -10,7 +10,7 @@ from src.core.metrics import calculate_metrics
 
 class SASRecEvaluator:
     def __init__(self, 
-                 model: SASRecTrainer, 
+                 model: SASRec, # SASRecTrainerからSASRecに変更
                  datamodule: SASRecDataModule, 
                  metrics_k: int = 10):
         self.model = model
@@ -30,16 +30,35 @@ class SASRecEvaluator:
             len_seq = batch["len_seq"].to(self.device)
             next_item = batch["next_item"].to(self.device)
 
-            logits = self.model(seq, len_seq)
+            logits = self.model.predict(seq, len_seq)
             
+            # デバッグログを追加
+            if not hasattr(self, '_debug_logged'): # 最初のバッチのみログを出力
+                print(f"Debug: Logits shape: {logits.shape}")
+                print(f"Debug: Logits (first 5 values of first sample): {logits[0, :5]}")
+
             # トップKの予測アイテムIDを取得
             _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
+
+            if not hasattr(self, '_debug_logged'): # 最初のバッチのみログを出力
+                print(f"Debug: Predicted indices shape: {predicted_indices.shape}")
+                print(f"Debug: Predicted indices (first sample): {predicted_indices[0]}")
+                self._debug_logged = True # ログ出力済みフラグを設定
             
             all_predictions.extend(predicted_indices.tolist())
             all_ground_truths.extend([[item.item()] for item in next_item])
 
         # 全ての予測と正解に基づいてメトリクスを計算
-        overall_metrics = calculate_metrics(all_predictions, all_ground_truths, self.metrics_k)
+        # padding_item_idを除外
+        filtered_ground_truths = []
+        for gt_list in all_ground_truths:
+            filtered_gt = [item for item in gt_list if item != self.datamodule.padding_item_id]
+            if filtered_gt: # 空リストにならないように
+                filtered_ground_truths.append(filtered_gt)
+            else:
+                filtered_ground_truths.append([]) # 空の場合は空リストを保持
+        
+        overall_metrics = calculate_metrics(all_predictions, filtered_ground_truths, self.metrics_k)
         return overall_metrics
 
 if __name__ == "__main__":

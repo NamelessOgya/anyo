@@ -3,6 +3,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 from torch.optim import AdamW
 from typing import Dict, Any
+import torch.nn.functional as F # Import F
 
 from src.teacher.ilora_model import iLoRAModel
 from src.core.metrics import calculate_metrics
@@ -21,58 +22,77 @@ class iLoRATrainer(pl.LightningModule):
         self.save_hyperparameters(ignore=['ilora_model', 'item_id_to_name']) 
 
         self.model = ilora_model
-        self.loss_fn = nn.CrossEntropyLoss(ignore_index=0) # パディングID=0は損失計算から除外
         self.metrics_k = metrics_k
+        self.loss_fn = F.cross_entropy # Use F.cross_entropy directly
         # self.item_id_to_name = item_id_to_name # ilora_modelが持つので不要
 
     def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
+        # iLoRAModel.forward returns outputs object from LLM
         return self.model(batch)
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        next_item = batch["next_item"] # next_itemは損失計算に必要
-
-        logits = self.forward(batch) # batch全体を渡す
+        outputs = self.forward(batch)
         
-        # iLoRAの学習では、次アイテム予測のCE損失を計算
+        # Extract last hidden state from LLM outputs
+        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+        
+        # Project last hidden state to num_items logits using item_prediction_head
+        logits = self.model.item_prediction_head(last_hidden_state)
+        
+        # Get next_item from batch for loss calculation
+        next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
+        
+        # Calculate loss using the projected logits and next_item
         loss = self.loss_fn(logits, next_item)
+        
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        next_item = batch["next_item"] # next_itemは損失計算に必要
-
-        logits = self.forward(batch) # batch全体を渡す
+        outputs = self.forward(batch)
+        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+        logits = self.model.item_prediction_head(last_hidden_state)
+        next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
         loss = self.loss_fn(logits, next_item)
-
-        _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
-        ground_truths = [[item.item()] for item in next_item]
-        predictions = predicted_indices.tolist()
-
-        metrics = calculate_metrics(predictions, ground_truths, self.metrics_k)
-        
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"val_recall@{self.metrics_k}", metrics[f"recall@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"val_ndcg@{self.metrics_k}", metrics[f"ndcg@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"val_hit_ratio@{self.metrics_k}", metrics[f"hit_ratio@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        # Metric calculation
+        _, predicted_indices = torch.topk(logits, k=self.metrics_k, dim=1)
+        predictions = predicted_indices.tolist()
+        
+        ground_truths_list = []
+        for item_id_tensor in next_item:
+            item_id = item_id_tensor.item()
+            # Assuming padding_item_id is not present here or handled by the datamodule
+            ground_truths_list.append([item_id])
+        
+        metrics = calculate_metrics(predictions, ground_truths_list, k=self.metrics_k)
+        for metric_name, metric_value in metrics.items():
+            self.log(f"val_{metric_name}", metric_value, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         return {"val_loss": loss}
 
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        next_item = batch["next_item"] # next_itemは損失計算に必要
-
-        logits = self.forward(batch) # batch全体を渡す
+        outputs = self.forward(batch)
+        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+        logits = self.model.item_prediction_head(last_hidden_state)
+        next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
         loss = self.loss_fn(logits, next_item)
-
-        _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
-        ground_truths = [[item.item()] for item in next_item]
-        predictions = predicted_indices.tolist()
-
-        metrics = calculate_metrics(predictions, ground_truths, self.metrics_k)
-
         self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"test_recall@{self.metrics_k}", metrics[f"recall@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"test_ndcg@{self.metrics_k}", metrics[f"ndcg@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"test_hit_ratio@{self.metrics_k}", metrics[f"hit_ratio@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        # Metric calculation
+        _, predicted_indices = torch.topk(logits, k=self.metrics_k, dim=1)
+        predictions = predicted_indices.tolist()
+        
+        ground_truths_list = []
+        for item_id_tensor in next_item:
+            item_id = item_id_tensor.item()
+            # Assuming padding_item_id is not present here or handled by the datamodule
+            ground_truths_list.append([item_id])
+
+        metrics = calculate_metrics(predictions, ground_truths_list, k=self.metrics_k)
+        for metric_name, metric_value in metrics.items():
+            self.log(f"test_{metric_name}", metric_value, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         return {"test_loss": loss}
 
@@ -152,7 +172,8 @@ if __name__ == "__main__":
         item_id_to_name=dm.item_id_to_name,
         padding_item_id=tokenizer.pad_token_id,
         rec_model=dummy_rec_model,
-        projector=dummy_projector
+        projector=dummy_projector,
+        candidate_topk=10
     )
 
     # iLoRATrainerのインスタンス化

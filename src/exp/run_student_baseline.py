@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 def run_student_baseline(cfg: DictConfig):
     # 1. ロギング、シード、Git情報の初期化
     output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
+    output_dir.mkdir(parents=True, exist_ok=True) # Ensure the output directory exists
+
+    # Save the Hydra config to the experiment directory
+    with open(output_dir / "config.yaml", "w") as f:
+        f.write(OmegaConf.to_yaml(cfg))
+
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
     git_info = get_git_info()
@@ -32,7 +38,10 @@ def run_student_baseline(cfg: DictConfig):
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
         max_seq_len=cfg.student.max_seq_len,
-        num_workers=cfg.train.num_workers
+        num_workers=cfg.train.num_workers,
+        train_file="train.csv",
+        val_file="val.csv",
+        test_file="test.csv"
     )
     dm.prepare_data()
     dm.setup()
@@ -106,7 +115,7 @@ def run_student_baseline(cfg: DictConfig):
         logger.warning("No best model checkpoint found. Using final model for evaluation.")
         loaded_model = trainer_model # ベストモデルがない場合は最終モデルを使用
 
-    evaluator = SASRecEvaluator(loaded_model, dm, metrics_k=cfg.eval.metrics_k)
+    evaluator = SASRecEvaluator(loaded_model.model, dm, metrics_k=cfg.eval.metrics_k)
     test_metrics = evaluator.evaluate(dm.test_dataloader())
     logger.info(f"Test Metrics: {test_metrics}")
 

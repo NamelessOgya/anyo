@@ -5,7 +5,7 @@ defaults:
   - student: sasrec
   - distill: dllm2rec
   - eval: default
-  - train: default
+  - train: student
 
 # Basic experiment settings
 seed: 42

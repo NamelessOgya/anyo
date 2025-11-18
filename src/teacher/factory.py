@@ -23,18 +23,17 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
     Returns:
         TeacherModel: 構築された教師モデルのインスタンス。
     """
+    torch.set_float32_matmul_precision('high') # Add this line
     model_type = cfg.teacher.model_type
 
     if model_type == "ilora":
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # LLMとTokenizerのロード
+        # LLMとTokenizerをここでロード
         llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
         tokenizer = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name)
-        if tokenizer.pad_token is None: # Ensure pad_token is set
+        if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        
-        # 特殊トークンを追加
         tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
         llm.resize_token_embeddings(len(tokenizer)) # トークン埋め込み層のサイズを調整
 
@@ -50,9 +49,9 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
                 num_layers=cfg.student.num_layers,
                 dropout_rate=cfg.student.dropout_rate,
                 max_seq_len=max_seq_len,
-            ).to(device)
-            # Load the state_dict
-            checkpoint = torch.load(cfg.teacher.rec_model_checkpoint_path, map_location=device)
+            )
+            # Load the state_dict to CPU first
+            checkpoint = torch.load(cfg.teacher.rec_model_checkpoint_path, map_location='cpu')
             # Strip 'model.' prefix from keys
             new_state_dict = {}
             for k, v in checkpoint['state_dict'].items():
@@ -62,6 +61,7 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
                     new_state_dict[k] = v
             rec_model.load_state_dict(new_state_dict)
             rec_model.eval() # Set to eval mode
+            rec_model.to(device) # Then move to device
         else:
             raise ValueError("rec_model_checkpoint_path must be provided in the teacher config for iLoRAModel.")
         
@@ -90,7 +90,9 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
             dropout_rate=cfg.teacher.dropout_rate,
             rec_model=rec_model, # Pass rec_model
             projector=projector, # Pass projector
-            candidate_topk=candidate_topk # Pass candidate_topk
+            candidate_topk=candidate_topk, # Pass candidate_topk
+            item_id_to_name=item_id_to_name, # Pass item_id_to_name
+            padding_item_id=padding_item_id # Pass padding_item_id
         )
         return model
     else:

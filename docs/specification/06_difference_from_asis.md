@@ -74,6 +74,7 @@
 *   **本プロジェクトの実装**: `src/teacher/ilora_model.py` の `get_teacher_outputs` メソッドで `ranking_scores` (LLMの最終出力) と `embeddings` (LLMの最終隠れ状態) を明示的に返している。
 *   **差分と再現性評価**:
     *   **再現性**: DLLM2Rec互換のランキングスコアと埋め込みを出力するという点は再現されています。
+    *   **補足**: `DistillationTrainer`の評価時のモデルロード方法、`SASRecDataModule`の`_get_movie_id2name`メソッドの配置、評価メトリクス計算時のパディングアイテムIDの除外など、データ処理と評価に関する複数の問題が解決され、教師モデルの出力が蒸留パイプラインで正しく利用されるようになりました。
 
 ---
 

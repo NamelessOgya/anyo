@@ -42,10 +42,7 @@ class SASRecTrainer(pl.LightningModule):
 
         logits = self.forward(item_seq, item_seq_len)
         
-        # next_itemは0-indexedのアイテムID
-        # logitsは(batch_size, num_items + 1)の形状で、各アイテムIDに対するスコア
-        # CrossEntropyLossはターゲットがクラスID（ここではnext_item）であることを期待する
-        loss = self.loss_fn(logits, next_item)
+        loss = self.loss_fn(logits, next_item.squeeze(-1))
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
@@ -55,9 +52,7 @@ class SASRecTrainer(pl.LightningModule):
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)
-        loss = self.loss_fn(logits, next_item)
-
-        # 予測と正解を収集してメトリクスを計算
+        loss = self.loss_fn(logits, next_item.squeeze(-1))
         # logitsからトップKのアイテムIDを取得
         _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
         
@@ -80,7 +75,7 @@ class SASRecTrainer(pl.LightningModule):
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)
-        loss = self.loss_fn(logits, next_item)
+        loss = self.loss_fn(logits, next_item.squeeze(-1))
 
         _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
         ground_truths = [[item.item()] for item in next_item]

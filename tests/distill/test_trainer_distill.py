@@ -106,6 +106,7 @@ def distill_trainer_and_data():
     distill_trainer_no_dro = DistillationTrainer(
         student_model=student_model_instance,
         teacher_model=teacher_model_instance,
+        datamodule=dm, # datamoduleを追加
         num_items=dm.num_items,
         ranking_loss_weight=1.0,
         embedding_loss_weight=1.0,
@@ -123,12 +124,14 @@ def distill_trainer_and_data():
         ed_weight=0.1,
         alpha=0.0, # DRO無効
         beta=1.0,
-        propensity_scores=propensity_scores
+        propensity_scores=propensity_scores,
+        teacher_output_dataloader=None # ダミーのdataloader
     )
 
     distill_trainer_with_dro = DistillationTrainer(
         student_model=student_model_instance,
         teacher_model=teacher_model_instance,
+        datamodule=dm, # datamoduleを追加
         num_items=dm.num_items,
         ranking_loss_weight=1.0,
         embedding_loss_weight=1.0,
@@ -146,7 +149,8 @@ def distill_trainer_and_data():
         ed_weight=0.1,
         alpha=0.5, # DRO有効
         beta=1.0,
-        propensity_scores=propensity_scores
+        propensity_scores=propensity_scores,
+        teacher_output_dataloader=None # ダミーのdataloader
     )
 
     return {

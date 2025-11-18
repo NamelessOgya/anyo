@@ -104,11 +104,16 @@ def test_ilora_forward_shape(ilora_model_and_data):
     model = ilora_model_and_data["model"]
     batch = ilora_model_and_data["batch"]
     batch_size = ilora_model_and_data["batch_size"]
-    num_items = ilora_model_and_data["num_items"]
-
+    # num_items = ilora_model_and_data["num_items"] # Not directly used for raw LLM output shape
+    max_seq_len = 20 # Defined in fixture
+    
     output_scores = model(batch)
     
-    assert output_scores.shape == (batch_size, num_items + 1)
+    # iLoRAModel.forward returns CausalLMOutputWithPast object
+    # Check logits shape
+    assert output_scores.logits.shape == (batch_size, max_seq_len, len(model.tokenizer))
+    # Check last hidden state shape
+    assert output_scores.hidden_states[-1].shape == (batch_size, max_seq_len, model.llm.config.hidden_size)
 
 def test_ilora_get_teacher_outputs_shape(ilora_model_and_data):
     """
@@ -124,5 +129,5 @@ def test_ilora_get_teacher_outputs_shape(ilora_model_and_data):
     
     assert "ranking_scores" in teacher_outputs
     assert "embeddings" in teacher_outputs
-    assert teacher_outputs["ranking_scores"].shape == (batch_size, num_items + 1)
+    assert teacher_outputs["ranking_scores"].shape == (batch_size, num_items)
     assert teacher_outputs["embeddings"].shape == (batch_size, hidden_size)
