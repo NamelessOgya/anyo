@@ -1,3 +1,4 @@
+import logging # Added import
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -7,6 +8,8 @@ import torch.nn.functional as F # Import F
 
 from src.teacher.ilora_model import iLoRAModel
 from src.core.metrics import calculate_metrics
+
+logger = logging.getLogger(__name__) # Added module-level logger
 
 class iLoRATrainer(pl.LightningModule):
     def __init__(self, 
@@ -51,6 +54,13 @@ class iLoRATrainer(pl.LightningModule):
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
         outputs = self.forward(batch)
         last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+        
+        logger.info(f"Validation Step - Batch {batch_idx}") # Changed to logger.info
+        logger.info(f"Last Hidden State Stats: " # Changed to logger.info
+              f"min={last_hidden_state.min()}, "
+              f"max={last_hidden_state.max()}, "
+              f"mean={last_hidden_state.mean()}")
+
         logits = self.model.item_prediction_head(last_hidden_state)
         next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
         loss = self.loss_fn(logits, next_item)
@@ -99,6 +109,8 @@ class iLoRATrainer(pl.LightningModule):
     def configure_optimizers(self) -> Any:
         # iLoRAでは、LoRAアダプターとゲーティングネットワークのパラメータのみを学習対象とする
         # LLMのベースモデルのパラメータはフリーズされている
+        trainable_params = [n for n, p in self.model.named_parameters() if p.requires_grad]
+        logger.info(f"Trainable parameters: {trainable_params}") # Changed to logger.info
         optimizer = AdamW(self.model.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
         return optimizer
 
@@ -109,6 +121,7 @@ if __name__ == "__main__":
     from pytorch_lightning import Trainer
     from pytorch_lightning.callbacks import LearningRateMonitor
     from transformers import AutoModelForCausalLM, AutoTokenizer # LLMとTokenizerをロードするために追加
+    from src.teacher.mlp_projector import MLPProjector # Added import for MLPProjector
 
     # iLoRAModelのダミー設定
     ilora_cfg = OmegaConf.create({

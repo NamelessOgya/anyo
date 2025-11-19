@@ -189,7 +189,7 @@ class MultiHeadSelfAttention(nn.Module):
         # マスクの適用
         # attention_mask: (batch_size, 1, max_seq_len, max_seq_len)
         # scores: (batch_size, num_heads, max_seq_len, max_seq_len)
-        scores.masked_fill_(attention_mask == 0, -1e9) # マスクされた部分を非常に小さな値に設定
+        scores.masked_fill_(attention_mask == 0, -1e4) # マスクされた部分を非常に小さな値に設定
 
         # Softmax
         attention_weights = torch.softmax(scores, dim=-1)

@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Dict, Any
 
@@ -8,6 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from src.teacher.mlp_projector import MLPProjector
 from src.teacher.moe_lora_model import MoeLoraConfig, Linear
+
+logger = logging.getLogger(__name__) # Added module-level logger
 
 
 def _get_submodules(model, key):
@@ -58,7 +61,7 @@ class iLoRAModel(nn.Module):
     ):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.llm = llm.to(self.device).half()
+        self.llm = llm.to(self.device) # Removed .half()
         # Freeze all parameters of the base LLM
         for param in self.llm.parameters():
             param.requires_grad = False
@@ -68,7 +71,7 @@ class iLoRAModel(nn.Module):
 
         self.tokenizer = tokenizer
         self.rec_model = rec_model.to(self.device)
-        self.projector = projector.to(self.device).half()
+        self.projector = projector.to(self.device) # Removed .half()
         self.gate_weights = None
         self.candidate_topk = candidate_topk
         self.item_id_to_name = item_id_to_name # Store item_id_to_name
@@ -89,10 +92,10 @@ class iLoRAModel(nn.Module):
             output_dim=num_lora_experts,
             hidden_size=hidden_size,
             dropout_rate=dropout_rate,
-        ).to(self.device).half()
+        ).to(self.device) # Removed .half()
 
         # Add a linear layer to project LLM's last hidden state to num_items logits
-        self.item_prediction_head = nn.Linear(self.llm.config.hidden_size, num_items).to(self.device).half()
+        self.item_prediction_head = nn.Linear(self.llm.config.hidden_size, num_items).to(self.device) # Removed .half()
 
     def _prepare_llm_input(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -153,7 +156,7 @@ class iLoRAModel(nn.Module):
             item_rec_embs = self.rec_model.item_embeddings(seq)
         else:
             raise NotImplementedError("rec_model does not have cacu_x or item_embeddings method.")
-        return self.projector(item_rec_embs.half())
+        return self.projector(item_rec_embs)
 
     def encode_users(self, seq: torch.Tensor, len_seq: torch.Tensor) -> torch.Tensor:
         if hasattr(self.rec_model, "_get_last_item_representation"):
@@ -164,7 +167,7 @@ class iLoRAModel(nn.Module):
             user_rec_embs = self.rec_model.item_embeddings(seq).mean(dim=1) # Use mean as a fallback
         else:
             raise NotImplementedError("rec_model does not have _get_last_item_representation, cacul_h or item_embeddings method.")
-        return self.projector(user_rec_embs.half())
+        return self.projector(user_rec_embs)
 
     def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
         item_seq, item_seq_len = batch["seq"], batch["len_seq"]
@@ -179,16 +182,22 @@ class iLoRAModel(nn.Module):
         self.gate_weights = F.softmax(self.gating_network(user_embeds), dim=-1)
 
         input_embeds = self.llm.get_input_embeddings()(input_ids)
+        logger.info(f"Input Embeds (before replacement) Stats: "
+                    f"min={input_embeds.min()}, max={input_embeds.max()}, mean={input_embeds.mean()}")
         his_token_id = self.tokenizer.additional_special_tokens_ids[
             self.tokenizer.additional_special_tokens.index("[HistoryEmb]")
         ]
         his_item_embeds = self.encode_items(batch["seq"])
+        logger.info(f"His Item Embeds (after projection) Stats: "
+                    f"min={his_item_embeds.min()}, max={his_item_embeds.max()}, mean={his_item_embeds.mean()}")
 
         for i in range(batch_size):
             if (input_ids[i] == his_token_id).nonzero(as_tuple=True)[0].shape[0] > 0:
                 idx_tensor = (input_ids[i] == his_token_id).nonzero(as_tuple=True)[0]
                 for idx, item_emb in zip(idx_tensor, his_item_embeds[i, : item_seq_len[i].item()]):
                     input_embeds[i, idx] = item_emb
+        logger.info(f"Input Embeds (after replacement) Stats: "
+                    f"min={input_embeds.min()}, max={input_embeds.max()}, mean={input_embeds.mean()}")
 
         outputs = self.llm(
             inputs_embeds=input_embeds,

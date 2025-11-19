@@ -3,6 +3,7 @@ from omegaconf import DictConfig, OmegaConf
 import logging
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from src.core.callbacks import CustomRichProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 import re # Import re for regex
 
@@ -231,18 +232,18 @@ def run_distill(cfg: DictConfig):
         verbose=True
     )
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    progress_bar = CustomRichProgressBar()
     tb_logger = TensorBoardLogger(save_dir=output_dir, name="tensorboard_logs")
 
     trainer = pl.Trainer(
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.accelerator,
         devices=cfg.train.devices,
-        callbacks=[checkpoint_callback, lr_monitor],
+        callbacks=[checkpoint_callback, lr_monitor, progress_bar],
         logger=tb_logger,
         enable_checkpointing=True,
         val_check_interval=cfg.train.val_check_interval,
-        log_every_n_steps=cfg.train.log_every_n_steps,
-        enable_progress_bar=False
+        log_every_n_steps=cfg.train.log_every_n_steps
     )
 
     logger.info("Starting distillation training...")

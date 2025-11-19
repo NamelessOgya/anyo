@@ -2,6 +2,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
 import pytorch_lightning as pl
+# from src.core.callbacks import CustomRichProgressBar
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -91,16 +92,17 @@ def run_teacher(cfg: DictConfig):
         item_id_to_name=dm.item_id_to_name # 追加
     )
 
-    # 5. PyTorch Lightning Trainerのインスタンス化と学習の実行
+    # 3. PyTorch Lightning Trainerのセットアップ
     checkpoint_callback = ModelCheckpoint(
-        dirpath=output_dir / "checkpoints",
+        dirpath=str(output_dir / "checkpoints"),
         filename="best_teacher_model",
+        save_top_k=1,
+        verbose=True,
         monitor="val_loss",
         mode="min",
-        save_top_k=1,
-        verbose=True
     )
-    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    # progress_bar = CustomRichProgressBar()
     tb_logger = TensorBoardLogger(save_dir=output_dir, name="tensorboard_logs")
 
     trainer = pl.Trainer(
@@ -111,8 +113,7 @@ def run_teacher(cfg: DictConfig):
         logger=tb_logger,
         enable_checkpointing=True,
         val_check_interval=cfg.train.val_check_interval,
-        log_every_n_steps=cfg.train.log_every_n_steps,
-        enable_progress_bar=False
+        log_every_n_steps=cfg.train.log_every_n_steps
     )
 
     logger.info("Starting iLoRA teacher model training...")
@@ -156,9 +157,7 @@ def run_teacher(cfg: DictConfig):
     # 教師モデルの評価には、生徒モデルの評価器を流用する
     # ただし、SASRecEvaluatorはSASRecTrainerを想定しているので、
     # iLoRATrainerを直接渡すことはできない。
-    # ここでは、iLoRATrainerのmodel (iLoRAModel) を直接評価器に渡すか、
-    # iLoRATrainer自体を評価器として使うラッパーが必要。
-    # 簡略化のため、ここではiLoRATrainerのtest_stepを直接呼び出す
+    # ここでは、iLoRATrainerのtest_stepを直接呼び出す
     logger.info("Running test_step for teacher model...")
     trainer.test(loaded_model, dm) # Pass the datamodule directly
     logger.info("iLoRA teacher model evaluation finished.")
@@ -170,8 +169,9 @@ def run_teacher(cfg: DictConfig):
     teacher_outputs_batches_dir.mkdir(parents=True, exist_ok=True)
 
     # Ensure the model is on the correct device and in eval mode
+    device = "cuda" if torch.cuda.is_available() and cfg.train.accelerator == "gpu" else "cpu"
     loaded_model.model.eval()
-    loaded_model.model.to(loaded_model.device)
+    loaded_model.model.to(device)
 
     batch_idx = 0
     with torch.no_grad():
@@ -179,12 +179,12 @@ def run_teacher(cfg: DictConfig):
             # Move batch to device
             for key, value in batch.items():
                 if isinstance(value, torch.Tensor):
-                    batch[key] = value.to(loaded_model.device)
+                    batch[key] = value.to(device)
                 elif isinstance(value, dict) and "input_ids" in value:
-                    batch[key]["input_ids"] = value["input_ids"].to(loaded_model.device)
-                    batch[key]["attention_mask"] = value["attention_mask"].to(loaded_model.device)
+                    batch[key]["input_ids"] = value["input_ids"].to(device)
+                    batch[key]["attention_mask"] = value["attention_mask"].to(device)
                     if "labels" in value:
-                        batch[key]["labels"] = value["labels"].to(loaded_model.device)
+                        batch[key]["labels"] = value["labels"].to(device)
 
             teacher_outputs = loaded_model.model.get_teacher_outputs(batch)
             
