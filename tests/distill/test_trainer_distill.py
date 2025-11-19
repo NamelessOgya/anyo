@@ -11,6 +11,7 @@ from src.distill.selection_policy import AllSamplesPolicy
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from src.teacher.mlp_projector import MLPProjector
 from src.distill.kd_losses import PropensityScoreCalculator # Import PropensityScoreCalculator
+from src.core.paths import get_project_root
 
 @pytest.fixture(scope="module")
 def distill_trainer_and_data():
@@ -18,6 +19,7 @@ def distill_trainer_and_data():
     テスト用のDistillationTrainerとダミーデータを準備するフィクスチャ。
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    project_root = get_project_root()
     # 教師モデルのインスタンス化 (ダミー設定)
     teacher_cfg = OmegaConf.create({
         "llm_model_name": "facebook/opt-125m",
@@ -38,10 +40,11 @@ def distill_trainer_and_data():
 
     # データモジュール
     dm = SASRecDataModule(
+        dataset_name="movielens",
+        data_dir="/workspace/data/ml-1m",
         batch_size=2, 
         max_seq_len=20, 
-        num_workers=0,
-        tokenizer=tokenizer # Pass tokenizer
+        num_workers=0
     )
     dm.prepare_data()
     dm.setup()
@@ -50,6 +53,10 @@ def distill_trainer_and_data():
     train_next_items = []
     for batch in dm.train_dataloader():
         train_next_items.extend(batch["next_item"].tolist())
+    
+    # Flatten the list of lists
+    train_next_items = [item for sublist in train_next_items for item in sublist]
+
     ps_calculator = PropensityScoreCalculator(
         item_num=dm.num_items + 1, # num_items + 1 に修正
         train_next_items=train_next_items,

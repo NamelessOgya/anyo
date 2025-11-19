@@ -61,14 +61,13 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
                     new_state_dict[k] = v
             rec_model.load_state_dict(new_state_dict)
             rec_model.eval() # Set to eval mode
-            rec_model.to(device) # Then move to device
-        else:
-            raise ValueError("rec_model_checkpoint_path must be provided in the teacher config for iLoRAModel.")
-        
-        # Freeze rec_model parameters
-        for param in rec_model.parameters():
-            param.requires_grad = False
-        print("SASRec model parameters frozen.")
+            
+            # Freeze rec_model parameters
+            for param in rec_model.parameters():
+                param.requires_grad = False
+            print("SASRec model parameters frozen.")
+
+            rec_model.to(device) # Move to device after freezing
         
         # projectorのインスタンス化
         projector = MLPProjector(

@@ -3,24 +3,20 @@ import torch
 from src.student.models import SASRec
 from src.student.datamodule import SASRecDataModule # Added import
 from transformers import AutoTokenizer # Added import
+from src.core.paths import get_project_root
 
 @pytest.fixture
 def sasrec_datamodule_for_models(): # Renamed to avoid name collision, and for clarity
     """
     テスト用のSASRecDataModuleを準備するフィクスチャ。
     """
-    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
-
+    project_root = get_project_root()
     dm = SASRecDataModule(
         dataset_name="movielens",
-        data_dir="ref_repositories/iLoRA/data/ref/movielens",
+        data_dir="/workspace/data/ml-1m",
         batch_size=4,
         max_seq_len=50,
-        num_workers=0,
-        tokenizer=tokenizer
+        num_workers=0
     )
     dm.prepare_data()
     dm.setup()

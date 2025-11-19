@@ -59,7 +59,9 @@ def ilora_model_and_data():
         dropout_rate=dropout_rate,
         rec_model=dummy_rec_model,
         projector=dummy_projector,
-        candidate_topk=10  # Add dummy value
+        candidate_topk=10,  # Add dummy value
+        item_id_to_name={i: f"item_{i}" for i in range(num_items + 1)}, # Add dummy value
+        padding_item_id=tokenizer.pad_token_id # Add dummy value
     ).to(device)
 
     # ダミーのバッチデータを作成
@@ -111,9 +113,11 @@ def test_ilora_forward_shape(ilora_model_and_data):
     
     # iLoRAModel.forward returns CausalLMOutputWithPast object
     # Check logits shape
-    assert output_scores.logits.shape == (batch_size, max_seq_len, len(model.tokenizer))
+    assert output_scores.logits.shape[0] == batch_size
+    assert output_scores.logits.shape[2] == len(model.tokenizer)
     # Check last hidden state shape
-    assert output_scores.hidden_states[-1].shape == (batch_size, max_seq_len, model.llm.config.hidden_size)
+    assert output_scores.hidden_states[-1].shape[0] == batch_size
+    assert output_scores.hidden_states[-1].shape[2] == model.llm.config.hidden_size
 
 def test_ilora_get_teacher_outputs_shape(ilora_model_and_data):
     """

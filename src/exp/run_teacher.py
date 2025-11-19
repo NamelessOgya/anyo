@@ -1,10 +1,7 @@
-import hydra
-from omegaconf import DictConfig, OmegaConf
 import logging
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
-
+import torch # Added import
+from tqdm import tqdm # tqdmをインポート
+from omegaconf import DictConfig, OmegaConf
 from src.core.paths import get_project_root
 from src.core.seed import set_seed
 from src.core.logging import setup_logging
@@ -12,12 +9,8 @@ from src.core.git_info import get_git_info
 
 from src.student.datamodule import SASRecDataModule # 教師モデルも同じデータモジュールを使用
 from src.teacher.factory import create_teacher_model
-from src.teacher.trainer_ilora import iLoRATrainer
-from src.student.evaluator import SASRecEvaluator # 評価は生徒モデルの評価器を流用
 from src.teacher.mlp_projector import MLPProjector # Added import
-from transformers import AutoModelForCausalLM, AutoTokenizer # Added import
-import torch.nn as nn # Added import
-import torch # Added import
+import hydra # hydraをインポート
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +35,7 @@ def run_teacher(cfg: DictConfig):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
-        max_seq_len=cfg.student.max_seq_len, # 教師モデルも同じmax_seq_lenを使用
+        max_seq_len=cfg.student.max_seq_len, # 教師モデルも同じデータモジュールを使用
         num_workers=cfg.train.num_workers,
         limit_data_rows=cfg.dataset.limit_data_rows,
         train_file="train.csv",
@@ -81,86 +74,125 @@ def run_teacher(cfg: DictConfig):
         candidate_topk=cfg.distill.candidate_topk
     )
 
-    # 4. iLoRATrainerのインスタンス化
-    trainer_model = iLoRATrainer(
-        ilora_model=ilora_model_instance,
-        num_items=dm.num_items,
-        learning_rate=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
-        metrics_k=cfg.eval.metrics_k,
-        item_id_to_name=dm.item_id_to_name # 追加
-    )
+    # 4. オプティマイザと損失関数の定義
+    optimizer = torch.optim.AdamW(ilora_model_instance.parameters(), lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay)
+    loss_fn = torch.nn.CrossEntropyLoss()
 
-    # 5. PyTorch Lightning Trainerのインスタンス化と学習の実行
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=output_dir / "checkpoints",
-        filename="best_teacher_model",
-        monitor="val_loss",
-        mode="min",
-        save_top_k=1,
-        verbose=True
-    )
-    lr_monitor = LearningRateMonitor(logging_interval='epoch')
-    tb_logger = TensorBoardLogger(save_dir=output_dir, name="tensorboard_logs")
-
-    trainer = pl.Trainer(
-        max_epochs=cfg.train.max_epochs,
-        accelerator=cfg.train.accelerator,
-        devices=cfg.train.devices,
-        callbacks=[checkpoint_callback, lr_monitor],
-        logger=tb_logger,
-        enable_checkpointing=True,
-        val_check_interval=cfg.train.val_check_interval,
-        log_every_n_steps=cfg.train.log_every_n_steps,
-        enable_progress_bar=False
-    )
-
+    # 5. 手動での学習ループ
     logger.info("Starting iLoRA teacher model training...")
-    trainer.fit(trainer_model, dm) # Pass the datamodule directly
-    logger.info("iLoRA teacher model training finished.")
+    device = "cuda" if torch.cuda.is_available() and cfg.train.accelerator == "gpu" else "cpu"
+    ilora_model_instance.to(device)
 
-    # 6. 学習済みモデルの保存 (ベストモデルはModelCheckpointで保存される)
-    final_model_path = output_dir / "final_teacher_model.ckpt"
-    trainer.save_checkpoint(final_model_path)
-    logger.info(f"Final teacher model saved to {final_model_path}")
+    best_val_loss = float('inf')
+    best_model_path = output_dir / "checkpoints" / "best_teacher_model.pt"
+    best_model_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for epoch in range(cfg.train.max_epochs):
+        # Training loop
+        ilora_model_instance.train()
+        train_loss = 0
+        for batch_idx, batch in enumerate(tqdm(dm.train_dataloader(), desc=f"Epoch {epoch+1} Training")):
+            # Move batch to device
+            for key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    batch[key] = value.to(device)
+            
+            optimizer.zero_grad()
+            
+            outputs = ilora_model_instance(batch)
+            last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+            logits = ilora_model_instance.item_prediction_head(last_hidden_state)
+            next_item = batch["next_item"].squeeze(-1)
+            
+            loss = loss_fn(logits, next_item)
+            
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+
+            # if (batch_idx + 1) % cfg.train.log_every_n_steps == 0:
+            #     logger.info(f"Epoch {epoch+1}/{cfg.train.max_epochs} | Batch {batch_idx+1}/{len(dm.train_dataloader())} | Train Loss: {loss.item():.4f}")
+        
+        avg_train_loss = train_loss / len(dm.train_dataloader())
+        logger.info(f"Epoch {epoch+1}/{cfg.train.max_epochs} - Train Loss: {avg_train_loss:.4f}")
+
+        # Validation loop
+        ilora_model_instance.eval()
+        val_loss = 0
+        all_predictions = []
+        all_ground_truths = []
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(tqdm(dm.val_dataloader(), desc=f"Epoch {epoch+1} Validation")):
+                # Move batch to device
+                for key, value in batch.items():
+                    if isinstance(value, torch.Tensor):
+                        batch[key] = value.to(device)
+
+                outputs = ilora_model_instance(batch)
+                last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+                logits = ilora_model_instance.item_prediction_head(last_hidden_state)
+                next_item = batch["next_item"].squeeze(-1)
+                
+                loss = loss_fn(logits, next_item)
+                val_loss += loss.item()
+
+                _, predicted_indices = torch.topk(logits, k=cfg.eval.metrics_k, dim=1)
+                all_predictions.extend(predicted_indices.cpu().tolist())
+                all_ground_truths.extend([[item_id.item()] for item_id in next_item.cpu()])
+
+                # if (batch_idx + 1) % cfg.train.log_every_n_steps == 0:
+                #     logger.info(f"Epoch {epoch+1}/{cfg.train.max_epochs} | Validating Batch {batch_idx+1}/{len(dm.val_dataloader())}")
+
+        avg_val_loss = val_loss / len(dm.val_dataloader())
+        
+        from src.core.metrics import calculate_metrics
+        metrics = calculate_metrics(all_predictions, all_ground_truths, k=cfg.eval.metrics_k)
+        
+        logger.info(f"Epoch {epoch+1}/{cfg.train.max_epochs} - Val Loss: {avg_val_loss:.4f}, Val Recall@{cfg.eval.metrics_k}: {metrics.get('recall@k', 0):.4f}, Val NDCG@{cfg.eval.metrics_k}: {metrics.get('ndcg@k', 0):.4f}")
+
+        # Save best model
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(ilora_model_instance.state_dict(), best_model_path)
+            logger.info(f"New best model saved to {best_model_path}")
+
+    logger.info("iLoRA teacher model training finished.")
 
     # 7. 評価の実行
     logger.info("Starting iLoRA teacher model evaluation on test set...")
-    best_model_path = checkpoint_callback.best_model_path
-    if best_model_path:
+    if best_model_path.exists():
         logger.info(f"Loading best teacher model from {best_model_path} for evaluation.")
-        loaded_model = iLoRATrainer.load_from_checkpoint(
-            best_model_path,
-            ilora_model=ilora_model_instance, # iLoRAModelインスタンスを渡す必要がある
-            num_items=dm.num_items,
-            learning_rate=cfg.train.learning_rate,
-            weight_decay=cfg.train.weight_decay,
-            metrics_k=cfg.eval.metrics_k,
-            item_id_to_name=dm.item_id_to_name,
-            # iLoRAModelのハイパーパラメータを明示的に渡す
-            num_lora_experts=cfg.teacher.num_lora_experts,
-            lora_r=cfg.teacher.lora_r,
-            lora_alpha=cfg.teacher.lora_alpha,
-            lora_dropout=cfg.teacher.lora_dropout,
-            hidden_size=cfg.teacher.hidden_size,
-            dropout_rate=cfg.teacher.dropout_rate,
-            max_seq_len=cfg.student.max_seq_len, # max_seq_lenはstudentから取得
-            padding_item_id=dm.padding_item_id,
-            rec_model=rec_model_instance, # Pass rec_model
-            projector=projector_instance # Pass projector
-        )
+        ilora_model_instance.load_state_dict(torch.load(best_model_path))
     else:
         logger.warning("No best teacher model checkpoint found. Using final model for evaluation.")
-        loaded_model = trainer_model # ベストモデルがない場合は最終モデルを使用
 
-    # 教師モデルの評価には、生徒モデルの評価器を流用する
-    # ただし、SASRecEvaluatorはSASRecTrainerを想定しているので、
-    # iLoRATrainerを直接渡すことはできない。
-    # ここでは、iLoRATrainerのmodel (iLoRAModel) を直接評価器に渡すか、
-    # iLoRATrainer自体を評価器として使うラッパーが必要。
-    # 簡略化のため、ここではiLoRATrainerのtest_stepを直接呼び出す
-    logger.info("Running test_step for teacher model...")
-    trainer.test(loaded_model, dm) # Pass the datamodule directly
+    ilora_model_instance.eval()
+    test_loss = 0
+    all_predictions = []
+    all_ground_truths = []
+    with torch.no_grad():
+        for batch in dm.test_dataloader():
+            # Move batch to device
+            for key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    batch[key] = value.to(device)
+
+            outputs = ilora_model_instance(batch)
+            last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+            logits = ilora_model_instance.item_prediction_head(last_hidden_state)
+            next_item = batch["next_item"].squeeze(-1)
+            
+            loss = loss_fn(logits, next_item)
+            test_loss += loss.item()
+
+            _, predicted_indices = torch.topk(logits, k=cfg.eval.metrics_k, dim=1)
+            all_predictions.extend(predicted_indices.cpu().tolist())
+            all_ground_truths.extend([[item_id.item()] for item_id in next_item.cpu()])
+
+    avg_test_loss = test_loss / len(dm.test_dataloader())
+    metrics = calculate_metrics(all_predictions, all_ground_truths, k=cfg.eval.metrics_k)
+    logger.info(f"Test Loss: {avg_test_loss:.4f}, Test Recall@{cfg.eval.metrics_k}: {metrics.get('recall@k', 0):.4f}, Test NDCG@{cfg.eval.metrics_k}: {metrics.get('ndcg@k', 0):.4f}")
     logger.info("iLoRA teacher model evaluation finished.")
 
     # 8. 訓練データセットに対する教師出力を生成し、保存
@@ -169,24 +201,16 @@ def run_teacher(cfg: DictConfig):
     teacher_outputs_batches_dir = output_dir / "teacher_outputs_batches"
     teacher_outputs_batches_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure the model is on the correct device and in eval mode
-    loaded_model.model.eval()
-    loaded_model.model.to(loaded_model.device)
-
+    ilora_model_instance.eval()
     batch_idx = 0
     with torch.no_grad():
         for batch in dm.train_dataloader():
             # Move batch to device
             for key, value in batch.items():
                 if isinstance(value, torch.Tensor):
-                    batch[key] = value.to(loaded_model.device)
-                elif isinstance(value, dict) and "input_ids" in value:
-                    batch[key]["input_ids"] = value["input_ids"].to(loaded_model.device)
-                    batch[key]["attention_mask"] = value["attention_mask"].to(loaded_model.device)
-                    if "labels" in value:
-                        batch[key]["labels"] = value["labels"].to(loaded_model.device)
+                    batch[key] = value.to(device)
 
-            teacher_outputs = loaded_model.model.get_teacher_outputs(batch)
+            teacher_outputs = ilora_model_instance.get_teacher_outputs(batch)
             
             # Save each batch's output to a separate file
             batch_output_path = teacher_outputs_batches_dir / f"batch_{batch_idx:05d}.pt"
