@@ -1,24 +1,44 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
+from pathlib import Path
+from datetime import datetime
+
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from src.core.callbacks import CustomRichProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 
-# ... (omitted for brevity)
+from src.core.paths import get_project_root
+from src.core.logging import setup_logging
+from src.core.seed import set_seed
+from src.core.git_info import get_git_info
+from src.student.datamodule import SASRecDataModule
+from src.student.trainer_baseline import SASRecTrainer
+from src.core.callbacks import CustomRichProgressBar
 
-@hydra.main(config_path="../../conf", config_name="config", version_base="1.3")
-def run_student_baseline(cfg: DictConfig):
-    # 1. ロギング、シード、Git情報の初期化
-    output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
-    output_dir.mkdir(parents=True, exist_ok=True) # Ensure the output directory exists
+logger = logging.getLogger(__name__)
+
+def main():
+    # Manually initialize Hydra. This is for environments where the decorator causes issues.
+    try:
+        with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="student_baseline_run"):
+            cfg = hydra.compose(config_name="config")
+    except Exception as e:
+        print(f"Hydra initialization failed: {e}")
+        return
+
+    # Manually create a unique output directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = get_project_root() / "result" / f"student_baseline_{timestamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"!!! SCRIPT RUNNING. MANUALLY CREATED OUTPUT DIR: {output_dir} !!!")
     
     # Save the Hydra config to the experiment directory
     with open(output_dir / "config.yaml", "w") as f:
         f.write(OmegaConf.to_yaml(cfg))
 
-    setup_logging(log_dir=output_dir / "logs")
+    # The setup_logging function will direct logs to a 'logs' subdirectory
+    setup_logging(log_dir=output_dir / "logs") 
     set_seed(cfg.seed)
     git_info = get_git_info()
     logger.info(f"Git Info: {git_info}")
@@ -53,3 +73,44 @@ def run_student_baseline(cfg: DictConfig):
     )
 
     # 4. PyTorch Lightning Trainerのインスタンス化と学習の実行
+    tb_logger = TensorBoardLogger(save_dir=str(output_dir), name="tb_logs", version="")
+
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=output_dir / "checkpoints",
+        filename="student-baseline-{epoch:02d}-{val_recall@10:.4f}",
+        monitor="val_recall@10",
+        mode="max",
+        save_top_k=1,
+        save_last=True,
+    )
+
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    progress_bar = CustomRichProgressBar()
+
+    trainer = pl.Trainer(
+        default_root_dir=str(output_dir),
+        max_epochs=cfg.train.max_epochs,
+        accelerator=cfg.train.accelerator,
+        devices=cfg.train.devices,
+        logger=tb_logger,
+        callbacks=[checkpoint_callback, lr_monitor, progress_bar],
+        val_check_interval=cfg.train.val_check_interval,
+        log_every_n_steps=cfg.train.log_every_n_steps,
+    )
+
+    logger.info("Starting student baseline training...")
+    trainer.fit(trainer_model, datamodule=dm)
+
+    logger.info("Starting student baseline testing...")
+    best_model_path = checkpoint_callback.best_model_path
+    if best_model_path and Path(best_model_path).exists():
+        logger.info(f"Loading best model from: {best_model_path}")
+        trainer.test(model=trainer_model, datamodule=dm, ckpt_path=best_model_path)
+    else:
+        logger.warning("No best model found. Testing with the last model.")
+        trainer.test(model=trainer_model, datamodule=dm)
+    
+    logger.info(f"Student baseline run finished. Results are in: {output_dir}")
+
+if __name__ == "__main__":
+    main()

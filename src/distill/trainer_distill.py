@@ -105,7 +105,8 @@ class DistillationTrainer(pl.LightningModule):
         self.student_model_module.train()
         item_seq = batch["seq"]
         item_seq_len = batch["len_seq"]
-        next_item = batch["next_item"]
+        next_item_original = batch["next_item"]
+        next_item = next_item_original.squeeze(-1) # Squeeze at the beginning
 
         print(f"Debug: Batch size from dm.train_dataloader(): {item_seq.size(0)}")
 
@@ -145,43 +146,29 @@ class DistillationTrainer(pl.LightningModule):
         distill_mask = self.selection_policy.select(
             student_logits=student_logits,
             teacher_logits=teacher_logits,
-            ground_truth=next_item
+            ground_truth=next_item_original
         )
 
         # 4. ネガティブサンプリング (DLLM2Rec main.pyから移植)
-        # item_seqはpadding_item_idを含む可能性があるため、num_items+1のサイズでマスクを作成
-        # next_itemはpadding_item_idを含まないため、そのまま使用
         real_batch_size = item_seq.size(0)
-        num_items_total = self.num_items # item_num in DLLM2Rec
+        num_items_total = self.num_items
         
-        # 既にインタラクションがあったアイテムと、現在の正解アイテムをマスク
-        # item_seqはpadding_item_idを含む可能性があるため、num_items+1のサイズでマスクを作成
-        # next_itemはpadding_item_idを含まないため、そのまま使用
-        # item_seqのpadding_item_idはnum_itemsにマッピングされていると仮定
-        
-        # zeros_tensorのサイズをnum_items_total + 1 に変更
         zeros_tensor = torch.zeros((real_batch_size, num_items_total + 1), device=self.device)
         
-        # item_seqに含まれるアイテムを1に設定
-        # item_seqの要素がnum_items_totalを超えることはないはずだが、念のためクランプ
         clamped_item_seq = torch.clamp(item_seq, max=num_items_total)
         zeros_tensor.scatter_(1, clamped_item_seq, 1)
         
-        # next_itemを1に設定
-        zeros_tensor.scatter_(1, next_item.unsqueeze(1), 1)
+        zeros_tensor.scatter_(1, next_item_original, 1)
         
-        # 最後の列（padding_item_idに対応する可能性のある部分）を除外
         zeros_tensor = zeros_tensor[:, :num_items_total]
         
-        neg_tensor = 1 - zeros_tensor # 0がサンプリング対象
+        neg_tensor = 1 - zeros_tensor
         
-        # num_neg_samplesが0の場合、torch.multinomialはエラーになるため、条件分岐
         if self.num_neg_samples > 0:
             neg_samples = torch.multinomial(
                 neg_tensor, self.num_neg_samples, replacement=True
             )
         else:
-            # ネガティブサンプルが不要な場合は空のテンソルを生成
             neg_samples = torch.empty((real_batch_size, 0), dtype=torch.long, device=self.device)
 
         # 5. 損失の計算
@@ -189,28 +176,20 @@ class DistillationTrainer(pl.LightningModule):
         
         # 5.1. ランキング蒸留損失
         if self.ranking_loss_weight > 0 and distill_mask.any():
-            # 重みの計算
-            # weight_rank
             _lambda = 1
             _K = self.candidate_topk
             weight_static = torch.arange(1, _K + 1, dtype=torch.float32, device=self.device)
-            weight_static = torch.exp(-weight_static / _lambda) # 1/exp(r)
-            weight_static = torch.unsqueeze(weight_static, 0) # [1, k]
-            weight_static = weight_static.repeat(student_logits.size(0), 1)
+            weight_static = torch.exp(-weight_static / _lambda)
+            weight_static = torch.unsqueeze(weight_static, 0).repeat(student_logits.size(0), 1)
             weight_rank = weight_static / torch.sum(weight_static, dim=1, keepdim=True)
             
-            # weight_com
             cf_rank_top = (-student_logits).argsort(dim=1)[:, :_K]
-            common_tensor = torch.zeros_like(teacher_candidates, device=self.device)
-            common_mask = teacher_candidates.unsqueeze(2) == cf_rank_top.unsqueeze(1)
-            common_tensor = common_mask.any(dim=2).int() + 1e-8
+            common_tensor = (teacher_candidates.unsqueeze(2) == cf_rank_top.unsqueeze(1)).any(dim=2).int() + 1e-8
             weight_com = common_tensor.to(self.device)
 
-            # weight_confidence
             weight_confidence = torch.exp(-teacher_confidence) + 1e-8
             weight_confidence = weight_confidence / torch.sum(weight_confidence, dim=1, keepdim=True)
 
-            # weight_fin
             weight_fin = self.gamma_position * weight_rank + self.gamma_confidence * weight_confidence + self.gamma_consistency * weight_com
             weights = weight_fin / torch.sum(weight_fin, dim=1, keepdim=True)
 
@@ -218,7 +197,7 @@ class DistillationTrainer(pl.LightningModule):
                 student_logits[distill_mask],
                 teacher_candidates[distill_mask],
                 weights[distill_mask],
-                neg_samples[distill_mask] # Pass neg_samples here
+                neg_samples[distill_mask]
             )
             total_loss += self.lam * self.ranking_loss_weight * ranking_kd_loss
             self.log('train_ranking_kd_loss', ranking_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
@@ -236,7 +215,7 @@ class DistillationTrainer(pl.LightningModule):
         if self.ce_loss_weight > 0:
             ce_loss = self.ce_loss_fn(student_logits, next_item)
             if self.alpha > 0 and self.dro_loss_fn is not None:
-                dro_loss = self.dro_loss_fn(student_logits, next_item.unsqueeze(1))
+                dro_loss = self.dro_loss_fn(student_logits, next_item_original)
                 ce_loss = ce_loss + self.alpha * dro_loss
                 self.log('train_ce_dro_loss', dro_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
             total_loss += self.ce_loss_weight * ce_loss
@@ -250,7 +229,7 @@ class DistillationTrainer(pl.LightningModule):
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)
-        loss = self.ce_loss_fn(logits, next_item)
+        loss = self.ce_loss_fn(logits, next_item.squeeze(-1))
         
         # メトリクスの計算
         # logits (batch_size, num_items) -> predictions (List[List[int]])
@@ -273,6 +252,30 @@ class DistillationTrainer(pl.LightningModule):
         self.log('val_loss', loss, on_epoch=True, prog_bar=True, logger=True)
         for metric_name, metric_value in metrics.items():
             self.log(f'val_{metric_name}', metric_value, on_epoch=True, prog_bar=True, logger=True)
+
+    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int):
+        item_seq = batch["seq"]
+        item_seq_len = batch["len_seq"]
+        next_item = batch["next_item"]
+
+        logits = self.forward(item_seq, item_seq_len)
+        loss = self.ce_loss_fn(logits, next_item.squeeze(-1))
+        
+        # メトリクスの計算
+        _, top_k_predictions = torch.topk(logits, k=self.metrics_k, dim=1)
+        predictions_list = top_k_predictions.tolist()
+
+        ground_truths_list = []
+        for item_id_tensor in next_item:
+            item_id = item_id_tensor.item()
+            if item_id != self.datamodule.padding_item_id:
+                ground_truths_list.append([item_id])
+        
+        metrics = calculate_metrics(predictions_list, ground_truths_list, k=self.metrics_k)
+        
+        self.log('test_loss', loss, on_epoch=True, prog_bar=True, logger=True)
+        for metric_name, metric_value in metrics.items():
+            self.log(f'test_{metric_name}', metric_value, on_epoch=True, prog_bar=True, logger=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(

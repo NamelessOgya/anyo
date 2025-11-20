@@ -1,8 +1,11 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
+from pathlib import Path
+from datetime import datetime
+import sys
+
 import pytorch_lightning as pl
-# from src.core.callbacks import CustomRichProgressBar
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -10,25 +13,34 @@ from src.core.paths import get_project_root
 from src.core.seed import set_seed
 from src.core.logging import setup_logging
 from src.core.git_info import get_git_info
+from src.core.callbacks import CustomRichProgressBar
 
 from src.student.datamodule import SASRecDataModule # 教師モデルも同じデータモジュールを使用
 from src.teacher.factory import create_teacher_model
 from src.teacher.trainer_ilora import iLoRATrainer
 from src.student.evaluator import SASRecEvaluator # 評価は生徒モデルの評価器を流用
-from src.teacher.mlp_projector import MLPProjector # Added import
-from transformers import AutoModelForCausalLM, AutoTokenizer # Added import
-import torch.nn as nn # Added import
-import torch # Added import
+from src.teacher.mlp_projector import MLPProjector
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch.nn as nn
+import torch
 
 logger = logging.getLogger(__name__)
 
-@hydra.main(config_path="../../conf", config_name="config", version_base="1.3")
-def run_teacher(cfg: DictConfig):
-    # 1. ロギング、シード、Git情報の初期化
-    output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
-    output_dir.mkdir(parents=True, exist_ok=True) # Ensure the output directory exists
+def main():
+    # --- Manual Hydra Initialization ---
+    # Parse command-line overrides manually
+    overrides = [arg for arg in sys.argv[1:] if arg.startswith("teacher.")]
     
-    # Save the Hydra config to the experiment directory
+    with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="teacher_run"):
+        cfg = hydra.compose(config_name="config", overrides=overrides)
+    # --- End Manual Hydra Initialization ---
+
+    # 1. ロギング、シード、Git情報の初期化
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = get_project_root() / "result" / f"teacher_{timestamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"!!! SCRIPT RUNNING. MANUALLY CREATED OUTPUT DIR: {output_dir} !!!")
+    
     with open(output_dir / "config.yaml", "w") as f:
         f.write(OmegaConf.to_yaml(cfg))
 
@@ -43,7 +55,7 @@ def run_teacher(cfg: DictConfig):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size,
-        max_seq_len=cfg.student.max_seq_len, # 教師モデルも同じmax_seq_lenを使用
+        max_seq_len=cfg.student.max_seq_len,
         num_workers=cfg.train.num_workers,
         limit_data_rows=cfg.dataset.limit_data_rows,
         train_file="train.csv",
@@ -52,25 +64,6 @@ def run_teacher(cfg: DictConfig):
     )
     dm.prepare_data()
     dm.setup()
-
-    # rec_modelのロード
-    from src.student.models import SASRec # 適切なモデルをインポート
-    rec_model_instance = SASRec(
-        num_items=dm.num_items,
-        hidden_size=cfg.student.hidden_size,
-        num_heads=cfg.student.num_heads,
-        num_layers=cfg.student.num_layers,
-        dropout_rate=cfg.student.dropout_rate,
-        max_seq_len=cfg.student.max_seq_len,
-    )
-    
-    # projectorのインスタンス化
-    projector_instance = MLPProjector(
-        input_dim=cfg.student.hidden_size, # rec_modelの出力次元
-        output_dim=cfg.teacher.hidden_size, # LLMの入力次元 (暫定、ilora_model内でLLMロード後に取得)
-        hidden_size=cfg.teacher.hidden_size,
-        dropout_rate=cfg.teacher.dropout_rate
-    )
 
     # 3. create_teacher_model を使用して iLoRAModel をインスタンス化
     ilora_model_instance = create_teacher_model(
@@ -89,89 +82,62 @@ def run_teacher(cfg: DictConfig):
         learning_rate=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
         metrics_k=cfg.eval.metrics_k,
-        item_id_to_name=dm.item_id_to_name # 追加
+        item_id_to_name=dm.item_id_to_name
     )
 
-    # 3. PyTorch Lightning Trainerのセットアップ
+    # 5. PyTorch Lightning Trainerのセットアップ
+    tb_logger = TensorBoardLogger(save_dir=str(output_dir), name="tb_logs", version="")
     checkpoint_callback = ModelCheckpoint(
-        dirpath=str(output_dir / "checkpoints"),
-        filename="best_teacher_model",
-        save_top_k=1,
-        verbose=True,
+        dirpath=output_dir / "checkpoints",
+        filename="teacher-{epoch:02d}-{val_loss:.4f}",
         monitor="val_loss",
         mode="min",
+        save_top_k=1,
+        save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    # progress_bar = CustomRichProgressBar()
-    tb_logger = TensorBoardLogger(save_dir=output_dir, name="tensorboard_logs")
+    progress_bar = CustomRichProgressBar()
 
     trainer = pl.Trainer(
+        default_root_dir=str(output_dir),
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.accelerator,
         devices=cfg.train.devices,
-        callbacks=[checkpoint_callback, lr_monitor],
         logger=tb_logger,
-        enable_checkpointing=True,
+        callbacks=[checkpoint_callback, lr_monitor, progress_bar],
         val_check_interval=cfg.train.val_check_interval,
-        log_every_n_steps=cfg.train.log_every_n_steps
+        log_every_n_steps=cfg.train.log_every_n_steps,
+        precision="16-mixed"
     )
 
     logger.info("Starting iLoRA teacher model training...")
-    trainer.fit(trainer_model, dm) # Pass the datamodule directly
+    trainer.fit(trainer_model, datamodule=dm)
     logger.info("iLoRA teacher model training finished.")
 
-    # 6. 学習済みモデルの保存 (ベストモデルはModelCheckpointで保存される)
-    final_model_path = output_dir / "final_teacher_model.ckpt"
-    trainer.save_checkpoint(final_model_path)
-    logger.info(f"Final teacher model saved to {final_model_path}")
+    # 6. 評価と教師出力の生成
+    logger.info("Starting final evaluation and teacher output generation...")
 
-    # 7. 評価の実行
-    logger.info("Starting iLoRA teacher model evaluation on test set...")
+    # 6.1. テストセットでの評価
+    # pl.Trainerは、最適なチェックポイントが利用可能な場合、自動的にそれを使用します。
+    logger.info("Evaluating on test set with the best model...")
     best_model_path = checkpoint_callback.best_model_path
-    if best_model_path:
-        logger.info(f"Loading best teacher model from {best_model_path} for evaluation.")
-        loaded_model = iLoRATrainer.load_from_checkpoint(
-            best_model_path,
-            ilora_model=ilora_model_instance, # iLoRAModelインスタンスを渡す必要がある
-            num_items=dm.num_items,
-            learning_rate=cfg.train.learning_rate,
-            weight_decay=cfg.train.weight_decay,
-            metrics_k=cfg.eval.metrics_k,
-            item_id_to_name=dm.item_id_to_name,
-            # iLoRAModelのハイパーパラメータを明示的に渡す
-            num_lora_experts=cfg.teacher.num_lora_experts,
-            lora_r=cfg.teacher.lora_r,
-            lora_alpha=cfg.teacher.lora_alpha,
-            lora_dropout=cfg.teacher.lora_dropout,
-            hidden_size=cfg.teacher.hidden_size,
-            dropout_rate=cfg.teacher.dropout_rate,
-            max_seq_len=cfg.student.max_seq_len, # max_seq_lenはstudentから取得
-            padding_item_id=dm.padding_item_id,
-            rec_model=rec_model_instance, # Pass rec_model
-            projector=projector_instance # Pass projector
-        )
+    if best_model_path and Path(best_model_path).exists():
+        trainer.test(model=trainer_model, datamodule=dm, ckpt_path=best_model_path)
     else:
-        logger.warning("No best teacher model checkpoint found. Using final model for evaluation.")
-        loaded_model = trainer_model # ベストモデルがない場合は最終モデルを使用
+        logger.warning("No best model found. Testing with the last model state.")
+        trainer.test(model=trainer_model, datamodule=dm)
+    logger.info("Test set evaluation finished.")
 
-    # 教師モデルの評価には、生徒モデルの評価器を流用する
-    # ただし、SASRecEvaluatorはSASRecTrainerを想定しているので、
-    # iLoRATrainerを直接渡すことはできない。
-    # ここでは、iLoRATrainerのtest_stepを直接呼び出す
-    logger.info("Running test_step for teacher model...")
-    trainer.test(loaded_model, dm) # Pass the datamodule directly
-    logger.info("iLoRA teacher model evaluation finished.")
+    # 6.2. 訓練データセットに対する教師出力を生成し、保存
+    # 手動ループのために、モデル全体を正しいデバイスに移動させ、評価モードに設定します。
+    logger.info("Preparing for teacher output generation...")
+    device = "cuda" if torch.cuda.is_available() and cfg.train.accelerator == "gpu" else "cpu"
+    trainer_model.to(device)
+    trainer_model.eval()
 
-    # 8. 訓練データセットに対する教師出力を生成し、保存
     logger.info("Generating teacher outputs for the training dataset...")
-    
     teacher_outputs_batches_dir = output_dir / "teacher_outputs_batches"
     teacher_outputs_batches_dir.mkdir(parents=True, exist_ok=True)
-
-    # Ensure the model is on the correct device and in eval mode
-    device = "cuda" if torch.cuda.is_available() and cfg.train.accelerator == "gpu" else "cpu"
-    loaded_model.model.eval()
-    loaded_model.model.to(device)
 
     batch_idx = 0
     with torch.no_grad():
@@ -180,13 +146,8 @@ def run_teacher(cfg: DictConfig):
             for key, value in batch.items():
                 if isinstance(value, torch.Tensor):
                     batch[key] = value.to(device)
-                elif isinstance(value, dict) and "input_ids" in value:
-                    batch[key]["input_ids"] = value["input_ids"].to(device)
-                    batch[key]["attention_mask"] = value["attention_mask"].to(device)
-                    if "labels" in value:
-                        batch[key]["labels"] = value["labels"].to(device)
 
-            teacher_outputs = loaded_model.model.get_teacher_outputs(batch)
+            teacher_outputs = trainer_model.model.get_teacher_outputs(batch)
             
             # Save each batch's output to a separate file
             batch_output_path = teacher_outputs_batches_dir / f"batch_{batch_idx:05d}.pt"
@@ -197,8 +158,12 @@ def run_teacher(cfg: DictConfig):
                 "confidence": teacher_outputs["confidence"].cpu(),
             }, batch_output_path)
             batch_idx += 1
+            if batch_idx % 10 == 0:
+                logger.info(f"Generated outputs for {batch_idx} batches...")
             
     logger.info(f"Teacher outputs for {batch_idx} batches saved to {teacher_outputs_batches_dir}")
 
+    logger.info(f"Teacher model run finished. Results are in: {output_dir}")
+
 if __name__ == "__main__":
-    run_teacher()
+    main()
