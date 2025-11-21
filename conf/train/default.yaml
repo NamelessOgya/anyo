@@ -1,9 +1,11 @@
-batch_size: 32
-max_epochs: 50
-learning_rate: 1e-3
+# conf/train/default.yaml
+batch_size: 64
+max_epochs: 1
+learning_rate: 1e-4
 weight_decay: 0.01
-accelerator: gpu # cpu or gpu
-devices: 1 # GPUの数
-num_workers: 4 # DataLoaderのワーカー数
-val_check_interval: 1.0 # 1.0はエポックごとに検証
+accelerator: gpu
+precision: "16-mixed" # Default precision setting
+devices: 1
+num_workers: 0
+val_check_interval: 1.0
 log_every_n_steps: 50

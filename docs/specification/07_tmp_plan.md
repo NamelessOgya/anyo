@@ -1,93 +1,47 @@
-# 7. Agent-Gamma 作業計画
+# Llamaモデル実行設定の最適化計画
 
-## 7.1. 課題
+## 1. 事前調査フェーズ
 
-教師モデルの学習時に発生する `RuntimeError: CUDA driver error: operation not supported` を解決し、知識蒸留パイプラインの正確な実行を可能にする。
+- [x] **タスク1.1**: `ref_repositories/iLoRA` ディレクトリ内のファイルを確認し、先行研究で用いられた以下のハイパーパラメータと設定を特定する。
+    - [x] `train_movielens.sh` から `batch_size`, `lr` (学習率) を調査する。
+        - **結果**: `batch_size = 8`, `lr = 8e-4`
+    - [x] 実行スクリプトや `main.py` から `num_workers` の設定を調査する。
+        - **結果**: `num_workers = 8` (main.pyのArgumentParserのデフォルト値)
+    - [x] `train_movielens.sh` に記載のある `--prompt_path` (`./prompt/movie.txt`) の内容を確認し、使用されているプロンプトを特定する。
+        - **結果**: `ref_repositories/iLoRA/prompt/movie.txt` には複数のプロンプトテンプレートが存在。
+            - `This user has watched [HistoryHere] in the previous. Please predict the next movie this user will watch. Choose the answer from the following 20 movie titles: [CansHere]. Answer:`
+            - `This user has watched [HistoryHere] in the previous. Given the following 20 movie titles: [CansHere], recommend one movie for this user to watch next. The movie title you recommend is:`
+            - `The visit history of this user is: [HistoryHere]. Recommend a next movie for this user to watch from the following movie title set: [CansHere]. The recommendation should contain one movie title only. Recommendation:`
+- [x] **タスク1.2**: 一般的なLoRA学習において `num_workers` が実行速度に与える影響について調査し、その結果を `docs/research/03_about_num_workers.md` に日本語でまとめる。
+    - **結果**: `docs/research/03_about_num_workers.md` を作成し、`num_workers`の役割、最適化のポイント、メモリ影響、`persistent_workers`についてまとめました。
 
-## 7.2. 作業計画 (PyTorch Lightning不使用版)
+## 2. 最適設定の探索フェーズ (q-LoRA有効)
 
-(このセクションは、手動ループ実装の記録として残すが、現在は `7.5` のPyTorch Lightningベースのアプローチに回帰している)
-
-*   ... (内容は変更なし) ...
-
-## 7.3. 作業計画 (コンテナ再ビルドによる環境問題の切り分け)
-
-(このセクションは、環境問題解決の記録として残す)
-
-*   ... (内容は変更なし) ...
-
-## 7.4. 作業計画 (OOMエラーの調査と解決)
-
-(このセクションは、手動ループ実装時のOOMエラー調査の記録として残す)
-
-*   ... (内容は変更なし) ...
-
-## 7.5. 作業計画 (PyTorch Lightningへの回帰と再検証)
-
-**背景:**
-手動での学習ループ実装 (`tmp/implement_without_pl` ブランチ) において、損失が `NaN` になる問題が発生し、デバッグが困難であった。また、ユーザーの要望により、より安定していたPyTorch Lightningを使用したバージョンにコードベースを復元した。ただし、`Dockerfile` と `docs` は最新の状態を維持している。
-このセクションでは、復元されたコードベースで、以前の `CUDA driver error` が解消されているか、また `NaN` の問題が再発しないかを確認する。
-
-### 7.5.1. コードベースの復元
-
-*   [x] `git checkout` を使用し、`src` ディレクトリなどをPyTorch Lightningを使用していたコミット (`5f0caf344cbf7c5584125105e56bd136852b2182`) の状態に復元した。
-*   [x] `tmp/implement_without_pl` ブランチから、最新の `Dockerfile` と `docs` ディレクトリの内容を現在のブランチにマージした。
-
-### 7.5.2. 動作確認 (PyTorch Lightning版)
-
-*   [x] `run_teacher.py` (PyTorch Lightning版) を実行し、`CUDA driver error` が解消されているか確認した。
-    *   **結果:** `CUDA driver error` は解消された。しかし、新たに2つの問題が発生した。
-        1.  `test_loss` が `NaN` になる。
-        2.  教師出力の生成時に `RuntimeError: Expected all tensors to be on the same device` が発生する。
-
-### 7.5.3. `NaN` / `inf` 問題のデバッグ
-
-*   [x] **データ数の削減:** 問題の切り分けを容易にするため、`conf/dataset/movielens.yaml` の `limit_data_rows` を `100` に設定して検証を行った。
-*   [x] **デバイス不一致エラーの修正:** `run_teacher.py` の教師出力生成部分で、モデルとバッチデータを明示的に同じデバイスに送るように修正し、`RuntimeError` を解消した。
-*   [x] **学習率の調整:** `conf/train/teacher.yaml` の `learning_rate` を `1e-3` から `1e-4` に下げて実行したが、`NaN` 問題は解決しなかった。
-*   [x] **精度の強制:** `pl.Trainer` に `precision=32` を設定し、`float16` に起因する数値不安定性の可能性を排除したが、`NaN` 問題は解決しなかった。
-*   [x] **勾配クリッピングの導入:** `pl.Trainer` に `gradient_clip_val=1.0` を設定し、勾配爆発を抑制しようと試みたが、`NaN` 問題は解決しなかった。
-*   [x] **デバッグプリントによる内部状態の確認:**
-    *   `test_step` および `validation_step` にデバッグプリントを追加し、`logits` が `NaN` または `inf` になっていることを確認した。
-    *   これにより、問題は学習の早い段階（最初のエポックの検証フェーズ）で発生しており、モデルの出力が発散していることが示唆された。
-
-### 7.5.4. 現在の仮説と次のステップ
-
-*   **仮説:**
-    これまでの調査から、問題の根本原因は、LLMからの出力である `last_hidden_state` が訓練中に発散（非常に大きな値または `inf`/`NaN` になる）し、それが後続の `item_prediction_head` を経て `logits` の `inf`/`NaN` を引き起こしている可能性が高い。学習率の調整や勾配クリッピングだけでは解決できない、より根本的な不安定性がモデルの初期状態または構造に存在すると考えられる。
-
-*   **次のステップ:**
-    1.  `validation_step` 内で `last_hidden_state` の統計情報（最小値、最大値、平均値）をプリントし、実際に値が発散しているかを確認する。
-    2.  発散が確認された場合、原因をさらに切り分ける。
-        *   **初期化の問題:** `item_prediction_head` の初期化方法を変更してみる。
-        *   **事前学習済みモデルの問題:** ロードしている `rec_model` が不安定性の原因である可能性を調査する。
-        *   **アーキテクチャの問題:** モデルの構造自体に不安定性を引き起こす要因がないかレビューする。
-
-### 7.5.5. 最終的な動作確認
-
-*   [ ] `NaN` 問題を解消し、`run_teacher.py` がエラーなく最後まで実行できることを確認する。
-*   [ ] `limit_data_rows` と `learning_rate` を元の値に戻し、完全なデータセットで学習が安定して行えることを確認する。
-*   [ ] 学習ログ、保存されたモデル、評価結果が期待通りであることを確認する。
-
-## 7.6. 開発サイクル改善: プログレスバーの導入
-
-**背景:**
-現状、`pl.Trainer` の `enable_progress_bar` は `False` に設定されている。これは、デフォルトのプログレスバーがコンソール出力を乱し、視認性が悪かったためである。しかし、プログレスバーがないと学習の進捗が分かりにくく、開発効率が低下している。`rich` ライブラリなどを用いて、よりクリーンで視認性の高いプログレスバーを導入することで、この問題を解決する。
-
-### 7.6.1. プログレスバーのベストプラクティス調査
-
-*   [x] PyTorch Lightning と `rich` を組み合わせた際のプログレスバー実装のベストプラクティスを調査する。
-*   [x] 調査結果を、出典を明記した上で `docs/research/01_progressbar_best_practice.md` にまとめる。
-
-### 7.6.2. 実装
-
-*   [x] `pyproject.toml` に `rich` を依存関係として追加する。
-*   [x] `pytorch_lightning.callbacks.RichProgressBar` を使用して、カスタムのプログレスバーコールバックを実装する。
-*   [x] `src/exp/run_distill.py` に、新しいプログレスバーコールバックを適用する。
-*   [x] `src/exp/run_teacher.py`, `src/exp/run_student_baseline.py` の2つの学習スクリプトに、新しいプログレスバーコールバックを適用する。
-*   [x] `pl.Trainer` の `enable_progress_bar=False` の設定を削除、または `True` に変更する。
-
-### 7.6.3. テスト
-
-*   [ ] データ数とエポック数を少なく設定した上で、3つの学習スクリプトをそれぞれ実行する。
-*   [ ] 新しいプログレスバーがコンソールを乱すことなく、進捗を明確に表示することを確認する。
+- [x] **タスク2.1**: 事前調査フェーズの結果とq-LoRAによる軽量化を考慮し、`batch_size=128`および`batch_size=256`をベースラインとして最適な `num_workers` の組み合わせを探索する実験計画を立案する。
+    - **目的**: Llamaモデル (q-LoRA有効) の学習において、GPUメモリ使用量を抑えつつ、学習時間を最適化する `num_workers` と `batch_size` の組み合わせを特定する。
+    - **評価指標**:
+        - **学習時間**: 各エポックの完了までにかかる時間、または全トレーニングの総時間。
+        - **GPUメモリ使用量**: `torch.cuda.max_memory_allocated()` を使用してピークメモリ使用量を測定。
+    - **探索範囲**: `limit_data_rows: 1000` (高速なイテレーションのため) および `max_epochs: 1` で実験を実施。
+        - **実験1: `batch_size=128` の場合**
+            - `batch_size: 128`, `num_workers: 0`
+            - `batch_size: 128`, `num_workers: 4` (現在のLlama q-LoRA成功設定)
+            - `batch_size: 128`, `num_workers: 8` (iLoRA参照値)
+            - `batch_size: 128`, `num_workers: 11` (Pytorch Lightningの推奨値)
+        - **実験2: `batch_size=256` の場合**
+            - [x] `batch_size: 256`, `num_workers: 0`
+                - **結果**: (前の実行で`train=teacher`を明示していなかったため、実効バッチサイズは`conf/train/default.yaml`の`64`が適用されていた)
+                    - **実効バッチサイズ 64 の場合**:
+                        - 学習時間 (1 epoch): ~135秒
+                        - 総学習時間 (trainer.fit): ~266秒
+                        - ピークGPUメモリ使用量: 11.35 GB
+                    - **実効バッチサイズ 256 の場合**: (`train=teacher`を明示的に指定した後の実行)
+                        - 学習時間 (1 epoch): ~125秒
+                        - 総学習時間 (trainer.fit): ~256秒
+                        - ピークGPUメモリ使用量: 32.23 GB
+                    - **時間比較**: `batch_size=256` は `batch_size=64` よりも1エポックあたり約10秒高速 (約7%削減) でしたが、GPUメモリ使用量は約3倍に増加しました。
+            - [ ] `batch_size: 256`, `num_workers: 4` (in_progress)
+            - [ ] `batch_size: 256`, `num_workers: 8`
+            - [ ] `batch_size: 256`, `num_workers: 11`
+- [ ] **タスク2.2**: タスク2.1で立案した実験計画を実行し、各設定でのパフォーマンスを測定・比較する。
+- [ ] **タスク2.3**: 実験結果に基づき、最適な `num_workers` と `batch_size` の組み合わせを決定し、その設定をデフォルトのコンフィグファイルに反映する。

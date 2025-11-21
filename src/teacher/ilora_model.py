@@ -6,9 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model, TaskType # Added imports for PEFT
 
 from src.teacher.mlp_projector import MLPProjector
-from src.teacher.moe_lora_model import MoeLoraConfig, Linear
+from src.teacher.moe_lora_model import MoeLoraConfig, Linear # Keep for non-QLoRA path
 
 logger = logging.getLogger(__name__) # Added module-level logger
 
@@ -58,10 +59,11 @@ class iLoRAModel(nn.Module):
         candidate_topk: int, # Added candidate_topk
         item_id_to_name: Dict[int, str], # Added item_id_to_name
         padding_item_id: int, # Added padding_item_id
+        use_qlora: bool = False, # Add use_qlora parameter
     ):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.llm = llm.to(self.device) # Removed .half()
+        self.llm = llm.to(self.device)
         # Freeze all parameters of the base LLM
         for param in self.llm.parameters():
             param.requires_grad = False
@@ -71,31 +73,62 @@ class iLoRAModel(nn.Module):
 
         self.tokenizer = tokenizer
         self.rec_model = rec_model.to(self.device)
-        self.projector = projector.to(self.device) # Removed .half()
+        self.projector = projector.to(self.device)
         self.gate_weights = None
         self.candidate_topk = candidate_topk
-        self.item_id_to_name = item_id_to_name # Store item_id_to_name
-        self.padding_item_id = padding_item_id # Store padding_item_id
+        self.item_id_to_name = item_id_to_name
+        self.padding_item_id = padding_item_id
+        self.use_qlora = use_qlora # Store use_qlora
 
-        self.moe_lora_config = MoeLoraConfig(
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            target_modules=["q_proj", "v_proj"],
-            num_moe=num_lora_experts,
-            gating="MLP",
-        )
-        self._find_and_replace()
+        if self.use_qlora:
+            print("Applying PEFT LoRA (QLoRA enabled path)")
+            # When QLoRA is enabled, we use PEFT's native LoraConfig
+            # target_modules will be defined based on the LLM architecture.
+            # For OPT, 'q_proj', 'v_proj' are common.
+            lora_config = LoraConfig(
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                bias="none",
+                task_type=TaskType.CAUSAL_LM,
+                target_modules=["q_proj", "v_proj"], # Example for OPT model
+            )
+            self.llm = get_peft_model(self.llm, lora_config)
+            self.llm.print_trainable_parameters()
+            
+            # For QLoRA, the gating network will still select active LoRA adapters
+            # but the actual MoE logic within Linear might need adjustment if it relies on
+            # direct module replacement. For now, assume a single LoRA adapter activated
+            # by the gating output.
+            
+            # The gating network will still predict expert weights
+            self.gating_network = MLPProjector(
+                input_dim=self.llm.config.hidden_size,
+                output_dim=num_lora_experts, # Still output num_lora_experts
+                hidden_size=hidden_size,
+                dropout_rate=dropout_rate,
+            ).to(self.device)
+        else:
+            print("Applying custom MoE LoRA (QLoRA disabled path)")
+            self.moe_lora_config = MoeLoraConfig(
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=["q_proj", "v_proj"],
+                num_moe=num_lora_experts,
+                gating="MLP",
+            )
+            self._find_and_replace()
 
-        self.gating_network = MLPProjector(
-            input_dim=self.llm.config.hidden_size,
-            output_dim=num_lora_experts,
-            hidden_size=hidden_size,
-            dropout_rate=dropout_rate,
-        ).to(self.device) # Removed .half()
+            self.gating_network = MLPProjector(
+                input_dim=self.llm.config.hidden_size,
+                output_dim=num_lora_experts,
+                hidden_size=hidden_size,
+                dropout_rate=dropout_rate,
+            ).to(self.device)
 
         # Add a linear layer to project LLM's last hidden state to num_items logits
-        self.item_prediction_head = nn.Linear(self.llm.config.hidden_size, num_items).to(self.device) # Removed .half()
+        self.item_prediction_head = nn.Linear(self.llm.config.hidden_size, num_items).to(self.device)
 
     def _prepare_llm_input(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -181,29 +214,29 @@ class iLoRAModel(nn.Module):
         user_embeds = self.encode_users(item_seq, item_seq_len)
         self.gate_weights = F.softmax(self.gating_network(user_embeds), dim=-1)
 
+        
         input_embeds = self.llm.get_input_embeddings()(input_ids)
-        logger.info(f"Input Embeds (before replacement) Stats: "
-                    f"min={input_embeds.min()}, max={input_embeds.max()}, mean={input_embeds.mean()}")
+
         his_token_id = self.tokenizer.additional_special_tokens_ids[
             self.tokenizer.additional_special_tokens.index("[HistoryEmb]")
         ]
         his_item_embeds = self.encode_items(batch["seq"])
-        logger.info(f"His Item Embeds (after projection) Stats: "
-                    f"min={his_item_embeds.min()}, max={his_item_embeds.max()}, mean={his_item_embeds.mean()}")
 
+        modified_input_embeds = input_embeds.clone() # Clone to avoid in-place error
         for i in range(batch_size):
             if (input_ids[i] == his_token_id).nonzero(as_tuple=True)[0].shape[0] > 0:
                 idx_tensor = (input_ids[i] == his_token_id).nonzero(as_tuple=True)[0]
                 for idx, item_emb in zip(idx_tensor, his_item_embeds[i, : item_seq_len[i].item()]):
-                    input_embeds[i, idx] = item_emb
-        logger.info(f"Input Embeds (after replacement) Stats: "
-                    f"min={input_embeds.min()}, max={input_embeds.max()}, mean={input_embeds.mean()}")
+                    modified_input_embeds[i, idx] = item_emb
+
+
+
 
         outputs = self.llm(
-            inputs_embeds=input_embeds,
+            inputs_embeds=modified_input_embeds,
             attention_mask=attention_mask,
-            # labels=labels, # Removed: labels are handled by trainer
             output_hidden_states=True,
+            use_cache=False, # Enable KV caching
         )
         return outputs
 
@@ -225,16 +258,18 @@ class iLoRAModel(nn.Module):
         ]
         his_item_embeds = self.encode_items(batch["seq"])
 
+        modified_input_embeds = input_embeds.clone() # Clone to avoid in-place error
         for i in range(batch_size):
             if (input_ids[i] == his_token_id).nonzero(as_tuple=True)[0].shape[0] > 0:
                 idx_tensor = (input_ids[i] == his_token_id).nonzero(as_tuple=True)[0]
                 for idx, item_emb in zip(idx_tensor, his_item_embeds[i, : item_seq_len[i].item()]):
-                    input_embeds[i, idx] = item_emb
+                    modified_input_embeds[i, idx] = item_emb
 
         outputs = self.llm(
-            inputs_embeds=input_embeds,
+            inputs_embeds=modified_input_embeds,
             attention_mask=attention_mask,
             output_hidden_states=True,
+            use_cache=False, # Enable KV caching
         )
         
         last_hidden_state = outputs.hidden_states[-1][:, -1, :]

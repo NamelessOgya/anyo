@@ -1,3 +1,4 @@
+import sys
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
@@ -21,8 +22,9 @@ logger = logging.getLogger(__name__)
 def main():
     # Manually initialize Hydra. This is for environments where the decorator causes issues.
     try:
+        overrides = sys.argv[1:]
         with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="student_baseline_run"):
-            cfg = hydra.compose(config_name="config")
+            cfg = hydra.compose(config_name="config", overrides=overrides)
     except Exception as e:
         print(f"Hydra initialization failed: {e}")
         return
@@ -84,8 +86,8 @@ def main():
         save_last=True,
     )
 
-    lr_monitor = LearningRateMonitor(logging_interval='step')
-    progress_bar = CustomRichProgressBar()
+    # lr_monitor = LearningRateMonitor(logging_interval='step')
+    # progress_bar = CustomRichProgressBar()
 
     trainer = pl.Trainer(
         default_root_dir=str(output_dir),
@@ -93,7 +95,7 @@ def main():
         accelerator=cfg.train.accelerator,
         devices=cfg.train.devices,
         logger=tb_logger,
-        callbacks=[checkpoint_callback, lr_monitor, progress_bar],
+        callbacks=[checkpoint_callback],
         val_check_interval=cfg.train.val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps,
     )

@@ -1,0 +1,4 @@
+defaults:
+  - student
+batch_size: 1024
+max_epochs: 20

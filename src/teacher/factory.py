@@ -5,7 +5,8 @@ from src.teacher.mlp_projector import MLPProjector # MLPProjectorをインポー
 import torch
 import torch.nn as nn # Added import
 from typing import Dict
-from transformers import AutoModelForCausalLM, AutoTokenizer # LLMとTokenizerをロードするために追加
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model # Added LoraConfig, get_peft_model
 from src.student.models import SASRec # Import SASRec
 
 def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item_id_to_name: Dict[int, str], padding_item_id: int, candidate_topk: int) -> TeacherModel:
@@ -30,7 +31,32 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # LLMとTokenizerをここでロード
-        llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
+        if cfg.teacher.get("use_qlora", False):
+            if not torch.cuda.is_available():
+                raise ValueError("QLoRA requires CUDA. Please use a GPU enabled environment.")
+            
+            # BitsAndBytesConfigを使用して4bit量子化を設定
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4", # Or "fp4"
+                bnb_4bit_use_double_quant=True,
+            )
+            print("QLoRA (4-bit quantization) is enabled for LLM.")
+
+            llm = AutoModelForCausalLM.from_pretrained(
+                cfg.teacher.llm_model_name,
+                quantization_config=quantization_config
+            )
+            # Prepare model for k-bit training
+            # This will cast the layernorm layers to float32, and the output layer to float32
+            # for more stability.
+            llm = prepare_model_for_kbit_training(llm)
+
+        else:
+            print("QLoRA is disabled for LLM.")
+            llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
+
         tokenizer = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -92,7 +118,8 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
             projector=projector, # Pass projector
             candidate_topk=candidate_topk, # Pass candidate_topk
             item_id_to_name=item_id_to_name, # Pass item_id_to_name
-            padding_item_id=padding_item_id # Pass padding_item_id
+            padding_item_id=padding_item_id, # Pass padding_item_id
+            use_qlora=cfg.teacher.get("use_qlora", False), # Pass use_qlora flag
         )
         return model
     else:

@@ -5,5 +5,5 @@
 set -eu
 
 echo "Running knowledge distillation..."
-poetry run python -m src.exp.run_distill train.batch_size=64
+poetry run python -m src.exp.run_distill "$@"
 echo "Knowledge distillation run complete."

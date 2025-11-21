@@ -1,0 +1,5 @@
+defaults:
+  - teacher
+batch_size: 64
+num_workers: 4
+log_every_n_steps: 999999

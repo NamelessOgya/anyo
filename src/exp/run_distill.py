@@ -1,3 +1,4 @@
+import sys
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
@@ -28,33 +29,15 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-def find_latest_teacher_dir():
-    """Finds the latest teacher directory within the result/ directory."""
-    project_root = get_project_root()
-    result_dir = project_root / "result"
-    
-    latest_timestamp = None
-    latest_teacher_dir = None
-
-    if not result_dir.exists():
-        return None, None
-
-    for entry in result_dir.iterdir():
-        if entry.is_dir() and entry.name.startswith("teacher_"):
-            try:
-                timestamp_str = entry.name.split('_', 1)[1]
-                if latest_timestamp is None or timestamp_str > latest_timestamp:
-                    latest_timestamp = timestamp_str
-                    latest_teacher_dir = entry
-            except IndexError:
-                continue # Ignore directories that don't match the expected format
-                
-    return latest_teacher_dir
-
 def main():
     # --- Manual Hydra Initialization ---
-    with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="distill_run"):
-        cfg = hydra.compose(config_name="config")
+    try:
+        overrides = sys.argv[1:]
+        with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="distill_run"):
+            cfg = hydra.compose(config_name="config", overrides=overrides)
+    except Exception as e:
+        print(f"Hydra initialization failed: {e}")
+        return
     # --- End Manual Hydra Initialization ---
 
     # 1. ロギング、シード、Git情報の初期化
@@ -87,33 +70,31 @@ def main():
     dm.prepare_data()
     dm.setup()
 
-    # 3. Find latest teacher model and its specific config
-    latest_teacher_dir = find_latest_teacher_dir()
-    if not latest_teacher_dir:
-        raise FileNotFoundError("Could not find any teacher model run directory in 'result/'. Please run the teacher model first.")
-    
-    # Load the specific config from the teacher run
-    teacher_cfg_path = latest_teacher_dir / "config.yaml"
-    if not teacher_cfg_path.exists():
-        raise FileNotFoundError(f"Could not find config.yaml in teacher directory: {latest_teacher_dir}")
-    
-    teacher_cfg = OmegaConf.load(teacher_cfg_path)
-    logger.info(f"Loaded specific config from teacher run: {teacher_cfg_path}")
+    # 3. 教師モデルのチェックポイントと出力パスを決定
+    teacher_checkpoint_file_path = Path(cfg.distill.teacher_checkpoint_path)
+    teacher_outputs_batches_dir_path = Path(cfg.distill.teacher_outputs_batches_dir)
 
-    teacher_checkpoint_path = latest_teacher_dir / "checkpoints"
-    try:
-        teacher_checkpoint_file = next(teacher_checkpoint_path.glob("*.ckpt"))
-    except StopIteration:
-        raise FileNotFoundError(f"No .ckpt file found in {teacher_checkpoint_path}")
+    if not teacher_checkpoint_file_path.exists():
+        raise FileNotFoundError(f"Teacher checkpoint file not found at: {teacher_checkpoint_file_path}")
+    if not teacher_outputs_batches_dir_path.exists():
+        raise FileNotFoundError(f"Teacher outputs batches directory not found at: {teacher_outputs_batches_dir_path}")
 
-    teacher_outputs_batches_dir_path = latest_teacher_dir / "teacher_outputs_batches"
-    
-    logger.info(f"Found latest teacher directory: {latest_teacher_dir}")
-    logger.info(f"Using teacher checkpoint: {teacher_checkpoint_file}")
+    logger.info(f"Using teacher checkpoint: {teacher_checkpoint_file_path}")
     logger.info(f"Using teacher outputs from: {teacher_outputs_batches_dir_path}")
 
+    # 教師モデルのconfigを、チェックポイントのあるディレクトリからロード
+    # checkpoint_path/checkpoints/teacher-epoch=XX-val_loss=YY.ckpt
+    # teacher_run_dir should be checkpoint_path's parent's parent
+    teacher_run_dir = teacher_checkpoint_file_path.parents[1] 
+    teacher_cfg_path = teacher_run_dir / "config.yaml"
+    if not teacher_cfg_path.exists():
+        raise FileNotFoundError(f"Config file not found in teacher run directory: {teacher_cfg_path}. Cannot proceed without teacher's config.")
+    
+    teacher_cfg = OmegaConf.load(teacher_cfg_path)
+    logger.info(f"Loaded specific config from teacher run directory: {teacher_cfg_path}")
+
     # 4. 教師モデルのインスタンス化と学習済み重みのロード (using the teacher's specific config)
-    logger.info(f"Loading pre-trained teacher model from {teacher_checkpoint_file}")
+    logger.info(f"Loading pre-trained teacher model from {teacher_checkpoint_file_path}")
     teacher_model_instance = create_teacher_model(
         teacher_cfg, # Use the specific config from the teacher run
         num_items=dm.num_items,
@@ -123,7 +104,7 @@ def main():
         candidate_topk=teacher_cfg.distill.candidate_topk
     )
     loaded_teacher_trainer = iLoRATrainer.load_from_checkpoint(
-        checkpoint_path=teacher_checkpoint_file,
+        checkpoint_path=teacher_checkpoint_file_path,
         ilora_model=teacher_model_instance,
         num_items=dm.num_items,
         learning_rate=teacher_cfg.train.learning_rate,
@@ -209,15 +190,15 @@ def main():
         mode="max",
         save_top_k=1,
     )
-    lr_monitor = LearningRateMonitor(logging_interval='epoch')
-    progress_bar = CustomRichProgressBar()
+    # lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    # progress_bar = CustomRichProgressBar()
 
     trainer = pl.Trainer(
         default_root_dir=str(output_dir),
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.accelerator,
         devices=cfg.train.devices,
-        callbacks=[checkpoint_callback, lr_monitor, progress_bar],
+        callbacks=[checkpoint_callback],
         logger=tb_logger,
         precision="16-mixed" # Added for memory saving
     )

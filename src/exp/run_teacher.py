@@ -1,6 +1,7 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
+import time # Added import for time
 from pathlib import Path
 from datetime import datetime
 import sys
@@ -23,13 +24,14 @@ from src.teacher.mlp_projector import MLPProjector
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch.nn as nn
 import torch
+from torch.utils.data import DataLoader # Added DataLoader import
 
 logger = logging.getLogger(__name__)
 
 def main():
     # --- Manual Hydra Initialization ---
     # Parse command-line overrides manually
-    overrides = [arg for arg in sys.argv[1:] if arg.startswith("teacher.")]
+    overrides = sys.argv[1:]
     
     with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="teacher_run"):
         cfg = hydra.compose(config_name="config", overrides=overrides)
@@ -107,47 +109,110 @@ def main():
         callbacks=[checkpoint_callback, lr_monitor, progress_bar],
         val_check_interval=cfg.train.val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps,
-        precision="16-mixed"
+        precision=cfg.train.precision
     )
 
     logger.info("Starting iLoRA teacher model training...")
+    training_start_time = time.perf_counter() # Measure training duration
     trainer.fit(trainer_model, datamodule=dm)
-    logger.info("iLoRA teacher model training finished.")
+    training_duration = time.perf_counter() - training_start_time
+    logger.info(f"iLoRA teacher model training finished. Duration for trainer.fit: {training_duration:.2f} seconds.")
 
     # 6. 評価と教師出力の生成
     logger.info("Starting final evaluation and teacher output generation...")
 
-    # 6.1. テストセットでの評価
-    # pl.Trainerは、最適なチェックポイントが利用可能な場合、自動的にそれを使用します。
-    logger.info("Evaluating on test set with the best model...")
+    # Load the best model for testing and teacher output generation
+    trainer_model_for_eval = None
     best_model_path = checkpoint_callback.best_model_path
+
+    if cfg.teacher.get("use_qlora", False) and best_model_path and Path(best_model_path).exists():
+        logger.info(f"Loading best QLoRA model from {best_model_path} for evaluation and output generation.")
+        # Create a new iLoRAModel instance with QLoRA enabled
+        eval_ilora_model_instance = create_teacher_model(
+            cfg,
+            num_items=dm.num_items,
+            max_seq_len=cfg.student.max_seq_len,
+            item_id_to_name=dm.item_id_to_name,
+            padding_item_id=dm.padding_item_id,
+            candidate_topk=cfg.distill.candidate_topk
+        )
+        # Create a new iLoRATrainer instance to load the checkpoint into
+        eval_trainer_model = iLoRATrainer(
+            ilora_model=eval_ilora_model_instance,
+            num_items=dm.num_items,
+            learning_rate=cfg.train.learning_rate,
+            weight_decay=cfg.train.weight_decay,
+            metrics_k=cfg.eval.metrics_k,
+            item_id_to_name=dm.item_id_to_name
+        )
+        # Load the checkpoint
+        device = "cuda" if torch.cuda.is_available() and cfg.train.accelerator == "gpu" else "cpu"
+        checkpoint = torch.load(best_model_path, map_location=device)
+        
+        # Load the state_dict for the entire trainer_model with strict=False
+        # This will load all non-LLM parameters and any LLM parameters that match
+        eval_trainer_model.load_state_dict(checkpoint['state_dict'], strict=False)
+
+        # The first load_state_dict with strict=False should handle restoring the
+        # trainable LoRA weights. The second, stricter load for the LLM is causing
+        # issues with QLoRA's state dict keys and is likely unnecessary.
+        #
+        # # Now, explicitly load the state_dict for the PEFT-wrapped LLM
+        # # We need to filter the checkpoint's state_dict to get only LLM-related keys
+        # llm_state_dict_from_checkpoint = {
+        #     key.replace('model.llm.', ''): value
+        #     for key, value in checkpoint['state_dict'].items()
+        #     if key.startswith('model.llm.')
+        # }
+        # # Assuming eval_trainer_model.model.llm is already a PeftModel
+        # eval_trainer_model.model.llm.load_state_dict(llm_state_dict_from_checkpoint, strict=True)
+        
+        logger.info(f"Loaded best model from {best_model_path} for evaluation and output generation.")
+        trainer_model_for_eval = eval_trainer_model
+    else:
+        logger.info("Using training model instance for evaluation and output generation (QLoRA disabled or no best checkpoint).")
+        trainer_model_for_eval = trainer_model # Use the training instance if no QLoRA or no best checkpoint
+
+    # 6.1. テストセットでの評価
+    logger.info("Evaluating on test set with the best model...")
+    test_start_time = time.perf_counter() # Measure test duration
     if best_model_path and Path(best_model_path).exists():
-        trainer.test(model=trainer_model, datamodule=dm, ckpt_path=best_model_path)
+        trainer.test(model=trainer_model_for_eval, datamodule=dm) # Use the potentially new instance
     else:
         logger.warning("No best model found. Testing with the last model state.")
-        trainer.test(model=trainer_model, datamodule=dm)
-    logger.info("Test set evaluation finished.")
+        trainer.test(model=trainer_model_for_eval, datamodule=dm) # Use the potentially new instance
+    test_duration = time.perf_counter() - test_start_time
+    logger.info(f"Test set evaluation finished. Duration: {test_duration:.2f} seconds.")
 
     # 6.2. 訓練データセットに対する教師出力を生成し、保存
     # 手動ループのために、モデル全体を正しいデバイスに移動させ、評価モードに設定します。
     logger.info("Preparing for teacher output generation...")
+    teacher_output_generation_start_time = time.perf_counter() # Measure teacher output generation duration
     device = "cuda" if torch.cuda.is_available() and cfg.train.accelerator == "gpu" else "cpu"
-    trainer_model.to(device)
-    trainer_model.eval()
+    trainer_model_for_eval.to(device) # Use the potentially new instance
+    trainer_model_for_eval.eval()
 
     logger.info("Generating teacher outputs for the training dataset...")
     teacher_outputs_batches_dir = output_dir / "teacher_outputs_batches"
     teacher_outputs_batches_dir.mkdir(parents=True, exist_ok=True)
 
+    # Use a separate DataLoader with inference_batch_size for teacher output generation
+    inference_dataloader = DataLoader(
+        dm.train_dataset,
+        batch_size=cfg.teacher.inference_batch_size, # Use inference_batch_size
+        shuffle=False, # No need to shuffle for inference
+        num_workers=cfg.train.num_workers # Use the same num_workers as training
+    )
+
     batch_idx = 0
     with torch.no_grad():
-        for batch in dm.train_dataloader():
+        for batch in inference_dataloader:
             # Move batch to device
             for key, value in batch.items():
                 if isinstance(value, torch.Tensor):
                     batch[key] = value.to(device)
 
-            teacher_outputs = trainer_model.model.get_teacher_outputs(batch)
+            teacher_outputs = trainer_model_for_eval.model.get_teacher_outputs(batch) # Use the potentially new instance
             
             # Save each batch's output to a separate file
             batch_output_path = teacher_outputs_batches_dir / f"batch_{batch_idx:05d}.pt"
@@ -161,7 +226,8 @@ def main():
             if batch_idx % 10 == 0:
                 logger.info(f"Generated outputs for {batch_idx} batches...")
             
-    logger.info(f"Teacher outputs for {batch_idx} batches saved to {teacher_outputs_batches_dir}")
+    teacher_output_generation_duration = time.perf_counter() - teacher_output_generation_start_time
+    logger.info(f"Teacher outputs for {batch_idx} batches saved to {teacher_outputs_batches_dir}. Duration: {teacher_output_generation_duration:.2f} seconds.")
 
     logger.info(f"Teacher model run finished. Results are in: {output_dir}")
 

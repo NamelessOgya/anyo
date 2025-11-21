@@ -1,4 +1,5 @@
-import logging # Added import
+import logging
+import time # Import time module
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -27,7 +28,8 @@ class iLoRATrainer(pl.LightningModule):
         self.model = ilora_model
         self.metrics_k = metrics_k
         self.loss_fn = F.cross_entropy # Use F.cross_entropy directly
-        # self.item_id_to_name = item_id_to_name # ilora_modelが持つので不要
+        self.training_epoch_start_time = 0.0 # Initialize start time for epoch duration
+
 
     def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
         # iLoRAModel.forward returns outputs object from LLM
@@ -55,11 +57,11 @@ class iLoRATrainer(pl.LightningModule):
         outputs = self.forward(batch)
         last_hidden_state = outputs.hidden_states[-1][:, -1, :]
         
-        logger.info(f"Validation Step - Batch {batch_idx}") # Changed to logger.info
-        logger.info(f"Last Hidden State Stats: " # Changed to logger.info
-              f"min={last_hidden_state.min()}, "
-              f"max={last_hidden_state.max()}, "
-              f"mean={last_hidden_state.mean()}")
+        # logger.info(f"Validation Step - Batch {batch_idx}") # Changed to logger.info
+        # logger.info(f"Last Hidden State Stats: " # Changed to logger.info
+        #       f"min={last_hidden_state.min()}, "
+        #       f"max={last_hidden_state.max()}, "
+        #       f"mean={last_hidden_state.mean()}")
 
         logits = self.model.item_prediction_head(last_hidden_state)
         next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
@@ -113,6 +115,21 @@ class iLoRATrainer(pl.LightningModule):
         logger.info(f"Trainable parameters: {trainable_params}") # Changed to logger.info
         optimizer = AdamW(self.model.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
         return optimizer
+
+    def on_train_epoch_start(self):
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+            logger.info("GPU Memory: Peak memory stats reset for epoch.")
+        self.training_epoch_start_time = time.time()
+
+    def on_train_epoch_end(self):
+        if torch.cuda.is_available():
+            max_memory = torch.cuda.max_memory_allocated() / (1024 ** 3)  # Convert to GB
+            logger.info(f"GPU Memory: Max allocated during epoch: {max_memory:.2f} GB")
+        
+        epoch_duration = time.time() - self.training_epoch_start_time
+        self.log("epoch_duration_seconds", epoch_duration, prog_bar=True, logger=True)
+        logger.info(f"Epoch duration: {epoch_duration:.2f} seconds")
 
 if __name__ == "__main__":
     # テスト用のダミーデータとデータモジュール

@@ -5,7 +5,7 @@
 set -eu
 
 echo "Running student baseline..."
-poetry run python -m src.exp.run_student_baseline
+poetry run python -m src.exp.run_student_baseline "$@"
 echo "Student baseline run complete."
 
 
