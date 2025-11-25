@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 @hydra.main(config_path="../../conf", config_name="config", version_base="1.3")
 def run_eval_all(cfg: DictConfig):
     # 1. ロギング、シード、Git情報の初期化
-    output_dir = get_project_root() / "result" / cfg.run.dir.split('/')[-1]
+    output_dir = Path(cfg.run.dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
     git_info = get_git_info()

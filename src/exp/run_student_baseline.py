@@ -14,11 +14,10 @@ def main():
     overrides = sys.argv[1:]
     cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
 
-    # Manually create a unique output directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = get_project_root() / "result" / f"student_baseline_{timestamp}"
+    # Use cfg.run.dir
+    output_dir = Path(cfg.run.dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"!!! SCRIPT RUNNING. MANUALLY CREATED OUTPUT DIR: {output_dir} !!!")
+    print(f"!!! SCRIPT RUNNING. OUTPUT DIR: {output_dir} !!!")
     
     # Save the Hydra config to the experiment directory
     with open(output_dir / "config.yaml", "w") as f:

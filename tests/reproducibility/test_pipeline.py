@@ -36,7 +36,7 @@ def test_26_config_loading(pipeline_fixture):
                  rel_path = "../../../configs"
             
             with hydra.initialize(version_base=None, config_path=rel_path):
-                cfg = hydra.compose(config_name="config", overrides=["experiment=debug"])
+                cfg = hydra.compose(config_name="config", overrides=["experiment=ilora_movielens"])
                 assert cfg is not None
                 assert "model" in cfg
     except Exception as e:

@@ -1,5 +1,6 @@
+# coding=utf-8
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import torch
 import torch.nn as nn
@@ -13,10 +14,19 @@ logger = logging.getLogger(__name__)
 
 
 class iLoRAModel(nn.Module):
+    """
+    iLoRA (Implicit Low-Rank Adaptation) モデル。
+    シーケンシャル推薦モデル (SASRec) と大規模言語モデル (LLM) を
+    Mixture-of-Experts (MoE) LoRA アプローチを用いて組み合わせます。
+    
+    SASRecモデルはユーザー履歴をエンコードし、以下の用途に使用されます:
+    1. LLM内のMoE-LoRAレイヤーに対するゲート重みの生成。
+    2. LLMプロンプト内のプレースホルダーを置き換えるアイテム埋め込みの提供。
+    """
     def __init__(
         self,
         llm: AutoModelForCausalLM,
-        tokenizer: AutoTokenizer, # Re-added
+        tokenizer: AutoTokenizer,
         num_items: int,
         num_lora_experts: int,
         lora_r: int,
@@ -29,13 +39,13 @@ class iLoRAModel(nn.Module):
         candidate_topk: int,
         item_id_to_name: Dict[int, str],
         padding_item_id: int,
-        llm_dtype: torch.dtype, # Add new argument
+        llm_dtype: torch.dtype,
     ):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.llm_dtype = llm_dtype # Store llm_dtype
+        self.llm_dtype = llm_dtype
         
-        # Wrap the LLM with MoeLoraModel
+        # LLMをMoeLoraModelでラップする
         self.llm = MoeLoraModel(
             model=llm,
             target_modules=["q_proj", "v_proj"],
@@ -43,102 +53,97 @@ class iLoRAModel(nn.Module):
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
             num_lora_experts=num_lora_experts,
-        ).to(self.device) # LLM is already cast to correct dtype in factory.py
+        ).to(self.device) # LLMはfactory.pyですでに正しいdtypeにキャストされています
 
-        # Freeze all parameters of the base LLM is handled within MoeLoraModel
-        # by setting requires_grad=False on original weights
+        # ベースLLMの全パラメータの凍結は、MoeLoraModel内で
+        # 元の重みのrequires_grad=Falseを設定することで処理されます
 
-        self.tokenizer = tokenizer # Re-added
-        self.rec_model = rec_model.to(self.device) # SASRec model's outputs are cast in ilora_model.py
-        self.projector = projector.to(self.device) # Projector is cast in factory.py
+        self.tokenizer = tokenizer
+        self.rec_model = rec_model.to(self.device) # SASRecモデルの出力はilora_model.py内でキャストされます
+        self.projector = projector.to(self.device) # Projectorはfactory.py内でキャストされます
         self.candidate_topk = candidate_topk
         self.item_id_to_name = item_id_to_name
         self.padding_item_id = padding_item_id
 
-        # Build a list for faster item_id to name lookup (still needed for SASRecDataset's item_id_to_name)
-        # Assuming item_id starts from 0 or 1 and covers a contiguous range
+        # item_idから名前への高速なルックアップのためのリストを作成（SASRecDatasetのitem_id_to_nameのためにまだ必要）
+        # item_idが0または1から始まり、連続した範囲をカバーしていると仮定
         max_item_id = max(self.item_id_to_name.keys())
         self.item_name_lookup = [None] * (max_item_id + 1)
         for item_id, item_name in self.item_id_to_name.items():
             self.item_name_lookup[item_id] = item_name
 
-        # The gating network will predict expert weights
+        # ゲーティングネットワークはエキスパートの重みを予測します
         self.gating_network = MLPProjector(
-            input_dim=self.rec_model.hidden_size, # Correct input dim for gating
+            input_dim=self.rec_model.hidden_size, # ゲーティングのための正しい入力次元
             output_dim=num_lora_experts,
             hidden_size=hidden_size,
             dropout_rate=dropout_rate,
-        ).to(self.device, dtype=self.llm_dtype) # Cast gating network to llm_dtype
+        ).to(self.device, dtype=self.llm_dtype) # ゲーティングネットワークをllm_dtypeにキャスト
 
-        # Add a linear layer to project LLM's last hidden state to num_items logits
-        self.item_prediction_head = nn.Linear(self.llm.model.config.hidden_size, num_items).to(self.device, dtype=self.llm_dtype) # Cast item_prediction_head to llm_dtype
-
-    # _prepare_llm_input method removed
-    # def _prepare_llm_input(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> Dict[str, torch.Tensor]:
-    #    ... (removed content) ...
+        # LLMの最後の隠れ状態をnum_items個のロジットに射影する線形層を追加
+        self.item_prediction_head = nn.Linear(self.llm.model.config.hidden_size, num_items).to(self.device, dtype=self.llm_dtype) # item_prediction_headをllm_dtypeにキャスト
 
     def encode_items(self, full_sequence_representations: torch.Tensor) -> torch.Tensor:
-        # Assumes full_sequence_representations is already output from SASRec's Transformer blocks
-        # No need to call rec_model again
+        """
+        SASRecのアイテム表現をLLMの埋め込み空間に射影します。
+        """
+        # full_sequence_representationsはすでにSASRecのTransformerブロックからの出力であると仮定
         return self.projector(full_sequence_representations.to(self.projector.model[0].weight.dtype))
 
     def encode_users(self, last_item_representation: torch.Tensor) -> torch.Tensor:
-        # Assumes last_item_representation is already output from SASRec
-        # No need to call rec_model again
+        """
+        最後のアイテム表現（ユーザー埋め込み）をゲーティングに使用します。
+        """
+        # last_item_representationはすでにSASRecからの出力であると仮定
         return last_item_representation
 
     def _get_llm_outputs(self, batch: Dict[str, Any]) -> torch.Tensor:
         """
-        Prepares inputs, runs the LLM, and returns its raw outputs.
-        This is a common private method for `forward` and `get_teacher_outputs`.
+        入力を準備し、LLMを実行し、生の出力を返します。
+        このメソッドは以下を処理します:
+        1. SASRecからのユーザー埋め込みの計算。
+        2. ユーザー埋め込みからのゲート重みの計算。
+        3. プロンプト内の[HistoryEmb]プレースホルダーの、射影されたアイテム埋め込みへの置換。
+        4. MoE-LoRA LLMの実行。
         """
-        # DEBUG PRINT AT THE VERY BEGINNING
-        # logger.info(f"DEBUG(iLoRA._get_llm_outputs): Input batch['input_ids'][0]: {batch['input_ids'][0]}")
-        # logger.info(f"DEBUG(iLoRA._get_llm_outputs): Input batch['input_ids'][0] tokens: {self.tokenizer.convert_ids_to_tokens(batch['input_ids'][0].tolist())}")
-        # END DEBUG PRINT
-
         item_seq, item_seq_len = batch["seq"], batch["len_seq"]
 
-        # input_ids and attention_mask are now directly from the batch, prepared by collate_fn
+        # input_idsとattention_maskは、collate_fnによって準備されたバッチから直接取得されます
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
-        input_embeds = self.llm.get_input_embeddings()(input_ids) # Define input_embeds early
+        input_embeds = self.llm.get_input_embeddings()(input_ids)
 
-        # Get both full sequence representations and last item representation from SASRec in one pass
+        # SASRecから完全なシーケンス表現と最後のアイテム表現を1回のパスで取得
         full_sequence_rec_embs = self.rec_model.get_full_sequence_representations(item_seq, item_seq_len)
         last_item_rec_representation = self.rec_model._get_last_item_representation(item_seq, item_seq_len)
 
+        # ゲート重みの計算
         user_embeds = self.encode_users(last_item_rec_representation)
-        user_embeds = user_embeds.to(self.gating_network.model[0].weight.dtype) # Cast to match gating_network dtype
+        user_embeds = user_embeds.to(self.gating_network.model[0].weight.dtype)
         gate_weights = F.softmax(self.gating_network(user_embeds), dim=-1)
-        gate_weights = gate_weights.to(input_embeds.dtype) # input_embeds.dtype is now available
+        gate_weights = gate_weights.to(input_embeds.dtype)
 
-        # Set gate_weights directly on the MoeLoraModel instance
+        # MoeLoraModelインスタンスにgate_weightsを直接設定
         self.llm.gate_weights.clear()
         self.llm.gate_weights.append(gate_weights)
 
+        # 置換用のアイテム埋め込みの準備
         his_token_id = self.tokenizer.additional_special_tokens_ids[
             self.tokenizer.additional_special_tokens.index("[HistoryEmb]")
         ]
-        his_item_embeds = self.encode_items(full_sequence_rec_embs) # Pass full sequence representations here
+        his_item_embeds = self.encode_items(full_sequence_rec_embs)
 
         modified_input_embeds = input_embeds.clone()
 
-        # Vectorized replacement of placeholder embeddings
+        # プレースホルダー埋め込みのベクトル化された置換
         history_emb_mask = (input_ids == his_token_id)
         
-        # DEBUG PRINTS START
-        # logger.info(f"DEBUG(iLoRA._get_llm_outputs): history_emb_mask sum (after calculation): {history_emb_mask.sum()}")
-        # logger.info(f"DEBUG(iLoRA._get_llm_outputs): input_ids dtype: {input_ids.dtype}")
-        # logger.info(f"DEBUG(iLoRA._get_llm_outputs): his_token_id type: {type(his_token_id)}")
-        # DEBUG PRINTS END
-
-        # Create a mask for valid items in the sequence (not padding and within seq_len)
+        # シーケンス内の有効なアイテム（パディングでなく、seq_len内）のマスクを作成
         max_seq_len = item_seq.shape[1]
         seq_len_mask = torch.arange(max_seq_len, device=item_seq.device)[None, :] >= (max_seq_len - item_seq_len[:, None])
         valid_item_mask = seq_len_mask & (item_seq != self.padding_item_id)
         
-        # Loop over each sample in the batch to handle potential mismatches from truncation
+        # 切り捨てによる不一致を処理するために、バッチ内の各サンプルをループ処理
         for i in range(input_ids.shape[0]):
             sample_placeholder_mask = history_emb_mask[i]
             sample_valid_item_mask = valid_item_mask[i]
@@ -149,31 +154,31 @@ class iLoRAModel(nn.Module):
             if num_placeholders == 0:
                 continue
 
-            # Determine the number of embeddings to replace
+            # 置換する埋め込みの数を決定
             num_to_replace = min(num_placeholders, num_valid_items).item()
 
             if num_to_replace > 0:
-                # Get the last `num_to_replace` valid item embeddings
+                # 最後の `num_to_replace` 個の有効なアイテム埋め込みを取得
                 valid_item_embeds = his_item_embeds[i][sample_valid_item_mask]
                 last_valid_item_embeds = valid_item_embeds[-num_to_replace:]
 
-                # Get the indices of all placeholders for the current sample
+                # 現在のサンプルのすべてのプレースホルダーのインデックスを取得
                 placeholder_indices = torch.where(sample_placeholder_mask)[0]
-                # Get the indices of the placeholders to be replaced (can be first or last, let's use last)
+                # 置換されるプレースホルダーのインデックスを取得（最後から使用）
                 last_placeholder_indices_to_replace = placeholder_indices[-num_to_replace:]
                 
-                # Create a new, specific mask for the placeholders we are actually going to replace
+                # 実際に置換するプレースホルダーのための新しい特定のマスクを作成
                 final_placeholder_mask = torch.zeros_like(sample_placeholder_mask, dtype=torch.bool)
                 if last_placeholder_indices_to_replace.numel() > 0:
                     final_placeholder_mask[last_placeholder_indices_to_replace] = True
 
-                    # Perform the replacement
+                    # 置換を実行
                     modified_input_embeds[i][final_placeholder_mask] = last_valid_item_embeds.to(modified_input_embeds.dtype)
         
             if num_placeholders != num_valid_items:
-                logger.warning(
-                    f"Sample {i}: Mismatch between placeholders ({num_placeholders}) and valid items ({num_valid_items}). "
-                    f"Replaced the last {num_to_replace} placeholders with the most recent item embeddings."
+                logger.debug(
+                    f"Sample {i}: プレースホルダー数 ({num_placeholders}) と有効アイテム数 ({num_valid_items}) の不一致。 "
+                    f"最後の {num_to_replace} 個のプレースホルダーを最新のアイテム埋め込みで置換しました。"
                 )
 
         outputs = self.llm(
@@ -185,13 +190,15 @@ class iLoRAModel(nn.Module):
         return outputs
 
     def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
-        # No longer needs item_seq, item_seq_len as separate args
-        # These are in the batch dict, and input_ids/attention_mask are directly used
+        """
+        学習用のフォワードパス。生のLLM出力を返します。
+        """
         return self._get_llm_outputs(batch)
 
     def get_teacher_outputs(self, batch: Dict[str, Any]) -> Dict[str, Any]:
-        # No longer needs item_seq, item_seq_len as separate args
-        # These are in the batch dict, and input_ids/attention_mask are directly used
+        """
+        蒸留用のフォワードパス。ランキングスコア、埋め込み、候補、信頼度を返します。
+        """
         outputs = self._get_llm_outputs(batch)
         
         last_hidden_state = outputs.hidden_states[-1][:, -1, :]

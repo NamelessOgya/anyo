@@ -1,90 +1,118 @@
+# coding=utf-8
+import logging
+import time
+from typing import Dict, Any, List, Tuple
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.optim import AdamW
-from typing import Dict, Any
+from transformers import get_linear_schedule_with_warmup
 
-from src.student.models import SASRec
-from src.core.metrics import calculate_metrics
+from src.student.rec_model import RecModel
 
-class SASRecTrainer(pl.LightningModule):
-    def __init__(self, 
-                 num_items: int, 
-                 hidden_size: int, 
-                 num_heads: int, 
-                 num_layers: int, 
-                 dropout_rate: float, 
-                 max_seq_len: int,
-                 learning_rate: float = 1e-3,
-                 weight_decay: float = 0.01,
-                 metrics_k: int = 10):
+logger = logging.getLogger(__name__)
+
+
+class BaselineTrainer(pl.LightningModule):
+    """
+    PyTorch Lightning Module for training and evaluating baseline recommendation models (e.g., SASRec).
+    """
+    def __init__(
+        self,
+        rec_model: RecModel,
+        num_items: int,
+        learning_rate: float,
+        weight_decay: float,
+        metrics_k: int,
+        warmup_steps: int = 0,
+        max_steps: int = 1000,
+    ):
         super().__init__()
-        self.save_hyperparameters()
-
-        self.model = SASRec(
-            num_items=num_items,
-            hidden_size=hidden_size,
-            num_heads=num_heads,
-            num_layers=num_layers,
-            dropout_rate=dropout_rate,
-            max_seq_len=max_seq_len
-        )
-        self.loss_fn = nn.CrossEntropyLoss(ignore_index=0) # パディングID=0は損失計算から除外
+        self.save_hyperparameters(ignore=["rec_model"])
+        self.model = rec_model
+        self.num_items = num_items
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.metrics_k = metrics_k
-
-    def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor) -> torch.Tensor:
-        return self.model.predict(item_seq, item_seq_len)
-
-    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        item_seq = batch["seq"]
-        item_seq_len = batch["len_seq"]
-        next_item = batch["next_item"]
-
-        logits = self.forward(item_seq, item_seq_len)
+        self.warmup_steps = warmup_steps
+        self.max_steps = max_steps
         
-        loss = self.loss_fn(logits, next_item.squeeze(-1) - 1) # Convert to 0-indexed
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        # Loss function: Cross Entropy Loss
+        self.loss_fn = nn.CrossEntropyLoss()
+
+    def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
+        """
+        Forward pass for the training step.
+        """
+        return self.model(batch["seq"], batch["len_seq"])
+
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
+        """
+        A single training step.
+        Calculates the Cross Entropy Loss between the recommendation model's output (logits)
+        and the ground truth item.
+        """
+        start_time = time.time()
+        
+        # Model's forward pass
+        logits = self(batch) # (batch_size, num_items)
+        
+        # Ground truth item (1-indexed, convert to 0-indexed)
+        target = batch["next_item"] - 1
+        
+        # Loss calculation
+        loss = self.loss_fn(logits, target)
+
+        # Log loss and training time
+        self.log("train_loss_step", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        self.log("train_loss_epoch", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        
+        duration = time.time() - start_time
+        self.log("epoch_duration_seconds", duration, on_step=False, on_epoch=True, logger=True)
+
         return loss
 
-    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        item_seq = batch["seq"]
-        item_seq_len = batch["len_seq"]
-        next_item = batch["next_item"]
-
-        logits = self.forward(item_seq, item_seq_len)
-        loss = self.loss_fn(logits, next_item.squeeze(-1) - 1) # Convert to 0-indexed
-        # logitsからトップKのアイテムIDを取得
-        _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
-        
-        # next_itemはスカラーなので、リストのリスト形式に変換
-        ground_truths = [[item.item() - 1] for item in next_item] # Convert to 0-indexed
-        predictions = predicted_indices.tolist()
-
-        metrics = calculate_metrics(predictions, ground_truths, self.metrics_k)
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Dict[str, torch.Tensor]:
+        """
+        Validation step.
+        Calculates metrics such as Hit Ratio (HR) and NDCG.
+        """
+        logits = self(batch)
+        target = batch["next_item"] - 1
+        loss = self.loss_fn(logits, target)
         
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"val_recall@{self.metrics_k}", metrics[f"recall@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"val_ndcg@{self.metrics_k}", metrics[f"ndcg@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"val_hit_ratio@{self.metrics_k}", metrics[f"hit_ratio@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        # Metric calculation (HR@K, NDCG@K)
+        _, topk_indices = torch.topk(logits, k=self.metrics_k, dim=-1)
         
+        hits = torch.zeros(target.size(0), device=self.device)
+        ndcgs = torch.zeros(target.size(0), device=self.device)
+
+        for i in range(target.size(0)):
+            t = target[i]
+            if t in topk_indices[i]:
+                hits[i] = 1.0
+                rank = (topk_indices[i] == t).nonzero(as_tuple=True)[0].item()
+                ndcgs[i] = 1.0 / torch.log2(torch.tensor(rank + 2.0))
+
+        self.log(f"val_hr@{self.metrics_k}", hits.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log(f"val_ndcg@{self.metrics_k}", ndcgs.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
         return {"val_loss": loss}
 
-    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        item_seq = batch["seq"]
-        item_seq_len = batch["len_seq"]
-        next_item = batch["next_item"]
-
-        logits = self.forward(item_seq, item_seq_len)
-        loss = self.loss_fn(logits, next_item.squeeze(-1) - 1) # Convert to 0-indexed
-
-        _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
-        ground_truths = [[item.item() - 1] for item in next_item] # Convert to 0-indexed
-        predictions = predicted_indices.tolist()
-
-        metrics = calculate_metrics(predictions, ground_truths, self.metrics_k)
-
+    def test_step(self, batch: Dict[str, Any], batch_idx: int) -> Dict[str, torch.Tensor]:
+        """
+        Test step.
+        Calculates metrics such as Hit Ratio (HR) and NDCG.
+        """
+        logits = self(batch)
+        target = batch["next_item"] - 1
+        loss = self.loss_fn(logits, target)
+        
         self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"test_recall@{self.metrics_k}", metrics[f"recall@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log(f"test_ndcg@{self.metrics_k}", metrics[f"ndcg@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log(f"test_hit_ratio@{self.metrics_k}", metrics[f"hit_ratio@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
         

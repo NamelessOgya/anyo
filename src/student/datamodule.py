@@ -36,20 +36,29 @@ class SASRecDataset(Dataset):
         }
 
 class TeacherTrainCollater:
+    """
+    Teacherモデルの学習用コレーター。
+    バッチ内の各サンプルに対して、iLoRA形式のプロンプトを作成し、
+    トークナイズとパディングを行います。
+    """
     def __init__(self, tokenizer: AutoTokenizer, max_seq_len: int, padding_item_id: int, item_id_to_name: Dict[int, str], num_candidates: int = 20):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.padding_item_id = padding_item_id
         self.item_id_to_name = item_id_to_name
         self.num_candidates = num_candidates
+        # iLoRAのプロンプトテンプレート
+        # [HistoryHere] は視聴履歴の映画タイトルリストに置換されます
+        # [CansHere] は候補映画タイトルリスト（正解 + 負例）に置換されます
         self.prompt_template = "This user has watched [HistoryHere] in the previous. Please predict the next movie this user will watch. Choose the answer from the following 20 movie titles: [CansHere]. Answer:"
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         
         # --- 1. Pad sequences and gather lengths ---
-        padded_seqs = []
-        len_seqs = []
-        prompts = []
+        padded_seqs: List[List[int]] = []
+        len_seqs: List[int] = []
+        prompts: List[str] = []
+        next_items: List[int] = []
         
         # Valid item IDs for negative sampling (exclude padding)
         valid_item_ids = [i for i in self.item_id_to_name.keys() if i != self.padding_item_id]
@@ -57,8 +66,11 @@ class TeacherTrainCollater:
         for sample in batch:
             seq = sample["seq_ids"]
             next_item = sample["next_item_id"]
+            next_items.append(next_item) # Collect next_item_id for the final batch
+            
             seq_len = len(seq)
-            len_seqs.append(min(seq_len, self.max_seq_len))
+            current_seq_len = min(seq_len, self.max_seq_len)
+            len_seqs.append(current_seq_len)
             
             # Padding logic
             if seq_len < self.max_seq_len:
@@ -71,22 +83,28 @@ class TeacherTrainCollater:
             # 1. History String
             # Use last max_seq_len items or fewer
             history_ids = seq[-self.max_seq_len:] if seq_len > 0 else []
+            # パディングIDを除外
+            history_ids = [i for i in history_ids if i != self.padding_item_id]
             history_names = [self.item_id_to_name.get(i, str(i)) for i in history_ids]
             history_str = ", ".join(history_names)
             
             # 2. Candidates String (Negative Sampling)
-            # Exclude history and next item from negatives
-            exclude_set = set(seq) | {next_item}
+            # 履歴に含まれるアイテムと正解アイテムを除外セットに追加
+            exclude_set = set(history_ids) | {next_item}
+            
+            # 除外セットに含まれないアイテムを候補プールとする
             candidates_pool = [i for i in valid_item_ids if i not in exclude_set]
             
             # Sample negatives
             num_negatives = self.num_candidates - 1
+            # 候補プールから負例をサンプリング
             if len(candidates_pool) >= num_negatives:
                 negatives = np.random.choice(candidates_pool, num_negatives, replace=False).tolist()
             else:
-                # Fallback if not enough items (should not happen in real datasets)
+                # 候補が足りない場合は重複を許容してサンプリング
                 negatives = np.random.choice(valid_item_ids, num_negatives, replace=True).tolist()
             
+            # 正解アイテムと負例を合わせて候補リストを作成し、シャッフル
             candidates = negatives + [next_item]
             np.random.shuffle(candidates)
             
@@ -98,6 +116,7 @@ class TeacherTrainCollater:
             prompts.append(prompt)
 
         # --- 2. Tokenize Prompts ---
+        # プロンプトのトークナイズ
         tokenized_inputs = self.tokenizer(
             prompts,
             return_tensors="pt",
@@ -107,7 +126,7 @@ class TeacherTrainCollater:
         )
 
         # --- 3. Collate other fields and convert to tensor ---
-        next_items = [sample["next_item_id"] for sample in batch]
+        # next_items = [sample["next_item_id"] for sample in batch] # Already collected in the loop
 
         # --- 4. Return the final batch dictionary ---
         return {

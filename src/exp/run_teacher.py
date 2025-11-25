@@ -23,14 +23,12 @@ from torch.utils.data import DataLoader
 logger = logging.getLogger(__name__)
 
 def main():
-    # --- Centralized Hydra Initialization ---
     overrides = sys.argv[1:]
     cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
 
-    # 1. ロギング、シード、Git情報の初期化
-    # Use Hydra's output directory
-    output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
-    print(f"!!! SCRIPT RUNNING. HYDRA OUTPUT DIR: {output_dir} !!!")
+    output_dir = Path(cfg.run.dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"!!! SCRIPT RUNNING. OUTPUT DIR: {output_dir} !!!")
     
     setup_logging(log_dir=output_dir / "logs")
     set_seed(cfg.seed)
