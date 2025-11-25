@@ -100,6 +100,11 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             padding_item_id=padding_item_id,
             llm_dtype=llm.dtype, # Pass the LLM's dtype
         )
+
+        if cfg.teacher.get("use_torch_compile", False):
+            print("Compiling teacher model with torch.compile...")
+            model = torch.compile(model)
+            
         return model
     else:
         raise ValueError(f"Unknown teacher model type: {model_type}")
