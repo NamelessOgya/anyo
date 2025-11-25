@@ -38,7 +38,7 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             print("QLoRA is configured but temporarily disabled.")
 
         if cfg.train.get("precision") == "bf16-mixed":
-             llm_load_kwargs["dtype"] = torch.bfloat16
+             llm_load_kwargs["torch_dtype"] = torch.bfloat16
 
         print("DEBUG: Attempting to load LLM from_pretrained...")
         llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
