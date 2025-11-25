@@ -93,7 +93,8 @@ def main():
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    progress_bar = TQDMProgressBar(refresh_rate=10)
+    # Use process_position=0 to attempt to fix multiple bars in Colab
+    progress_bar = TQDMProgressBar(refresh_rate=50, process_position=0)
 
     trainer = pl.Trainer(
         default_root_dir=str(output_dir),
