@@ -74,6 +74,7 @@ class SASRecDataset(Dataset):
             "next_item_id": next_item_id,
             "history_str": history_str,
             "candidates_str": candidates_str,
+            "candidates": candidates, # Return candidate IDs
         }
 
 class TeacherTrainCollater:
@@ -137,12 +138,17 @@ class TeacherTrainCollater:
 
         # --- 3. Collate other fields and convert to tensor ---
         # next_items = [sample["next_item_id"] for sample in batch] # Already collected in the loop
+        
+        candidates_batch = [sample["candidates"] for sample in batch]
+        len_cans = [len(c) for c in candidates_batch]
 
         # --- 4. Return the final batch dictionary ---
         return {
             "seq": torch.LongTensor(padded_seqs),
             "len_seq": torch.LongTensor(len_seqs),
             "next_item": torch.LongTensor(next_items),
+            "cans": torch.LongTensor(candidates_batch), # (batch_size, num_candidates)
+            "len_cans": torch.LongTensor(len_cans),
             "input_ids": tokenized_inputs["input_ids"],
             "attention_mask": tokenized_inputs["attention_mask"],
             "prompts": prompts # Useful for debugging/logging

@@ -83,12 +83,25 @@ class iLoRAModel(nn.Module):
         # LLMの最後の隠れ状態をnum_items個のロジットに射影する線形層を追加
         self.item_prediction_head = nn.Linear(self.llm.model.config.hidden_size, num_items).to(self.device, dtype=self.llm_dtype) # item_prediction_headをllm_dtypeにキャスト
 
-    def encode_items(self, full_sequence_representations: torch.Tensor) -> torch.Tensor:
+    def encode_items(self, items: torch.Tensor) -> torch.Tensor:
         """
         SASRecのアイテム表現をLLMの埋め込み空間に射影します。
+        items: (batch_size, seq_len, hidden_size) の埋め込み、または (batch_size, seq_len) のID
         """
-        # full_sequence_representationsはすでにSASRecのTransformerブロックからの出力であると仮定
-        return self.projector(full_sequence_representations.to(self.projector.model[0].weight.dtype))
+        if items.dtype == torch.long or items.dtype == torch.int:
+            # IDが渡された場合、SASRecモデルを使って埋め込みを取得
+            # SASRecモデルの実装に依存するが、通常はEmbedding層を持つ
+            if hasattr(self.rec_model, "item_embeddings"):
+                item_embs = self.rec_model.item_embeddings(items)
+            elif hasattr(self.rec_model, "cacu_x"): # For SASRecModules_ori.py compatibility
+                item_embs = self.rec_model.cacu_x(items)
+            else:
+                raise AttributeError("rec_model does not have 'item_embeddings' or 'cacu_x' method.")
+            
+            return self.projector(item_embs.to(self.projector.model[0].weight.dtype))
+        else:
+            # すでに埋め込みの場合はそのまま射影
+            return self.projector(items.to(self.projector.model[0].weight.dtype))
 
     def encode_users(self, last_item_representation: torch.Tensor) -> torch.Tensor:
         """
@@ -183,6 +196,46 @@ class iLoRAModel(nn.Module):
                     f"Sample {i}: プレースホルダー数 ({num_placeholders}) と有効アイテム数 ({num_valid_items}) の不一致。 "
                     f"最後の {num_to_replace} 個のプレースホルダーを最新のアイテム埋め込みで置換しました。"
                 )
+
+        # --- [CansEmb] Replacement Logic ---
+        cans_token_id = self.tokenizer.additional_special_tokens_ids[
+            self.tokenizer.additional_special_tokens.index("[CansEmb]")
+        ]
+        
+        # Check if [CansEmb] exists in the batch
+        if (input_ids == cans_token_id).any():
+            # Encode candidate items
+            # batch["cans"] should be available now
+            if "cans" in batch:
+                cans_item_embeds = self.encode_items(batch["cans"]) # (batch_size, num_candidates, hidden_size)
+                
+                cans_emb_mask = (input_ids == cans_token_id)
+                
+                for i in range(input_ids.shape[0]):
+                    sample_cans_mask = cans_emb_mask[i]
+                    num_cans_placeholders = sample_cans_mask.sum()
+                    
+                    # Assuming num_candidates matches num_cans_placeholders
+                    # Or take min if they differ (though they should match by design)
+                    num_valid_cans = batch["len_cans"][i] if "len_cans" in batch else batch["cans"].shape[1]
+                    
+                    num_to_replace_cans = min(num_cans_placeholders, num_valid_cans).item()
+                    
+                    if num_to_replace_cans > 0:
+                        # Get embeddings for candidates
+                        valid_cans_embeds = cans_item_embeds[i][:num_to_replace_cans]
+                        
+                        # Get indices of placeholders
+                        cans_placeholder_indices = torch.where(sample_cans_mask)[0]
+                        # Replace the first N placeholders (assuming order is preserved)
+                        indices_to_replace = cans_placeholder_indices[:num_to_replace_cans]
+                        
+                        final_cans_mask = torch.zeros_like(sample_cans_mask, dtype=torch.bool)
+                        final_cans_mask[indices_to_replace] = True
+                        
+                        modified_input_embeds[i][final_cans_mask] = valid_cans_embeds.to(modified_input_embeds.dtype)
+            else:
+                logger.warning("Batch does not contain 'cans' key, skipping [CansEmb] replacement.")
 
         outputs = self.llm(
             inputs_embeds=modified_input_embeds,
