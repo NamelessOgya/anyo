@@ -116,7 +116,7 @@ def test_dro_loss():
     beta = 1.0
     
     model_output = torch.randn(batch_size, num_items, requires_grad=True)
-    target = torch.randint(0, num_items, (batch_size, 1))
+    target = torch.randint(0, num_items, (batch_size,))
     
     dro_loss_fn = DROLoss(ps=ps, beta=beta)
     loss = dro_loss_fn(model_output, target)

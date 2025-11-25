@@ -36,17 +36,44 @@ def distill_trainer_and_data():
     tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
     llm.resize_token_embeddings(len(tokenizer))
 
-    # データモジュール
-    dm = SASRecDataModule(
-        dataset_name="movielens",
-        data_dir="data/ml-1m",
-        limit_data_rows=1000,
-        batch_size=2,
-        max_seq_len=20,
-        num_workers=0,
-        tokenizer=tokenizer # Pass tokenizer
-    )
-    dm.prepare_data()
+    # Mock DataModule
+    class MockSASRecDataModule(pl.LightningDataModule):
+        def __init__(self, tokenizer, batch_size=2, max_seq_len=20):
+            super().__init__()
+            self.tokenizer = tokenizer
+            self.batch_size = batch_size
+            self.max_seq_len = max_seq_len
+            self.num_items = 1000
+            self.padding_item_id = 0
+            self.mapped_id_to_title = {i: str(i) for i in range(self.num_items + 1)}
+
+        def setup(self, stage=None):
+            pass
+
+        def train_dataloader(self):
+            # Create dummy batch
+            input_ids = torch.randint(0, len(self.tokenizer), (self.batch_size, self.max_seq_len))
+            attention_mask = torch.ones((self.batch_size, self.max_seq_len), dtype=torch.long)
+            seq = torch.randint(1, self.num_items, (self.batch_size, self.max_seq_len))
+            len_seq = torch.randint(1, self.max_seq_len + 1, (self.batch_size,))
+            cans = torch.randint(1, self.num_items, (self.batch_size, 20))
+            len_cans = torch.randint(1, 21, (self.batch_size,))
+            item_id = torch.randint(1, self.num_items, (self.batch_size,))
+            next_item = torch.randint(1, self.num_items, (self.batch_size,))
+            
+            batch = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "seq": seq,
+                "len_seq": len_seq,
+                "cans": cans,
+                "len_cans": len_cans,
+                "item_id": item_id,
+                "next_item": next_item
+            }
+            return torch.utils.data.DataLoader([batch], batch_size=None) # Return list of 1 batch
+
+    dm = MockSASRecDataModule(tokenizer=tokenizer)
     dm.setup()
     
     # Propensity Scoresの計算

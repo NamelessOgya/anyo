@@ -38,6 +38,15 @@ def ilora_model_and_data():
             self.item_embeddings = nn.Embedding(num_items_rec + 1, hidden_size_rec)
             self.cacu_x = lambda x: self.item_embeddings(x)
             self.cacul_h = lambda x, y: torch.randn(x.shape[0], hidden_size_rec).to(x.device)
+            self.hidden_size = hidden_size_rec
+
+        def get_full_sequence_representations(self, item_seq, item_seq_len):
+            batch_size, seq_len = item_seq.shape
+            return torch.randn(batch_size, seq_len, self.hidden_size).to(item_seq.device)
+
+        def _get_last_item_representation(self, item_seq, item_seq_len):
+            batch_size = item_seq.shape[0]
+            return torch.randn(batch_size, self.hidden_size).to(item_seq.device)
     
     dummy_rec_model = DummyRecModel(hidden_size, num_items).to(device)
     dummy_projector = MLPProjector(
@@ -82,7 +91,8 @@ def ilora_model_and_data():
     })
 
     batch = {
-        "tokens": tokens_batch_encoding,
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
         "seq": seq,
         "len_seq": len_seq,
         "cans": cans,

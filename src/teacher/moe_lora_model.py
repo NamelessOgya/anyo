@@ -108,9 +108,18 @@ class MoeLoraLayer:
 
         self.lora_dropout.update(nn.ModuleDict({adapter_name: lora_dropout_layer}))
         if r > 0:
-            self.lora_A.update(nn.ModuleDict({adapter_name: nn.Linear(self.in_features, r * num_moe, bias=False)}))
-            self.lora_B.update(nn.ModuleDict({adapter_name: nn.Linear(r * num_moe, self.out_features, bias=False)}))
-            self.scaling[adapter_name] = lora_alpha / r
+            # iLoRA Reference Logic:
+            # lora_A is (in_features, r) -> stored as Linear(in_features, r)
+            # lora_B is (r, out_features) -> stored as Linear(r, out_features)
+            # During forward, these are reshaped to split r into num_moe experts.
+            
+            self.lora_A.update(nn.ModuleDict({adapter_name: nn.Linear(self.in_features, r, bias=False)}))
+            self.lora_B.update(nn.ModuleDict({adapter_name: nn.Linear(r, self.out_features, bias=False)}))
+            
+            # Scaling: lora_alpha / (r // num_moe)
+            # This matches reference: self.scaling[adapter_name] = lora_alpha / (r // num_moe)
+            self.scaling[adapter_name] = lora_alpha / (r // num_moe)
+            
         if init_lora_weights:
             self.reset_lora_parameters(adapter_name)
         self.to(self.weight.device)
@@ -166,14 +175,33 @@ class Linear(nn.Linear, MoeLoraLayer):
             x = x.to(self.lora_A[self.active_adapter].weight.dtype)
             batch_size, seq_len, _ = x.size()
 
-            lora_A_weight = self.lora_A[self.active_adapter].weight.view(self.num_moe[self.active_adapter], self.r[self.active_adapter], self.in_features)
-            lora_B_weight = self.lora_B[self.active_adapter].weight.view(self.num_moe[self.active_adapter], self.out_features, self.r[self.active_adapter])
+            # Reference Forward Logic:
+            # 1. Reshape weights to (num_experts, r_per_expert, features)
+            # lora_A weight: (r, in_features) -> (num_experts, r_per_expert, in_features)
+            # lora_B weight: (out_features, r) -> (num_experts, out_features, r_per_expert)
             
-            # Einsum for batched matrix multiplication
+            r = self.r[self.active_adapter]
+            num_moe = self.num_moe[self.active_adapter]
+            r_per_expert = r // num_moe
+            
+            lora_A_weight = self.lora_A[self.active_adapter].weight.view(num_moe, r_per_expert, self.in_features)
+            lora_B_weight = self.lora_B[self.active_adapter].weight.view(num_moe, self.out_features, r_per_expert)
+            
+            # 2. Compute LoRA output per expert
+            # x: (batch, seq, in)
+            # lora_A: (num, r_per, in)
+            # einsum 'bse,nre->bsnr' -> (batch, seq, num, r_per)
             lora_output = torch.einsum('bse,nre->bsnr', x, lora_A_weight)
+            
+            # lora_B: (num, out, r_per)
+            # einsum 'bsnr,nor->bsno' -> (batch, seq, num, out)
             lora_output = torch.einsum('bsnr,nor->bsno', lora_output, lora_B_weight)
 
-            # Apply gating
+            # 3. Apply gating
+            # gate_weights: (batch, num)
+            # einsum 'bsno,bn->bso' -> (batch, seq, out)
+            # Note: gate_weights needs to be cast to match lora_output dtype
+            gate_weights = gate_weights.to(lora_output.dtype)
             gated_output = torch.einsum('bsno,bn->bso', lora_output, gate_weights)
             
             result += gated_output * self.scaling[self.active_adapter]
