@@ -48,8 +48,9 @@
 ### カテゴリ6: コード品質・静的解析テスト
 -   **Test 31:** [Hydra設定検証] `conf/experiment` 内のすべての実験設定ファイルが正常にロードでき、必須キー（`teacher`, `student`, `distill` など）を含んでいること。
 -   **Test 32:** [Hydra誤用防止] 実験スクリプト内で `HydraConfig.get()` が直接使用されておらず、ロードされた設定オブジェクト `cfg` が使用されていること（`ValueError: HydraConfig was not set` の防止）。
--   **Test 33:** [未定義名検出] 実験スクリプト内で、未定義の変数やインポート漏れ（`NameError` の原因）が存在しないことを静的解析で確認すること。
+-   **Test 33:** [未定義名検出] 実験スクリプトおよびモデル・トレーナーコード (`src/exp`, `src/student`, `src/teacher`, `src/distill`) 内で、未定義の変数やインポート漏れ（`NameError` の原因）が存在しないことを静的解析で確認すること。前方参照やLambda式もサポート。
 -   **Test 34:** [インポートスモークテスト] `src` ディレクトリ内のすべてのPythonモジュールが、`ModuleNotFoundError` や `ImportError` なしに正常にインポートできること。
 -   **Test 35:** [引数整合性検証] クラスのインスタンス化や `load_from_checkpoint` の呼び出しにおいて、渡されるキーワード引数が実際のクラス定義（`__init__`）と整合していることを静的解析で確認すること（`TypeError` の防止）。
 -   **Test 36:** [SASRec出力次元] `SASRec.predict` が返すロジットの形状が `(batch_size, num_items)` であり、パディングを含まないことを確認すること（`CUDA error` の防止）。
--   **Test 37:** [メトリクス整合性] `ModelCheckpoint` で監視対象としているメトリクス（例: `val_hr@10`）が、実際に `LightningModule` 内でログ出力されていることを静的解析で確認すること（`MisconfigurationException` の防止）。
+-   **Test 37:** [メトリクス整合性] `ModelCheckpoint` が監視するメトリクス（例: `val_hr@10`）が、`LightningModule` によって実際にログ記録されていることを静的解析で確認すること（`MisconfigurationException` の防止）。Teacherモデル (`run_teacher.py`) も対象。
+-   **Test 38:** [iLoRA出力動作] `iLoRAModel.get_teacher_outputs` が期待されるキー（`ranking_scores`, `embeddings`, `candidates`, `confidence`）と形状を持つ辞書を返すことを確認すること。

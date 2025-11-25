@@ -145,3 +145,37 @@ def test_distill_metric_consistency():
     
     assert "val_{}" in logged_keys or "val_recall@{}" in logged_keys, \
         f"DistillationTrainer does not seem to log validation metrics. Logged keys: {logged_keys}"
+
+def test_teacher_metric_consistency():
+    """
+    Test that the metric monitored by ModelCheckpoint in run_teacher.py
+    is actually logged by iLoRATrainer in trainer_ilora.py.
+    """
+    project_root = Path(__file__).parent.parent.parent
+    script_path = project_root / "src/exp/run_teacher.py"
+    trainer_path = project_root / "src/teacher/trainer_ilora.py"
+    
+    monitored_keys = get_monitored_key_from_script(script_path)
+    logged_keys = get_logged_keys_from_class(trainer_path, "iLoRATrainer")
+    
+    print(f"Monitored keys in {script_path.name}: {monitored_keys}")
+    print(f"Logged keys in iLoRATrainer: {logged_keys}")
+    
+    for key in monitored_keys:
+        match = False
+        if key in logged_keys:
+            match = True
+        else:
+            # Template matching
+            import re
+            key_template = re.sub(r'\d+', '{}', key)
+            if key_template in logged_keys:
+                match = True
+            
+            # iLoRATrainer uses f-strings for metrics: val_hr@{}, val_ndcg@{}
+            if "val_{}@{}" in logged_keys: # If generic pattern
+                 match = True
+            if "val_hr@{}" in logged_keys and "hr" in key:
+                 match = True
+        
+        assert match, f"Monitored key '{key}' in {script_path.name} is not logged by iLoRATrainer. Logged keys: {logged_keys}"

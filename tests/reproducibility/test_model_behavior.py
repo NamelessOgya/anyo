@@ -202,3 +202,52 @@ def test_36_sasrec_output_dimension(model_behavior_fixture):
     loss = loss_fn(out, target)
     assert not torch.isnan(loss)
 
+    assert not torch.isnan(loss)
+
+def test_38_ilora_output_behavior(model_behavior_fixture):
+    """
+    Test 38: [iLoRA Output Behavior] Verify that iLoRAModel.get_teacher_outputs returns correct keys and shapes.
+    """
+    model = model_behavior_fixture["teacher_model"]
+    device = model_behavior_fixture["device"]
+    num_items = model_behavior_fixture["num_items"]
+    max_seq_len = model_behavior_fixture["max_seq_len"]
+    
+    batch_size = 2
+    llm_seq_len = 10
+    
+    # Create dummy batch
+    batch = {
+        "seq": torch.randint(1, num_items, (batch_size, max_seq_len)).to(device),
+        "len_seq": torch.tensor([5, 8]).to(device),
+        "input_ids": torch.randint(0, 1000, (batch_size, llm_seq_len)).to(device),
+        "attention_mask": torch.ones((batch_size, llm_seq_len)).to(device),
+    }
+    
+    # Run get_teacher_outputs
+    outputs = model.get_teacher_outputs(batch)
+    
+    # Verify keys
+    expected_keys = {"ranking_scores", "embeddings", "candidates", "confidence"}
+    assert set(outputs.keys()) == expected_keys
+    
+    # Verify shapes
+    # ranking_scores: (batch_size, num_items)
+    assert outputs["ranking_scores"].shape == (batch_size, num_items)
+    
+    # embeddings: (batch_size, llm_hidden_size)
+    # llm_hidden_size depends on the model (OPT-125m is 768)
+    assert outputs["embeddings"].shape == (batch_size, model.llm.model.config.hidden_size)
+    
+    # candidates: (batch_size, candidate_topk)
+    assert outputs["candidates"].shape == (batch_size, model.candidate_topk)
+    
+    # confidence: (batch_size, candidate_topk)
+    assert outputs["confidence"].shape == (batch_size, model.candidate_topk)
+    
+    # Verify values range
+    assert (outputs["confidence"] >= 0).all() and (outputs["confidence"] <= 1).all()
+    # Candidates should be valid item indices (0 to num_items-1)
+    # Note: item_prediction_head maps to num_items. If items are 1-indexed, this might be 0..num_items-1 mapping to 1..num_items?
+    # Usually it's 0-indexed logits corresponding to 1-indexed items if consistent with SASRec.predict logic.
+    assert (outputs["candidates"] >= 0).all() and (outputs["candidates"] < num_items).all()

@@ -11,6 +11,7 @@ from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 
 from src.teacher.ilora_model import iLoRAModel
+from src.core.metrics import calculate_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -130,23 +131,28 @@ class iLoRATrainer(pl.LightningModule):
                 "interval": "step",
             },
         }
-
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
+        # 蒸留用出力の取得（ランキングスコアを含む）
+        outputs = self.model.get_teacher_outputs(batch)
+        ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
+        
+        # 正解アイテムのID
+        target_items = batch["next_item"] # (batch_size,)
+
         # Metric calculation
-        _, predicted_indices = torch.topk(logits, k=self.metrics_k, dim=1)
+        _, predicted_indices = torch.topk(ranking_scores, k=self.metrics_k, dim=1)
         predictions = predicted_indices.tolist()
         
         ground_truths_list = []
-        for item_id_tensor in next_item:
+        for item_id_tensor in target_items:
             item_id = item_id_tensor.item()
-            # Assuming padding_item_id is not present here or handled by the datamodule
             ground_truths_list.append([item_id])
 
         metrics = calculate_metrics(predictions, ground_truths_list, k=self.metrics_k)
         for metric_name, metric_value in metrics.items():
             self.log(f"test_{metric_name}", metric_value, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
-        return {"test_loss": loss}
+        return {"test_loss": 0.0} # Dummy loss
 
     def configure_optimizers(self) -> Any:
         # iLoRAでは、LoRAアダプターとゲーティングネットワークのパラメータのみを学習対象とする

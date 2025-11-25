@@ -86,9 +86,9 @@ def main():
     tb_logger = TensorBoardLogger(save_dir=str(output_dir), name="tb_logs", version="")
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir / "checkpoints",
-        filename="teacher-{epoch:02d}-{val_loss:.4f}",
-        monitor="val_loss",
-        mode="min",
+        filename="teacher-{epoch:02d}-{val_hr@10:.4f}",
+        monitor="val_hr@10",
+        mode="max",
         save_top_k=1,
         save_last=True,
     )
