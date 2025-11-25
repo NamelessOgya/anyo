@@ -45,7 +45,7 @@ class iLoRATrainer(pl.LightningModule):
         logits = self.model.item_prediction_head(last_hidden_state)
         
         # Get next_item from batch for loss calculation
-        next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
+        next_item = batch["next_item"].squeeze(-1) - 1 # Convert 1-indexed to 0-indexed for CrossEntropyLoss
         
         # Calculate loss using the projected logits and next_item
         loss = self.loss_fn(logits, next_item)
@@ -57,14 +57,8 @@ class iLoRATrainer(pl.LightningModule):
         outputs = self.forward(batch)
         last_hidden_state = outputs.hidden_states[-1][:, -1, :]
         
-        # logger.info(f"Validation Step - Batch {batch_idx}") # Changed to logger.info
-        # logger.info(f"Last Hidden State Stats: " # Changed to logger.info
-        #       f"min={last_hidden_state.min()}, "
-        #       f"max={last_hidden_state.max()}, "
-        #       f"mean={last_hidden_state.mean()}")
-
         logits = self.model.item_prediction_head(last_hidden_state)
-        next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
+        next_item = batch["next_item"].squeeze(-1) - 1 # Convert 1-indexed to 0-indexed for CrossEntropyLoss
         loss = self.loss_fn(logits, next_item)
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 

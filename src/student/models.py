@@ -12,12 +12,12 @@ class SASRec(nn.Module):
         self.num_items = num_items
         self.hidden_size = hidden_size
         self.max_seq_len = max_seq_len
-        self.teacher_embedding_dim = teacher_embedding_dim
         self.ed_weight = ed_weight
+        self.padding_item_id = padding_item_id
 
         # ユーザーとアイテムの埋め込み層
-        # 0番目のアイテムIDはパディング用として予約
-        self.item_embeddings = nn.Embedding(num_items + 1, hidden_size, padding_idx=0)
+        # padding_item_id はパディング用として予約
+        self.item_embeddings = nn.Embedding(num_items + 1, hidden_size, padding_idx=self.padding_item_id)
         self.position_embeddings = nn.Embedding(max_seq_len, hidden_size)
 
         self.dropout = nn.Dropout(dropout_rate)
@@ -35,18 +35,16 @@ class SASRec(nn.Module):
         if teacher_embedding_dim is not None and hidden_size != teacher_embedding_dim:
             self.embedding_projection = nn.Linear(hidden_size, teacher_embedding_dim)
 
-        # For embedding distillation
         self.teacher_embedding_projection = None
         if teacher_embedding_dim is not None and hidden_size != teacher_embedding_dim:
             self.teacher_embedding_projection = nn.Linear(teacher_embedding_dim, hidden_size)
 
-    def _get_last_item_representation(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
+    def _run_transformer_blocks(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
         """
-        シーケンスの最後のアイテムの表現を計算します。
+        Transformerブロックを通過した後のシーケンス全体の表現を計算します。
         """
         # アイテム埋め込み
         item_embeddings = self.item_embeddings(item_seq)
-
 
         # 位置埋め込み
         positions = torch.arange(self.max_seq_len, device=item_seq.device).unsqueeze(0)
@@ -59,24 +57,18 @@ class SASRec(nn.Module):
         if teacher_embeddings is not None and self.ed_weight > 0:
             if self.teacher_embedding_projection:
                 teacher_embeddings = self.teacher_embedding_projection(teacher_embeddings)
-            # Ensure teacher_embeddings are detached before adding to avoid breaking student's grad flow
-            # Even if already no_grad, explicit detach can sometimes help autograd
             teacher_embeddings_detached = teacher_embeddings.detach()
-            # teacher_embeddings_detached を (batch_size, max_seq_len, hidden_size) に拡張
             teacher_embeddings_expanded = teacher_embeddings_detached.unsqueeze(1).expand(-1, self.max_seq_len, -1)
             input_embeddings = input_embeddings + self.ed_weight * teacher_embeddings_expanded
         
-        input_embeddings = self.dropout(input_embeddings)
+        input_embeddings = self.dropout(input_embeddings);
 
         # アテンションマスクの作成
-        # パディング部分 (ID=0) はアテンションしない
-        attention_mask = (item_seq != 0).unsqueeze(1).unsqueeze(2) # (batch_size, 1, 1, max_seq_len)
-        # 自己回帰的なアテンションを適用 (未来のアイテムを見ない)
-        # 下三角行列を作成
+        attention_mask = (item_seq != self.padding_item_id).unsqueeze(1).unsqueeze(2)
         subsequent_mask = torch.triu(
             torch.ones((self.max_seq_len, self.max_seq_len), device=item_seq.device), diagonal=1
         ).bool()
-        attention_mask = attention_mask & ~subsequent_mask # (batch_size, 1, max_seq_len, max_seq_len)
+        attention_mask = attention_mask & ~subsequent_mask
 
         # Transformerブロックを通過
         for transformer in self.transformer_blocks:
@@ -84,21 +76,29 @@ class SASRec(nn.Module):
 
         # LayerNorm
         output = self.layernorm(input_embeddings)
+        return output
+
+
+    def _get_last_item_representation(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
+        """
+        シーケンスの最後のアイテムの表現を計算します。
+        """
+        output = self._run_transformer_blocks(item_seq, item_seq_len, teacher_embeddings)
 
         # 各シーケンスの最後のアイテムの表現を取得
-        # item_seq_lenは実際の長さなので、-1して0-indexedにする
         last_item_indices = item_seq_len - 1
-        # gatherを使って、各バッチの最後のアイテムの埋め込みを取得
-        # output: (batch_size, max_seq_len, hidden_size)
-        # last_item_indices: (batch_size)
-        # 期待される結果: (batch_size, hidden_size)
-        # gatherはdimとindexの形状を合わせる必要がある
         last_item_representation = torch.gather(
             output,
             1,
             last_item_indices.view(-1, 1, 1).expand(-1, 1, self.hidden_size)
         ).squeeze(1)
         return last_item_representation
+
+    def get_full_sequence_representations(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
+        """
+        Transformerブロックを通過した後のシーケンス全体のアイテム表現を返します。
+        """
+        return self._run_transformer_blocks(item_seq, item_seq_len, teacher_embeddings)
 
     def forward(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
         """
@@ -128,8 +128,10 @@ class SASRec(nn.Module):
         # predictではプロジェクション前の表現を使用
         last_item_representation_for_prediction = self._get_last_item_representation(item_seq, item_seq_len)
         # 全アイテム埋め込みとの内積を計算
-        # (batch_size, hidden_size) @ (hidden_size, num_items + 1) -> (batch_size, num_items + 1)
-        scores = torch.matmul(last_item_representation_for_prediction, self.item_embeddings.weight[1:].transpose(0, 1))
+        # 有効なアイテム (0 to num_items-1) の埋め込みを取得
+        valid_item_embeds = self.item_embeddings.weight[:self.num_items, :]
+        # (batch_size, hidden_size) @ (hidden_size, num_items) -> (batch_size, num_items)
+        scores = torch.matmul(last_item_representation_for_prediction, valid_item_embeds.transpose(0, 1))
         return scores
 
 

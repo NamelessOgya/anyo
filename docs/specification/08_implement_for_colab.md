@@ -114,6 +114,10 @@ Colab環境から各実験（生徒ベースライン、教師学習、蒸留）
 -   動作確認のため、`conf/dataset/movielens.yaml` の `limit_data_rows` を `10000` に設定している。
 -   次のステップとして、教師モデルの学習 (`11_run_teacher.sh`) に進む準備が整った。
 
+**重要:** 教師モデルの学習を行う前に、Hugging Faceモデル (`facebook/opt-125m`など) にアクセスするため、`authenticate_hf.py`を実行してHugging Faceにログインする必要があります。
+
+
+
 ### 5.3. 教師モデル学習の実行とデバイス不整合問題
 
 -   `11_run_teacher.sh` を実行し、教師モデルの学習に着手した。
@@ -155,6 +159,7 @@ Colab環境での基本的な動作確認が完了したため、A100 GPUの本�
     -   [x] `conf/dataset/movielens.yaml` の `limit_data_rows` を `-1` に設定し、全データを使用するように変更した。
     -   [ ] 生徒ベースライン、教師モデル、蒸留学習の全パイプラインを本番設定で実行する。
         -   [x] `cmd/colab/10_run_student_baseline.sh train=student_production` (完了)
+        -   **補足**: 生徒モデルの最新チェックポイントは、`docs/result` ディレクトリ内の既存の実行結果ドキュメントに記載されている場合があります。その場合、必ずしも生徒モデルの再学習は不要です。既存のチェックポイントパスを教師モデルの学習時に指定してください。
         -   [x] `cmd/colab/11_run_teacher.sh train=teacher_production` (前提条件として完了、`teacher_outputs_batches_dir` 生成のためデータ1000件で動作確認済み)
         -   [x] `cmd/colab/12_run_distill.sh train=distill_production` (データ1000件で動作確認済み)
 

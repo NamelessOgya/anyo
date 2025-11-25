@@ -1,5 +1,5 @@
 model_type: ilora
-llm_model_name: meta-llama/Llama-2-7b-hf # 小さなモデルでテスト
+llm_model_name: Qwen/Qwen1.5-1.8B-Chat # 小さなモデルでテスト
 num_lora_experts: 3
 lora_r: 9
 lora_alpha: 16
@@ -7,9 +7,10 @@ lora_dropout: 0.05
 hidden_size: 64 # ゲーティングネットワーク用
 dropout_rate: 0.1
 max_gen_length: 20
-rec_model_checkpoint_path: /content/drive/MyDrive/rec/anyo/result/student_baseline_20251120_130721/checkpoints/student-baseline-epoch=18-val_recall@10=0.1579.ckpt # 事前学習済みSASRecモデルのチェックポイントパス
+rec_model_checkpoint_path: /content/drive/MyDrive/rec/anyo/result/student_baseline_20251124_114208/checkpoints/student-baseline-epoch=00-val_recall@10=0.0028.ckpt # 事前学習済みSASRecモデルのチェックポイントパス
 # teacher_checkpoint_path: null # 学習済みモデルのパス (run_distill, run_eval_allで使用)
 use_flash_attention: False
-inference_batch_size: 256
+inference_batch_size: 64
 use_torch_compile: False
-use_qlora: True
+use_qlora: False
+skip_output_generation: false

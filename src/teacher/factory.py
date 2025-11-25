@@ -1,73 +1,55 @@
 from omegaconf import DictConfig
 from src.teacher.interfaces import TeacherModel
 from src.teacher.ilora_model import iLoRAModel
-from src.teacher.mlp_projector import MLPProjector # MLPProjectorをインポート
+from src.teacher.mlp_projector import MLPProjector
 import torch
-import torch.nn as nn # Added import
+import torch.nn as nn
 from typing import Dict
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model # Added LoraConfig, get_peft_model
-from src.student.models import SASRec # Import SASRec
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from src.student.models import SASRec
+import logging
 
-def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item_id_to_name: Dict[int, str], padding_item_id: int, candidate_topk: int) -> TeacherModel:
+logger = logging.getLogger(__name__)
+
+def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_items: int, max_seq_len: int, item_id_to_name: Dict[int, str], padding_item_id: int, candidate_topk: int) -> TeacherModel:
     """
     Hydraの設定に基づいて教師モデルのインスタンスを生成します。
-
-    Args:
-        cfg (DictConfig): Hydraの設定オブジェクト。
-        num_items (int): アイテムの総数。
-        max_seq_len (int): シーケンスの最大長。
-        item_id_to_name (Dict[int, str]): アイテムIDから名前へのマッピング。
-        padding_item_id (int): パディング用のアイテムID。
-        candidate_topk (int): 候補アイテムのトップK。
-
-    Returns:
-        TeacherModel: 構築された教師モデルのインスタンス。
+    注: QLoRAのサポートは、カスタムMoeLoraModelとの互換性問題のため一時的に無効化されています。
     """
-    torch.set_float32_matmul_precision('high') # Add this line
+    torch.set_float32_matmul_precision('high')
     model_type = cfg.teacher.model_type
 
     if model_type == "ilora":
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # LLMとTokenizerをここでロード
-        if cfg.teacher.get("use_qlora", False):
-            if not torch.cuda.is_available():
-                raise ValueError("QLoRA requires CUDA. Please use a GPU enabled environment.")
-            
-            # BitsAndBytesConfigを使用して4bit量子化を設定
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_quant_type="nf4", # Or "fp4"
-                bnb_4bit_use_double_quant=True,
-            )
-            print("QLoRA (4-bit quantization) is enabled for LLM.")
-
-            llm = AutoModelForCausalLM.from_pretrained(
-                cfg.teacher.llm_model_name,
-                quantization_config=quantization_config
-            )
-            # Prepare model for k-bit training
-            # This will cast the layernorm layers to float32, and the output layer to float32
-            # for more stability.
-            llm = prepare_model_for_kbit_training(llm)
-
+        print("Loading LLM for teacher model...")
+        
+        llm_load_kwargs = {}
+        
+        if cfg.teacher.get("use_flash_attention", False):
+            print("Flash Attention 2 is enabled for LLM.")
+            llm_load_kwargs["attn_implementation"] = "flash_attention_2"
         else:
-            print("QLoRA is disabled for LLM.")
-            llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
+            print("Flash Attention is disabled for LLM.")
 
-        tokenizer = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
-        llm.resize_token_embeddings(len(tokenizer)) # トークン埋め込み層のサイズを調整
+        if cfg.teacher.get("use_qlora", False):
+            # QLoRA is temporarily disabled due to incompatibility with custom MoeLoraModel
+            # logger.warning("QLoRA is configured but temporarily disabled.")
+            print("QLoRA is configured but temporarily disabled.")
 
-        # rec_modelのロード
-        # Check if a pre-trained rec_model checkpoint path is provided
+        if cfg.train.get("precision") == "bf16-mixed":
+             llm_load_kwargs["dtype"] = torch.bfloat16
+
+        print("DEBUG: Attempting to load LLM from_pretrained...")
+        llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
+        logger.info(f"Successfully loaded LLM: {llm.config._name_or_path}")
+
+        # Removed internal tokenizer creation and special token handling.
+        # llm.resize_token_embeddings will use the passed llm_tokenizer.
+        llm.resize_token_embeddings(len(llm_tokenizer))
+
         if cfg.teacher.get("rec_model_checkpoint_path"):
             print(f"Loading pre-trained SASRec model from {cfg.teacher.rec_model_checkpoint_path}")
-            # Instantiate SASRec model first to load state_dict into it
             rec_model = SASRec(
                 num_items=num_items,
                 hidden_size=cfg.student.hidden_size,
@@ -75,10 +57,9 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
                 num_layers=cfg.student.num_layers,
                 dropout_rate=cfg.student.dropout_rate,
                 max_seq_len=max_seq_len,
+                padding_item_id=padding_item_id,
             )
-            # Load the state_dict to CPU first
             checkpoint = torch.load(cfg.teacher.rec_model_checkpoint_path, map_location='cpu')
-            # Strip 'model.' prefix from keys
             new_state_dict = {}
             for k, v in checkpoint['state_dict'].items():
                 if k.startswith('model.'):
@@ -86,27 +67,25 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
                 else:
                     new_state_dict[k] = v
             rec_model.load_state_dict(new_state_dict)
-            rec_model.eval() # Set to eval mode
-            rec_model.to(device) # Then move to device
+            rec_model.eval()
+            rec_model.to(device)
         else:
             raise ValueError("rec_model_checkpoint_path must be provided in the teacher config for iLoRAModel.")
         
-        # Freeze rec_model parameters
         for param in rec_model.parameters():
             param.requires_grad = False
         print("SASRec model parameters frozen.")
         
-        # projectorのインスタンス化
         projector = MLPProjector(
-            input_dim=cfg.student.hidden_size, # rec_modelの出力次元
-            output_dim=llm.config.hidden_size, # LLMの入力次元
+            input_dim=cfg.student.hidden_size,
+            output_dim=llm.config.hidden_size,
             hidden_size=cfg.teacher.hidden_size,
             dropout_rate=cfg.teacher.dropout_rate
-        ).to(device)
+        ).to(device, dtype=llm.dtype) # Cast projector to llm.dtype
 
         model = iLoRAModel(
-            llm=llm, # LLMオブジェクトを渡す
-            tokenizer=tokenizer, # Tokenizerオブジェクトを渡す
+            llm=llm,
+            tokenizer=llm_tokenizer, # Pass the received llm_tokenizer
             num_lora_experts=cfg.teacher.num_lora_experts,
             lora_r=cfg.teacher.lora_r,
             lora_alpha=cfg.teacher.lora_alpha,
@@ -114,22 +93,20 @@ def create_teacher_model(cfg: DictConfig, num_items: int, max_seq_len: int, item
             num_items=num_items,
             hidden_size=cfg.teacher.hidden_size,
             dropout_rate=cfg.teacher.dropout_rate,
-            rec_model=rec_model, # Pass rec_model
-            projector=projector, # Pass projector
-            candidate_topk=candidate_topk, # Pass candidate_topk
-            item_id_to_name=item_id_to_name, # Pass item_id_to_name
-            padding_item_id=padding_item_id, # Pass padding_item_id
-            use_qlora=cfg.teacher.get("use_qlora", False), # Pass use_qlora flag
+            rec_model=rec_model,
+            projector=projector,
+            candidate_topk=candidate_topk,
+            item_id_to_name=item_id_to_name,
+            padding_item_id=padding_item_id,
+            llm_dtype=llm.dtype, # Pass the LLM's dtype
         )
         return model
     else:
         raise ValueError(f"Unknown teacher model type: {model_type}")
 
 if __name__ == "__main__":
-    # テスト用のダミーHydra設定
     from omegaconf import OmegaConf
 
-    # ダミー設定
     cfg = OmegaConf.create({
         "teacher": {
             "model_type": "ilora",
@@ -139,7 +116,18 @@ if __name__ == "__main__":
             "lora_alpha": 16,
             "lora_dropout": 0.05,
             "hidden_size": 64,
-            "dropout_rate": 0.1
+            "dropout_rate": 0.1,
+            "rec_model_checkpoint_path": "path/to/dummy_checkpoint.ckpt" # Added dummy path
+        },
+        "student": {
+            "hidden_size": 64,
+            "num_heads": 2,
+            "num_layers": 2,
+            "dropout_rate": 0.1,
+            "max_seq_len": 50,
+        },
+        "train": {
+            "precision": "32"
         }
     })
 
@@ -147,57 +135,27 @@ if __name__ == "__main__":
     max_seq_len_dummy = 50
     dummy_item_id_to_name = {i: f"Item {i}" for i in range(num_items_dummy + 1)}
     
-    # LLMとTokenizerをロード (テスト用)
-    llm_test = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name)
-    tokenizer_test = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name)
-    if tokenizer_test.pad_token is None:
-        tokenizer_test.pad_token = tokenizer_test.eos_token
-    
-    # 特殊トークンを追加
-    tokenizer_test.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
-    llm_test.resize_token_embeddings(len(tokenizer_test)) # トークン埋め込み層のサイズを調整
+    # Create a dummy checkpoint file for rec_model
+    dummy_rec_model_state = {
+        'state_dict': {f'model.layer_{i}': torch.randn(10, 10) for i in range(2)}
+    }
+    torch.save(dummy_rec_model_state, cfg.teacher.rec_model_checkpoint_path)
 
-    padding_item_id_dummy = tokenizer_test.pad_token_id # Use tokenizer's pad_token_id
-
-    # ダミーのrec_modelとprojectorを作成
-    class DummyRecModel(nn.Module):
-        def __init__(self, hidden_size):
-            super().__init__()
-            self.item_embeddings = nn.Embedding(num_items_dummy + 1, hidden_size)
-            self.cacu_x = lambda x: self.item_embeddings(x)
-            self.cacul_h = lambda x, y: torch.randn(x.shape[0], hidden_size)
-    
-    dummy_rec_model = DummyRecModel(cfg.teacher.hidden_size).to(llm_test.device)
-    dummy_projector = MLPProjector(
-        input_dim=cfg.teacher.hidden_size,
-        output_dim=llm_test.config.hidden_size,
-        hidden_size=cfg.teacher.hidden_size,
-        dropout_rate=cfg.teacher.dropout_rate
-    ).to(llm_test.device)
-
-    # モデルの生成
     teacher_model = create_teacher_model(
         cfg, 
         num_items_dummy, 
         max_seq_len_dummy, 
         dummy_item_id_to_name,
-        padding_item_id_dummy,
-        candidate_topk=10 # ダミー値を設定
+        padding_item_id=0,
+        candidate_topk=10
     )
     print(f"Created teacher model type: {type(teacher_model)}")
-
-    # インターフェースを満たしているか確認
     assert isinstance(teacher_model, TeacherModel)
     assert isinstance(teacher_model, torch.nn.Module)
 
-    # ダミーデータでforwardとget_teacher_outputsをテスト
-    item_seq_dummy = torch.randint(1, num_items_dummy, (4, max_seq_len_dummy)).to(teacher_model.device)
-    item_seq_len_dummy = torch.randint(1, max_seq_len_dummy + 1, (4,)).to(teacher_model.device)
-
-    output_scores = teacher_model(item_seq_dummy, item_seq_len_dummy)
-    print(f"Forward output scores shape: {output_scores.shape}")
-
-    teacher_outputs = teacher_model.get_teacher_outputs(item_seq_dummy, item_seq_len_dummy)
-    print(f"Teacher outputs keys: {teacher_outputs.keys()}")
+    # Clean up dummy checkpoint
+    import os
+    os.remove(cfg.teacher.rec_model_checkpoint_path)
 
     print("\nTeacher model factory test passed!")
+

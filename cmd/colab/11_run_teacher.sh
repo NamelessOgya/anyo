@@ -5,6 +5,9 @@
 
 set -eu
 
+# Add poetry to the PATH
+export PATH="/root/.local/bin:$PATH"
+
 STUDENT_CHECKPOINT_PATH="$1"
 shift # Remove the first argument (STUDENT_CHECKPOINT_PATH) from the list of arguments
 
@@ -17,7 +20,7 @@ fi
 echo "Using student checkpoint: $STUDENT_CHECKPOINT_PATH"
 
 echo "Running teacher model training..."
-PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" poetry run python -m src.exp.run_teacher train=teacher "teacher.rec_model_checkpoint_path='$STUDENT_CHECKPOINT_PATH'" "$@"
+PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" CUDA_LAUNCH_BLOCKING=1 poetry run python -m src.exp.run_teacher +train=teacher "teacher.rec_model_checkpoint_path='$STUDENT_CHECKPOINT_PATH'" "$@"
 echo "Teacher model run complete."
 
 

@@ -1,47 +1,41 @@
-# Llamaモデル実行設定の最適化計画
+# 教師モデル学習プロセスのデバッグ計画 (改訂版 v4)
 
-## 1. 事前調査フェーズ
+## 1. 問題の特定
+軽量LLM (`gemma-2b-it`) で複数エポックの学習を実行したところ、`val_recall@10`の値がエポックの進行と共にほぼ変化せず、学習が停滞していることが確認された。これは、モデルの学習サイクル、またはその前段のデータ生成プロセスに本質的な問題が存在することを示唆している。
 
-- [x] **タスク1.1**: `ref_repositories/iLoRA` ディレクトリ内のファイルを確認し、先行研究で用いられた以下のハイパーパラメータと設定を特定する。
-    - [x] `train_movielens.sh` から `batch_size`, `lr` (学習率) を調査する。
-        - **結果**: `batch_size = 8`, `lr = 8e-4`
-    - [x] 実行スクリプトや `main.py` から `num_workers` の設定を調査する。
-        - **結果**: `num_workers = 8` (main.pyのArgumentParserのデフォルト値)
-    - [x] `train_movielens.sh` に記載のある `--prompt_path` (`./prompt/movie.txt`) の内容を確認し、使用されているプロンプトを特定する。
-        - **結果**: `ref_repositories/iLoRA/prompt/movie.txt` には複数のプロンプトテンプレートが存在。
-            - `This user has watched [HistoryHere] in the previous. Please predict the next movie this user will watch. Choose the answer from the following 20 movie titles: [CansHere]. Answer:`
-            - `This user has watched [HistoryHere] in the previous. Given the following 20 movie titles: [CansHere], recommend one movie for this user to watch next. The movie title you recommend is:`
-            - `The visit history of this user is: [HistoryHere]. Recommend a next movie for this user to watch from the following movie title set: [CansHere]. The recommendation should contain one movie title only. Recommendation:`
-- [x] **タスク1.2**: 一般的なLoRA学習において `num_workers` が実行速度に与える影響について調査し、その結果を `docs/research/03_about_num_workers.md` に日本語でまとめる。
-    - **結果**: `docs/research/03_about_num_workers.md` を作成し、`num_workers`の役割、最適化のポイント、メモリ影響、`persistent_workers`についてまとめました。
+## 2. 調査計画 (ToDoリスト)
 
-## 2. 最適設定の探索フェーズ (q-LoRA有効)
+### ☑ ステップ0: 学習データ生成プロセスのレビュー
+- [x] **タスク:** `src/core/preprocess_data.py` をレビューし、`ratings.dat` から `train.csv`/`val.csv`/`test.csv` を生成するロジック（特にシーケンスと正解ラベルのペアリング）が正しいか確認する。
+- [x] **タスク:** `src/student/datamodule.py` の `SASRecDataModule.setup` と `SASRecDataset.__getitem__` をレビューし、CSVから読み込んだデータを `__getitem__` で処理する際に、意図した通りのシーケンスと正解ラベルが返されているか確認する。
+- [x] **タスク:** データローダが生成する最初の数バッチを実際にサンプリングし、`seq`（アイテム履歴）と`next_item`（正解アイテム）のペアの内容が論理的に正しいかを目視で確認する。
+- **結論:** `datamodule.py`にて、**アイテムID `1` がパディングID `0` と衝突する重大なバグを発見し修正済み。** また、`SASRecDataModule`から`SASRecDataset`への`item_id_to_name`の渡し方に関する`AttributeError`の再発を確認。`run_teacher.py`および`datamodule.py`のコード自体は修正された状態にあるにも関わらず、実行時に古いコードが参照される環境の問題が疑われる。ノートブック環境の再起動で、これらの修正が正しく反映されるかを確認する。
 
-- [x] **タスク2.1**: 事前調査フェーズの結果とq-LoRAによる軽量化を考慮し、`batch_size=128`および`batch_size=256`をベースラインとして最適な `num_workers` の組み合わせを探索する実験計画を立案する。
-    - **目的**: Llamaモデル (q-LoRA有効) の学習において、GPUメモリ使用量を抑えつつ、学習時間を最適化する `num_workers` と `batch_size` の組み合わせを特定する。
-    - **評価指標**:
-        - **学習時間**: 各エポックの完了までにかかる時間、または全トレーニングの総時間。
-        - **GPUメモリ使用量**: `torch.cuda.max_memory_allocated()` を使用してピークメモリ使用量を測定。
-    - **探索範囲**: `limit_data_rows: 1000` (高速なイテレーションのため) および `max_epochs: 1` で実験を実施。
-        - **実験1: `batch_size=128` の場合**
-            - `batch_size: 128`, `num_workers: 0`
-            - `batch_size: 128`, `num_workers: 4` (現在のLlama q-LoRA成功設定)
-            - `batch_size: 128`, `num_workers: 8` (iLoRA参照値)
-            - `batch_size: 128`, `num_workers: 11` (Pytorch Lightningの推奨値)
-        - **実験2: `batch_size=256` の場合**
-            - [x] `batch_size: 256`, `num_workers: 0`
-                - **結果**: (前の実行で`train=teacher`を明示していなかったため、実効バッチサイズは`conf/train/default.yaml`の`64`が適用されていた)
-                    - **実効バッチサイズ 64 の場合**:
-                        - 学習時間 (1 epoch): ~135秒
-                        - 総学習時間 (trainer.fit): ~266秒
-                        - ピークGPUメモリ使用量: 11.35 GB
-                    - **実効バッチサイズ 256 の場合**: (`train=teacher`を明示的に指定した後の実行)
-                        - 学習時間 (1 epoch): ~125秒
-                        - 総学習時間 (trainer.fit): ~256秒
-                        - ピークGPUメモリ使用量: 32.23 GB
-                    - **時間比較**: `batch_size=256` は `batch_size=64` よりも1エポックあたり約10秒高速 (約7%削減) でしたが、GPUメモリ使用量は約3倍に増加しました。
-            - [ ] `batch_size: 256`, `num_workers: 4` (in_progress)
-            - [ ] `batch_size: 256`, `num_workers: 8`
-            - [ ] `batch_size: 256`, `num_workers: 11`
-- [ ] **タスク2.2**: タスク2.1で立案した実験計画を実行し、各設定でのパフォーマンスを測定・比較する。
-- [ ] **タスク2.3**: 実験結果に基づき、最適な `num_workers` と `batch_size` の組み合わせを決定し、その設定をデフォルトのコンフィグファイルに反映する。
+### ☑ ステップ1: 参照実装との差分レビュー (iLoRA)
+- [x] **タスク: プロンプト形式の確認**
+    - `ref_repositories/iLoRA/` のコード (`data/data_interface.py`) を調査した。
+    - **【最重要発見事項】** 参照実装では、プロンプトの `[HistoryHere]` 部分を、**実際のアイテム名（映画タイトル）**と特殊トークンを組み合わせた文字列（例: `"The Shawshank Redemption [HistoryEmb], The Godfather [HistoryEmb]"`）で置き換えていた。
+    - **【根本原因】** 一方、我々の実装では、アイテム名を使わず、意味情報を持たない `"[HistoryEmb][HistoryEmb]..."` というプレースホルダーの連続をプロンプトとしていた。これにより、LLMはアイテム間の関係を学習できず、精度が完全に停滞していたと考えられる。
+- [x] **タスク: 損失関数の確認**
+    - **結論:** 損失関数自体はどちらもクロスエントロピーだが、その適用方法がモデルのタスク設計（ランキング vs 生成）によって異なっている。学習停滞の主要因はプロンプト形式にある可能性が高い。
+- [x] **タスク: ハイパーパラメータの確認**
+    - **結論:** 学習率が参照実装の5倍高い(`1e-3` vs `2e-4`)。これも不安定性の一因の可能性があるが、根本原因はプロンプト形式と判断。
+
+### ☑ ステップ2: 根本原因の修正と再検証
+- [x] **タスク: プロンプト生成ロジックの修正**
+    - `src/student/datamodule.py`の`setup`メソッドを修正し、`movies.dat`から映画タイトルを読み込み、プロンプトに使用するように変更した。
+- [x] **タスク: 学習率の調整**
+    - `conf/train/teacher.yaml`の学習率を、参照実装に合わせて`1e-3`から`2e-4`に修正した。
+- [ ] **(実行中) タスク: 再検証の実行**
+    - プロンプト修正後、再度 `gemma-2b-it` モデルで複数エポック学習を実行し、`val_recall@10`が改善傾向を示すか確認する。
+
+### ☐ ステップ3: 単一バッチでのオーバーフィット検証 (オプション)
+- [ ] **タスク:** （ステップ2でも精度が改善しない場合）モデルの学習能力を切り分けるため、単一バッチでのオーバーフィットを試みる。
+
+### ☐ ステップ4: 勾配・重みの監視
+- [ ] **タスク:** （ステップ3でも原因が不明な場合）`iLoRATrainer` に勾配と重みをTensorBoardにロギングする`on_after_backward`フックを追加する。
+- [ ] **タスク:** 1エポック学習を実行し、勾配が`0`や`None`になっていないか、また重みが僅かでも変化しているかを確認する。
+
+### ☐ ステップ5: 修正と再検証
+- [ ] **タスク:** 上記調査で特定した原因に基づき、修正案を立案し適用する。
+- [ ] **タスク:** 修正後、再度モデルを複数エポック学習させ、`val_recall@10`が改善傾向を示すか確認する

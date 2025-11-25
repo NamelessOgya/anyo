@@ -42,7 +42,7 @@ class SASRecTrainer(pl.LightningModule):
 
         logits = self.forward(item_seq, item_seq_len)
         
-        loss = self.loss_fn(logits, next_item.squeeze(-1))
+        loss = self.loss_fn(logits, next_item.squeeze(-1) - 1) # Convert to 0-indexed
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
@@ -52,12 +52,12 @@ class SASRecTrainer(pl.LightningModule):
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)
-        loss = self.loss_fn(logits, next_item.squeeze(-1))
+        loss = self.loss_fn(logits, next_item.squeeze(-1) - 1) # Convert to 0-indexed
         # logitsからトップKのアイテムIDを取得
         _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
         
         # next_itemはスカラーなので、リストのリスト形式に変換
-        ground_truths = [[item.item()] for item in next_item]
+        ground_truths = [[item.item() - 1] for item in next_item] # Convert to 0-indexed
         predictions = predicted_indices.tolist()
 
         metrics = calculate_metrics(predictions, ground_truths, self.metrics_k)
@@ -75,10 +75,10 @@ class SASRecTrainer(pl.LightningModule):
         next_item = batch["next_item"]
 
         logits = self.forward(item_seq, item_seq_len)
-        loss = self.loss_fn(logits, next_item.squeeze(-1))
+        loss = self.loss_fn(logits, next_item.squeeze(-1) - 1) # Convert to 0-indexed
 
         _, predicted_indices = torch.topk(logits, self.metrics_k, dim=-1)
-        ground_truths = [[item.item()] for item in next_item]
+        ground_truths = [[item.item() - 1] for item in next_item] # Convert to 0-indexed
         predictions = predicted_indices.tolist()
 
         metrics = calculate_metrics(predictions, ground_truths, self.metrics_k)

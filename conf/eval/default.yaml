@@ -1,5 +1,6 @@
 metrics_k: 10
-batch_size: 128 # 評価時のバッチサイズ
+batch_size: 64 # 評価時のバッチサイズ
 baseline_student_checkpoint_path: /workspace/result/result_20251117_025803/checkpoints/best_model.ckpt
 distilled_student_checkpoint_path: /workspace/result/result_20251117_025321/checkpoints/best_distilled_student_model.ckpt
 teacher_checkpoint_path: /workspace/result/result_20251117_025729/checkpoints/best_teacher_model.ckpt
+skip_test: false
