@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - experiment: null
+  - experiment: ilora_movielens
 
 # Basic experiment settings
 seed: 42

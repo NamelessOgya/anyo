@@ -20,7 +20,7 @@ fi
 echo "Using student checkpoint: $STUDENT_CHECKPOINT_PATH"
 
 echo "Running teacher model training..."
-PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" CUDA_LAUNCH_BLOCKING=1 poetry run python -m src.exp.run_teacher +train=teacher "teacher.rec_model_checkpoint_path='$STUDENT_CHECKPOINT_PATH'" "$@"
+PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" CUDA_LAUNCH_BLOCKING=1 poetry run python -m src.exp.run_teacher experiment=ilora_movielens "teacher.rec_model_checkpoint_path='$STUDENT_CHECKPOINT_PATH'" "$@"
 echo "Teacher model run complete."
 
 
