@@ -20,7 +20,21 @@ fi
 echo "Using student checkpoint: $STUDENT_CHECKPOINT_PATH"
 
 echo "Running teacher model training..."
-PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" CUDA_LAUNCH_BLOCKING=1 poetry run python -m src.exp.run_teacher experiment=ilora_movielens "teacher.rec_model_checkpoint_path='$STUDENT_CHECKPOINT_PATH'" "$@"
+
+# Define timestamp for unique run directory
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOCAL_RESULT_DIR="/content/result/result_${TIMESTAMP}"
+DRIVE_RESULT_DIR="/content/drive/MyDrive/rec/anyo/result/result_${TIMESTAMP}"
+
+echo "Local Output Dir: $LOCAL_RESULT_DIR"
+echo "Upload Path: $DRIVE_RESULT_DIR"
+
+PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" CUDA_LAUNCH_BLOCKING=1 poetry run python -m src.exp.run_teacher \
+    experiment=ilora_movielens \
+    "teacher.rec_model_checkpoint_path='$STUDENT_CHECKPOINT_PATH'" \
+    hydra.run.dir="$LOCAL_RESULT_DIR" \
+    upload_path="$DRIVE_RESULT_DIR" \
+    "$@"
 echo "Teacher model run complete."
 
 
