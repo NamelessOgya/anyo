@@ -11,12 +11,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 class SASRecDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, max_seq_len: int, num_items: int, item_id_to_name: Dict[int, str]):
+    def __init__(self, df: pd.DataFrame, max_seq_len: int, num_items: int, item_id_to_name: Dict[int, str], num_candidates: int, padding_item_id: int, id_to_history_part: Dict[int, str], id_to_candidate_part: Dict[int, str]):
         self.df = df
         self.max_seq_len = max_seq_len
         self.num_items = num_items
-        self.padding_item_id = 0 # 0をパディング用のIDとする
+        self.padding_item_id = padding_item_id
         self.item_id_to_name = item_id_to_name
+        self.num_candidates = num_candidates
+        self.id_to_history_part = id_to_history_part
+        self.id_to_candidate_part = id_to_candidate_part
+        
+        # Valid item IDs for negative sampling (exclude padding)
+        self.valid_item_ids = [i for i in self.item_id_to_name.keys() if i != self.padding_item_id]
 
     def __len__(self):
         return len(self.df)
@@ -26,13 +32,48 @@ class SASRecDataset(Dataset):
         seq_ids = row['seq']
         next_item_id = row['next_item']
         
-        # item_id_to_name is 1-indexed, so we use original IDs for lookup
-        seq_names = [self.item_id_to_name.get(i, "") for i in seq_ids]
+        seq_len = len(seq_ids)
+        
+        # --- Prompt Construction Parts ---
+        # 1. History String
+        # Use last max_seq_len items or fewer
+        history_ids = seq_ids[-self.max_seq_len:] if seq_len > 0 else []
+        # パディングIDを除外
+        history_ids = [i for i in history_ids if i != self.padding_item_id]
+        
+        # Use pre-computed strings for efficiency
+        history_parts = [self.id_to_history_part.get(i, str(i)) for i in history_ids]
+        history_str = ", ".join(history_parts)
+        
+        # 2. Candidates String (Negative Sampling)
+        # 履歴に含まれるアイテムと正解アイテムを除外セットに追加
+        exclude_set = set(history_ids) | {next_item_id}
+        
+        # 除外セットに含まれないアイテムを候補プールとする
+        candidates_pool = [i for i in self.valid_item_ids if i not in exclude_set]
+        
+        # Sample negatives
+        num_negatives = self.num_candidates - 1
+        # 候補プールから負例をサンプリング
+        if len(candidates_pool) >= num_negatives:
+            negatives = np.random.choice(candidates_pool, num_negatives, replace=False).tolist()
+        else:
+            # 候補が足りない場合は重複を許容してサンプリング
+            negatives = np.random.choice(self.valid_item_ids, num_negatives, replace=True).tolist()
+        
+        # 正解アイテムと負例を合わせて候補リストを作成し、シャッフル
+        candidates = negatives + [next_item_id]
+        np.random.shuffle(candidates)
+        
+        # Use pre-computed strings for efficiency
+        candidates_parts = [self.id_to_candidate_part.get(i, str(i)) for i in candidates]
+        candidates_str = ", ".join(candidates_parts)
 
         return {
             "seq_ids": seq_ids,
-            "seq_names": seq_names,
             "next_item_id": next_item_id,
+            "history_str": history_str,
+            "candidates_str": candidates_str,
         }
 
 class TeacherTrainCollater:
@@ -41,21 +82,10 @@ class TeacherTrainCollater:
     バッチ内の各サンプルに対して、iLoRA形式のプロンプトを作成し、
     トークナイズとパディングを行います。
     """
-    def __init__(self, tokenizer: AutoTokenizer, max_seq_len: int, padding_item_id: int, item_id_to_name: Dict[int, str], num_candidates: int = 20):
+    def __init__(self, tokenizer: AutoTokenizer, max_seq_len: int, padding_item_id: int):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.padding_item_id = padding_item_id
-        self.item_id_to_name = item_id_to_name
-        self.num_candidates = num_candidates
-        # Pre-compute prompt parts for efficiency
-        # This avoids repeated string formatting and dictionary lookups during iteration
-        # Format: "ItemName [HistoryEmb]" and "ItemName [CansEmb]"
-        self.id_to_history_part = {
-            i: f"{name} [HistoryEmb]" for i, name in item_id_to_name.items()
-        }
-        self.id_to_candidate_part = {
-            i: f"{name} [CansEmb]" for i, name in item_id_to_name.items()
-        }
         
         # iLoRAのプロンプトテンプレート
         # [HistoryHere] は視聴履歴の映画タイトルリストに置換されます
@@ -70,9 +100,6 @@ class TeacherTrainCollater:
         prompts: List[str] = []
         next_items: List[int] = []
         
-        # Valid item IDs for negative sampling (exclude padding)
-        valid_item_ids = [i for i in self.item_id_to_name.keys() if i != self.padding_item_id]
-
         for sample in batch:
             seq = sample["seq_ids"]
             next_item = sample["next_item_id"]
@@ -90,41 +117,9 @@ class TeacherTrainCollater:
             padded_seqs.append(padded_seq)
             
             # --- Prompt Construction ---
-            # 1. History String
-            # Use last max_seq_len items or fewer
-            history_ids = seq[-self.max_seq_len:] if seq_len > 0 else []
-            # パディングIDを除外
-            history_ids = [i for i in history_ids if i != self.padding_item_id]
-            
-            # Use pre-computed strings for efficiency
-            # This restores the original iLoRA logic of "ItemName [HistoryEmb]"
-            history_parts = [self.id_to_history_part.get(i, str(i)) for i in history_ids]
-            history_str = ", ".join(history_parts)
-            
-            # 2. Candidates String (Negative Sampling)
-            # 履歴に含まれるアイテムと正解アイテムを除外セットに追加
-            exclude_set = set(history_ids) | {next_item}
-            
-            # 除外セットに含まれないアイテムを候補プールとする
-            candidates_pool = [i for i in valid_item_ids if i not in exclude_set]
-            
-            # Sample negatives
-            num_negatives = self.num_candidates - 1
-            # 候補プールから負例をサンプリング
-            if len(candidates_pool) >= num_negatives:
-                negatives = np.random.choice(candidates_pool, num_negatives, replace=False).tolist()
-            else:
-                # 候補が足りない場合は重複を許容してサンプリング
-                negatives = np.random.choice(valid_item_ids, num_negatives, replace=True).tolist()
-            
-            # 正解アイテムと負例を合わせて候補リストを作成し、シャッフル
-            candidates = negatives + [next_item]
-            np.random.shuffle(candidates)
-            
-            # Use pre-computed strings for efficiency
-            # This restores the original iLoRA logic of "ItemName [CansEmb]"
-            candidates_parts = [self.id_to_candidate_part.get(i, str(i)) for i in candidates]
-            candidates_str = ", ".join(candidates_parts)
+            # Use pre-computed strings from dataset
+            history_str = sample["history_str"]
+            candidates_str = sample["candidates_str"]
             
             # 3. Fill Template
             prompt = self.prompt_template.replace("[HistoryHere]", history_str).replace("[CansHere]", candidates_str)
@@ -284,18 +279,25 @@ class SASRecDataModule(pl.LightningDataModule):
         print(f"Number of rows (test): {len(self.test_df)}")
         print("-----------------------------")
 
-        # The dataset now needs the item_id_to_name map
-        self.train_dataset = SASRecDataset(self.train_df, self.max_seq_len, self.num_items, mapped_id_to_title)
-        self.val_dataset = SASRecDataset(self.val_df, self.max_seq_len, self.num_items, mapped_id_to_title)
-        self.test_dataset = SASRecDataset(self.test_df, self.max_seq_len, self.num_items, mapped_id_to_title)
+        # Pre-compute prompt parts for efficiency
+        # Format: "ItemName [HistoryEmb]" and "ItemName [CansEmb]"
+        id_to_history_part = {
+            i: f"{name} [HistoryEmb]" for i, name in self.mapped_id_to_title.items()
+        }
+        id_to_candidate_part = {
+            i: f"{name} [CansEmb]" for i, name in self.mapped_id_to_title.items()
+        }
+
+        # The dataset now needs the item_id_to_name map and pre-computed parts
+        self.train_dataset = SASRecDataset(self.train_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
+        self.val_dataset = SASRecDataset(self.val_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
+        self.test_dataset = SASRecDataset(self.test_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
 
         if self.tokenizer:
             self.collater = TeacherTrainCollater(
                 tokenizer=self.tokenizer,
                 max_seq_len=self.max_seq_len,
                 padding_item_id=self.padding_item_id,
-                item_id_to_name=self.mapped_id_to_title,
-                num_candidates=self.num_candidates, # Pass num_candidates
             )
         else:
             self.collater = StudentCollater(
