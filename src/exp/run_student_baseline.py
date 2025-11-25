@@ -5,6 +5,7 @@ from src.core.seed import set_seed
 from src.core.git_info import get_git_info
 from omegaconf import OmegaConf
 from src.student.datamodule import SASRecDataModule
+from src.student.models import SASRec
 from src.student.trainer_baseline import SASRecTrainer
 from src.core.callbacks import CustomRichProgressBar
 
@@ -54,14 +55,21 @@ def main():
     dm.prepare_data()
     dm.setup()
 
-    # 3. SASRecTrainerのインスタンス化
-    trainer_model = SASRecTrainer(
+    # 3. SASRecモデルのインスタンス化
+    student_model = SASRec(
         num_items=dm.num_items,
         hidden_size=cfg.student.hidden_size,
         num_heads=cfg.student.num_heads,
         num_layers=cfg.student.num_layers,
         dropout_rate=cfg.student.dropout_rate,
         max_seq_len=cfg.student.max_seq_len,
+        padding_item_id=dm.padding_item_id
+    )
+
+    # 4. SASRecTrainerのインスタンス化
+    trainer_model = SASRecTrainer(
+        rec_model=student_model,
+        num_items=dm.num_items,
         learning_rate=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
         metrics_k=cfg.eval.metrics_k

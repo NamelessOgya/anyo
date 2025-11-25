@@ -138,14 +138,19 @@ if __name__ == "__main__":
     num_users_dummy = 1000 # SASRecモデルではnum_usersは直接使われないが、引数として渡す
     num_items_actual = dm.num_items
 
-    trainer_model = SASRecTrainer(
-        num_users=num_users_dummy,
+    # SASRecモデルのインスタンス化
+    rec_model = SASRec(
         num_items=num_items_actual,
         hidden_size=64,
         num_heads=2,
         num_layers=2,
         dropout_rate=0.1,
-        max_seq_len=50,
+        max_seq_len=50
+    )
+
+    trainer_model = SASRecTrainer(
+        rec_model=rec_model,
+        num_items=num_items_actual,
         learning_rate=1e-3,
         weight_decay=0.01,
         metrics_k=10
