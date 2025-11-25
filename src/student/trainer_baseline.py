@@ -46,7 +46,7 @@ class SASRecTrainer(pl.LightningModule):
         """
         Forward pass for the training step.
         """
-        return self.model(batch["seq"], batch["len_seq"])
+        return self.model.predict(batch["seq"], batch["len_seq"])
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """

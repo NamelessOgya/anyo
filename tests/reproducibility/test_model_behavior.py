@@ -177,3 +177,28 @@ def test_25_device_placement(model_behavior_fixture):
     # Check buffers too
     for buffer in model.buffers():
         assert buffer.device == device
+
+def test_36_sasrec_output_dimension(model_behavior_fixture):
+    """
+    Test 36: [SASRec Output Dimension] Verify that SASRec.predict returns logits of shape (batch_size, num_items).
+    It should NOT include padding index (0) in the output.
+    """
+    model = model_behavior_fixture["student_model"]
+    device = model_behavior_fixture["device"]
+    model.eval()
+    
+    batch_size = 2
+    seq = torch.randint(1, model.num_items, (batch_size, 20)).to(device)
+    length = torch.tensor([10, 15]).to(device)
+    
+    out = model.predict(seq, length)
+    
+    # Expected shape: (batch_size, num_items)
+    assert out.shape == (batch_size, model.num_items)
+    
+    # Verify that we can compute CrossEntropyLoss with target in range [0, num_items-1]
+    target = torch.randint(0, model.num_items, (batch_size,)).to(device)
+    loss_fn = nn.CrossEntropyLoss()
+    loss = loss_fn(out, target)
+    assert not torch.isnan(loss)
+
