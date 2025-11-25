@@ -54,3 +54,4 @@
 -   **Test 36:** [SASRec出力次元] `SASRec.predict` が返すロジットの形状が `(batch_size, num_items)` であり、パディングを含まないことを確認すること（`CUDA error` の防止）。
 -   **Test 37:** [メトリクス整合性] `ModelCheckpoint` が監視するメトリクス（例: `val_hr@10`）が、`LightningModule` によって実際にログ記録されていることを静的解析で確認すること（`MisconfigurationException` の防止）。Teacherモデル (`run_teacher.py`) も対象。
 -   **Test 38:** [iLoRA出力動作] `iLoRAModel.get_teacher_outputs` が期待されるキー（`ranking_scores`, `embeddings`, `candidates`, `confidence`）と形状を持つ辞書を返すことを確認すること。
+-   **Test 39:** [設定完全性] 実験スクリプト内で使用されている設定キー（例: `cfg.train.accumulate_grad_batches`）が、Hydra設定ファイルに実際に存在することを静的解析で確認すること（`ConfigAttributeError` の防止）。

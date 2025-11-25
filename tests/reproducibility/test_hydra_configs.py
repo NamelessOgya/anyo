@@ -37,6 +37,7 @@ def test_experiment_configs(experiment_file):
             # Ensure defaults are populated
             assert cfg.dataset.name is not None
             assert cfg.train.batch_size is not None
+            assert cfg.train.accumulate_grad_batches is not None
 
     except Exception as e:
         pytest.fail(f"Failed to load experiment config '{experiment_name}': {e}")
