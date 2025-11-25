@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from datetime import datetime
 import sys
+from omegaconf import OmegaConf
+from transformers import AutoTokenizer
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
