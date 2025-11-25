@@ -113,8 +113,21 @@ class SASRecTrainer(pl.LightningModule):
         loss = self.loss_fn(logits, target)
         
         self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"test_ndcg@{self.metrics_k}", metrics[f"ndcg@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"test_hit_ratio@{self.metrics_k}", metrics[f"hit_ratio@{self.metrics_k}"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # Metric calculation (HR@K, NDCG@K)
+        _, topk_indices = torch.topk(logits, k=self.metrics_k, dim=-1)
+        
+        hits = torch.zeros(target.size(0), device=self.device)
+        ndcgs = torch.zeros(target.size(0), device=self.device)
+
+        for i in range(target.size(0)):
+            t = target[i]
+            if t in topk_indices[i]:
+                hits[i] = 1.0
+                rank = (topk_indices[i] == t).nonzero(as_tuple=True)[0].item()
+                ndcgs[i] = 1.0 / torch.log2(torch.tensor(rank + 2.0))
+
+        self.log(f"test_hr@{self.metrics_k}", hits.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log(f"test_ndcg@{self.metrics_k}", ndcgs.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         return {"test_loss": loss}
 
