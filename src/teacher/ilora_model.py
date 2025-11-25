@@ -151,51 +151,55 @@ class iLoRAModel(nn.Module):
         # プレースホルダー埋め込みのベクトル化された置換
         history_emb_mask = (input_ids == his_token_id)
         
-        # プレースホルダー埋め込みのベクトル化された置換
-        history_emb_mask = (input_ids == his_token_id)
-        
         # シーケンス内の有効なアイテム（パディングでなく、seq_len内）のマスクを作成
         max_seq_len = item_seq.shape[1]
         seq_len_mask = torch.arange(max_seq_len, device=item_seq.device)[None, :] >= (max_seq_len - item_seq_len[:, None])
         valid_item_mask = seq_len_mask & (item_seq != self.padding_item_id)
+
+        # ランク計算 (後ろから0, 1, 2...)
+        # Placeholders
+        p_cumsum = history_emb_mask.cumsum(dim=1)
+        p_count = p_cumsum[:, -1].unsqueeze(1)
+        p_rank = p_count - p_cumsum # 0-based rank from end (0 is last)
+
+        # Valid Items
+        i_cumsum = valid_item_mask.cumsum(dim=1)
+        i_count = i_cumsum[:, -1].unsqueeze(1)
+        i_rank = i_count - i_cumsum # 0-based rank from end (0 is last)
+
+        # バッファへのスキャッター (Items -> Buffer)
+        # バッファサイズは max_seq_len
+        # batch_indicesを用意
+        batch_size = input_ids.shape[0]
+        batch_indices = torch.arange(batch_size, device=input_ids.device).unsqueeze(1)
         
-        # 切り捨てによる不一致を処理するために、バッチ内の各サンプルをループ処理
-        for i in range(input_ids.shape[0]):
-            sample_placeholder_mask = history_emb_mask[i]
-            sample_valid_item_mask = valid_item_mask[i]
-            
-            num_placeholders = sample_placeholder_mask.sum()
-            num_valid_items = sample_valid_item_mask.sum()
-
-            if num_placeholders == 0:
-                continue
-
-            # 置換する埋め込みの数を決定
-            num_to_replace = min(num_placeholders, num_valid_items).item()
-
-            if num_to_replace > 0:
-                # 最後の `num_to_replace` 個の有効なアイテム埋め込みを取得
-                valid_item_embeds = his_item_embeds[i][sample_valid_item_mask]
-                last_valid_item_embeds = valid_item_embeds[-num_to_replace:]
-
-                # 現在のサンプルのすべてのプレースホルダーのインデックスを取得
-                placeholder_indices = torch.where(sample_placeholder_mask)[0]
-                # 置換されるプレースホルダーのインデックスを取得（最後から使用）
-                last_placeholder_indices_to_replace = placeholder_indices[-num_to_replace:]
-                
-                # 実際に置換するプレースホルダーのための新しい特定のマスクを作成
-                final_placeholder_mask = torch.zeros_like(sample_placeholder_mask, dtype=torch.bool)
-                if last_placeholder_indices_to_replace.numel() > 0:
-                    final_placeholder_mask[last_placeholder_indices_to_replace] = True
-
-                    # 置換を実行
-                    modified_input_embeds[i][final_placeholder_mask] = last_valid_item_embeds.to(modified_input_embeds.dtype)
+        # アイテムをランクに基づいてバッファに配置
+        # valid_item_maskがTrueの場所のみ
+        item_buffer = torch.zeros(batch_size, max_seq_len, his_item_embeds.shape[-1], device=his_item_embeds.device, dtype=his_item_embeds.dtype)
         
-            if num_placeholders != num_valid_items:
-                logger.debug(
-                    f"Sample {i}: プレースホルダー数 ({num_placeholders}) と有効アイテム数 ({num_valid_items}) の不一致。 "
-                    f"最後の {num_to_replace} 個のプレースホルダーを最新のアイテム埋め込みで置換しました。"
-                )
+        # Advanced indexing
+        b_idx_i = batch_indices.expand_as(valid_item_mask)[valid_item_mask]
+        rank_idx_i = i_rank[valid_item_mask]
+        
+        # ランクが負になることはないはずだが、念のためチェック (mask外は計算上どうなる？)
+        # mask外はrankがcount以上になるか、負になるか。
+        # mask外は無視するのでOK。
+        
+        # 安全のためにランクをクランプ (index out of boundsを防ぐ)
+        # ただし論理的に正しいなら不要。max_seq_len内に収まるはず。
+        rank_idx_i = rank_idx_i.clamp(0, max_seq_len - 1)
+        
+        item_buffer[b_idx_i, rank_idx_i] = his_item_embeds[valid_item_mask]
+
+        # バッファからのギャザー (Buffer -> Placeholders)
+        # history_emb_maskがTrue かつ p_rank < i_count の場所のみ置換
+        replace_mask = history_emb_mask & (p_rank < i_count)
+        
+        b_idx_p = batch_indices.expand_as(replace_mask)[replace_mask]
+        rank_idx_p = p_rank[replace_mask]
+        rank_idx_p = rank_idx_p.clamp(0, max_seq_len - 1)
+        
+        modified_input_embeds[replace_mask] = item_buffer[b_idx_p, rank_idx_p].to(modified_input_embeds.dtype)
 
         # --- [CansEmb] Replacement Logic ---
         cans_token_id = self.tokenizer.additional_special_tokens_ids[
@@ -211,29 +215,55 @@ class iLoRAModel(nn.Module):
                 
                 cans_emb_mask = (input_ids == cans_token_id)
                 
-                for i in range(input_ids.shape[0]):
-                    sample_cans_mask = cans_emb_mask[i]
-                    num_cans_placeholders = sample_cans_mask.sum()
+                # Rank calculation for candidates
+                # Assuming candidates are already valid and ordered?
+                # Usually candidates are dense (no padding in middle).
+                # But we might have padding at end if num_candidates varies?
+                # batch["len_cans"] exists.
+                
+                max_cans_len = cans_item_embeds.shape[1]
+                if "len_cans" in batch:
+                    cans_len_mask = torch.arange(max_cans_len, device=input_ids.device)[None, :] < batch["len_cans"][:, None]
+                else:
+                    cans_len_mask = torch.ones(batch_size, max_cans_len, device=input_ids.device, dtype=torch.bool)
                     
-                    # Assuming num_candidates matches num_cans_placeholders
-                    # Or take min if they differ (though they should match by design)
-                    num_valid_cans = batch["len_cans"][i] if "len_cans" in batch else batch["cans"].shape[1]
+                # Placeholders ranks
+                cp_cumsum = cans_emb_mask.cumsum(dim=1)
+                # We want to replace FIRST N placeholders with FIRST N candidates?
+                # Original logic:
+                # indices_to_replace = cans_placeholder_indices[:num_to_replace_cans]
+                # valid_cans_embeds = cans_item_embeds[i][:num_to_replace_cans]
+                # So it's FIRST to FIRST. (0-th candidate to 0-th placeholder)
+                
+                # So we need 0-based rank from START.
+                # cp_rank = cp_cumsum - 1. (where mask is True)
+                cp_rank = cp_cumsum - 1
+                
+                # Candidates ranks
+                # Since candidates are dense and ordered, the index IS the rank.
+                # We don't need scatter/gather for candidates if we assume they are dense.
+                # We can just use the index.
+                
+                # But we need to match Placeholder Rank K to Candidate Index K.
+                
+                # Create a buffer? Or just index into cans_item_embeds directly?
+                # cans_item_embeds is (B, C, H).
+                # We want: modified[b, p_idx] = cans_item_embeds[b, cp_rank[b, p_idx]]
+                
+                # Condition: mask is True AND cp_rank < num_valid_cans
+                
+                if "len_cans" in batch:
+                    num_valid_cans = batch["len_cans"].unsqueeze(1)
+                else:
+                    num_valid_cans = torch.tensor(max_cans_len, device=input_ids.device).unsqueeze(0).expand(batch_size, 1)
                     
-                    num_to_replace_cans = min(num_cans_placeholders, num_valid_cans).item()
-                    
-                    if num_to_replace_cans > 0:
-                        # Get embeddings for candidates
-                        valid_cans_embeds = cans_item_embeds[i][:num_to_replace_cans]
-                        
-                        # Get indices of placeholders
-                        cans_placeholder_indices = torch.where(sample_cans_mask)[0]
-                        # Replace the first N placeholders (assuming order is preserved)
-                        indices_to_replace = cans_placeholder_indices[:num_to_replace_cans]
-                        
-                        final_cans_mask = torch.zeros_like(sample_cans_mask, dtype=torch.bool)
-                        final_cans_mask[indices_to_replace] = True
-                        
-                        modified_input_embeds[i][final_cans_mask] = valid_cans_embeds.to(modified_input_embeds.dtype)
+                c_replace_mask = cans_emb_mask & (cp_rank < num_valid_cans)
+                
+                b_idx_c = batch_indices.expand_as(c_replace_mask)[c_replace_mask]
+                rank_idx_c = cp_rank[c_replace_mask]
+                rank_idx_c = rank_idx_c.clamp(0, max_cans_len - 1)
+                
+                modified_input_embeds[c_replace_mask] = cans_item_embeds[b_idx_c, rank_idx_c].to(modified_input_embeds.dtype)
             else:
                 logger.warning("Batch does not contain 'cans' key, skipping [CansEmb] replacement.")
 
