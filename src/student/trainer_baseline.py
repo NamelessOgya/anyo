@@ -10,18 +10,18 @@ import pytorch_lightning as pl
 from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 
-from src.student.rec_model import RecModel
+from src.student.models import SASRec
 
 logger = logging.getLogger(__name__)
 
 
-class BaselineTrainer(pl.LightningModule):
+class SASRecTrainer(pl.LightningModule):
     """
     PyTorch Lightning Module for training and evaluating baseline recommendation models (e.g., SASRec).
     """
     def __init__(
         self,
-        rec_model: RecModel,
+        rec_model: SASRec,
         num_items: int,
         learning_rate: float,
         weight_decay: float,
