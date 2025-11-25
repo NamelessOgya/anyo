@@ -47,6 +47,16 @@ class TeacherTrainCollater:
         self.padding_item_id = padding_item_id
         self.item_id_to_name = item_id_to_name
         self.num_candidates = num_candidates
+        # Pre-compute prompt parts for efficiency
+        # This avoids repeated string formatting and dictionary lookups during iteration
+        # Format: "ItemName [HistoryEmb]" and "ItemName [CansEmb]"
+        self.id_to_history_part = {
+            i: f"{name} [HistoryEmb]" for i, name in item_id_to_name.items()
+        }
+        self.id_to_candidate_part = {
+            i: f"{name} [CansEmb]" for i, name in item_id_to_name.items()
+        }
+        
         # iLoRAのプロンプトテンプレート
         # [HistoryHere] は視聴履歴の映画タイトルリストに置換されます
         # [CansHere] は候補映画タイトルリスト（正解 + 負例）に置換されます
@@ -85,8 +95,11 @@ class TeacherTrainCollater:
             history_ids = seq[-self.max_seq_len:] if seq_len > 0 else []
             # パディングIDを除外
             history_ids = [i for i in history_ids if i != self.padding_item_id]
-            history_names = [self.item_id_to_name.get(i, str(i)) for i in history_ids]
-            history_str = ", ".join(history_names)
+            
+            # Use pre-computed strings for efficiency
+            # This restores the original iLoRA logic of "ItemName [HistoryEmb]"
+            history_parts = [self.id_to_history_part.get(i, str(i)) for i in history_ids]
+            history_str = ", ".join(history_parts)
             
             # 2. Candidates String (Negative Sampling)
             # 履歴に含まれるアイテムと正解アイテムを除外セットに追加
@@ -108,8 +121,10 @@ class TeacherTrainCollater:
             candidates = negatives + [next_item]
             np.random.shuffle(candidates)
             
-            candidates_names = [self.item_id_to_name.get(i, str(i)) for i in candidates]
-            candidates_str = ", ".join(candidates_names)
+            # Use pre-computed strings for efficiency
+            # This restores the original iLoRA logic of "ItemName [CansEmb]"
+            candidates_parts = [self.id_to_candidate_part.get(i, str(i)) for i in candidates]
+            candidates_str = ", ".join(candidates_parts)
             
             # 3. Fill Template
             prompt = self.prompt_template.replace("[HistoryHere]", history_str).replace("[CansHere]", candidates_str)

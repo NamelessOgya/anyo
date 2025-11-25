@@ -138,6 +138,9 @@ class iLoRAModel(nn.Module):
         # プレースホルダー埋め込みのベクトル化された置換
         history_emb_mask = (input_ids == his_token_id)
         
+        # プレースホルダー埋め込みのベクトル化された置換
+        history_emb_mask = (input_ids == his_token_id)
+        
         # シーケンス内の有効なアイテム（パディングでなく、seq_len内）のマスクを作成
         max_seq_len = item_seq.shape[1]
         seq_len_mask = torch.arange(max_seq_len, device=item_seq.device)[None, :] >= (max_seq_len - item_seq_len[:, None])
