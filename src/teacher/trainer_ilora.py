@@ -184,6 +184,33 @@ class iLoRATrainer(pl.LightningModule):
         self.log("epoch_duration_seconds", epoch_duration, prog_bar=True, logger=True)
         logger.info(f"Epoch duration: {epoch_duration:.2f} seconds")
 
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        """
+        チェックポイント保存時に呼び出されます。
+        凍結されたパラメータ（ベースLLMの重みなど）をstate_dictから削除して、
+        ファイルサイズを削減します。
+        """
+        state_dict = checkpoint["state_dict"]
+        
+        # 学習可能なパラメータの名前を取得
+        trainable_param_names = {n for n, p in self.named_parameters() if p.requires_grad}
+        # 全パラメータの名前を取得（バッファの判定用）
+        all_param_names = {n for n, p in self.named_parameters()}
+        
+        keys_to_keep = []
+        for key in state_dict.keys():
+            if key in trainable_param_names:
+                keys_to_keep.append(key)
+            elif key not in all_param_names:
+                # named_parametersに含まれないキーはバッファ（running_meanなど）とみなして保存
+                keys_to_keep.append(key)
+        
+        # フィルタリングされたstate_dictを作成
+        new_state_dict = {k: v for k, v in state_dict.items() if k in keys_to_keep}
+        checkpoint["state_dict"] = new_state_dict
+        
+        logger.info(f"Checkpoint optimized: Reduced state_dict from {len(state_dict)} to {len(new_state_dict)} keys.")
+
 if __name__ == "__main__":
     # テスト用のダミーデータとデータモジュール
     from src.student.datamodule import SASRecDataModule # データモジュールは共通

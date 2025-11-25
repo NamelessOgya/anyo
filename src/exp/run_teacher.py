@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 import sys
+import torch
 import shutil
 import subprocess
 from omegaconf import OmegaConf
@@ -122,7 +123,19 @@ def main():
     best_model_path = checkpoint_callback.best_model_path
     if best_model_path and Path(best_model_path).exists():
         logger.info(f"Loading best model from: {best_model_path}")
-        trainer.test(model=trainer_model, datamodule=dm, ckpt_path=best_model_path)
+        # Manually load state_dict with strict=False because we removed frozen weights from checkpoint
+        checkpoint = torch.load(best_model_path, map_location=trainer_model.device)
+        # Handle both raw state_dict and PL checkpoint format
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
+            
+        missing_keys, unexpected_keys = trainer_model.load_state_dict(state_dict, strict=False)
+        logger.info(f"Model loaded. Missing keys (expected for frozen params): {len(missing_keys)}. Unexpected keys: {len(unexpected_keys)}")
+        
+        # Run test with the loaded model (ckpt_path=None to prevent reloading)
+        trainer.test(model=trainer_model, datamodule=dm, ckpt_path=None)
     else:
         logger.warning("No best model found. Testing with the last model.")
         trainer.test(model=trainer_model, datamodule=dm)
