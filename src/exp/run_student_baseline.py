@@ -80,8 +80,8 @@ def main():
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir / "checkpoints",
-        filename="student-baseline-{epoch:02d}-{val_recall@10:.4f}",
-        monitor="val_recall@10",
+        filename="student-baseline-{epoch:02d}-{val_hr@10:.4f}",
+        monitor="val_hr@10",
         mode="max",
         save_top_k=1,
         save_last=True,

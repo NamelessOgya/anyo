@@ -51,3 +51,5 @@
 -   **Test 33:** [未定義名検出] 実験スクリプト内で、未定義の変数やインポート漏れ（`NameError` の原因）が存在しないことを静的解析で確認すること。
 -   **Test 34:** [インポートスモークテスト] `src` ディレクトリ内のすべてのPythonモジュールが、`ModuleNotFoundError` や `ImportError` なしに正常にインポートできること。
 -   **Test 35:** [引数整合性検証] クラスのインスタンス化や `load_from_checkpoint` の呼び出しにおいて、渡されるキーワード引数が実際のクラス定義（`__init__`）と整合していることを静的解析で確認すること（`TypeError` の防止）。
+-   **Test 36:** [SASRec出力次元] `SASRec.predict` が返すロジットの形状が `(batch_size, num_items)` であり、パディングを含まないことを確認すること（`CUDA error` の防止）。
+-   **Test 37:** [メトリクス整合性] `ModelCheckpoint` で監視対象としているメトリクス（例: `val_hr@10`）が、実際に `LightningModule` 内でログ出力されていることを静的解析で確認すること（`MisconfigurationException` の防止）。
