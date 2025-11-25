@@ -8,14 +8,14 @@ from omegaconf import OmegaConf
 from transformers import AutoTokenizer
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.core.paths import get_project_root
 from src.core.seed import set_seed
 from src.core.logging import setup_logging
 from src.core.git_info import get_git_info
-from src.core.callbacks import CustomRichProgressBar
+# from src.core.callbacks import CustomRichProgressBar # Removed
 
 from src.student.datamodule import SASRecDataModule
 from src.teacher.factory import create_teacher_model
@@ -93,7 +93,7 @@ def main():
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    progress_bar = CustomRichProgressBar()
+    progress_bar = TQDMProgressBar(refresh_rate=10)
 
     trainer = pl.Trainer(
         default_root_dir=str(output_dir),
@@ -114,10 +114,17 @@ def main():
     training_duration = time.perf_counter() - training_start_time
     logger.info(f"iLoRA teacher model training finished. Duration for trainer.fit: {training_duration:.2f} seconds.")
 
-    # 6. 評価と教師出力の生成
-    # This part remains largely the same but needs to use the centralized hydra config 'cfg'
-    # and the created output directory 'output_dir'
-    ...
+    # 6. 評価
+    logger.info("Starting iLoRA teacher model testing...")
+    best_model_path = checkpoint_callback.best_model_path
+    if best_model_path and Path(best_model_path).exists():
+        logger.info(f"Loading best model from: {best_model_path}")
+        trainer.test(model=trainer_model, datamodule=dm, ckpt_path=best_model_path)
+    else:
+        logger.warning("No best model found. Testing with the last model.")
+        trainer.test(model=trainer_model, datamodule=dm)
+    
+    logger.info(f"iLoRA teacher run finished. Results are in: {output_dir}")
 
 if __name__ == "__main__":
     main()
