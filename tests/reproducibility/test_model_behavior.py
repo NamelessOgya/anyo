@@ -251,3 +251,60 @@ def test_38_ilora_output_behavior(model_behavior_fixture):
     # Note: item_prediction_head maps to num_items. If items are 1-indexed, this might be 0..num_items-1 mapping to 1..num_items?
     # Usually it's 0-indexed logits corresponding to 1-indexed items if consistent with SASRec.predict logic.
     assert (outputs["candidates"] >= 0).all() and (outputs["candidates"] < num_items).all()
+
+def test_39_ilora_training_step_logic(model_behavior_fixture):
+    """
+    Test 39: [iLoRA Training Step Logic] Verify that we can compute CrossEntropyLoss using ranking_scores.
+    """
+    model = model_behavior_fixture["teacher_model"]
+    device = model_behavior_fixture["device"]
+    num_items = model_behavior_fixture["num_items"]
+    
+    batch_size = 2
+    llm_seq_len = 10
+    
+    # Create dummy batch
+    batch = {
+        "seq": torch.randint(1, num_items, (batch_size, 20)).to(device),
+        "len_seq": torch.tensor([5, 8]).to(device),
+        "input_ids": torch.randint(0, 1000, (batch_size, llm_seq_len)).to(device),
+        "attention_mask": torch.ones((batch_size, llm_seq_len)).to(device),
+        "next_item": torch.randint(1, num_items + 1, (batch_size,)).to(device) # 1-based IDs
+    }
+    
+    # Run get_teacher_outputs
+    outputs = model.get_teacher_outputs(batch)
+    ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
+    
+    # Target items (1-based)
+    target_items = batch["next_item"]
+    
+    # Check shape mismatch if any
+    assert ranking_scores.shape[0] == target_items.shape[0]
+    
+    # Calculate CrossEntropyLoss
+    # ranking_scores corresponds to items 1..N (indices 0..N-1)
+    # target_items are 1..N
+    # So target for loss should be target_items - 1
+    loss = nn.functional.cross_entropy(ranking_scores, target_items - 1)
+    
+    assert not torch.isnan(loss)
+    assert loss.item() > 0
+    
+    # Verify gradients
+    # Ensure model is in train mode
+    model.train()
+    # Zero grads
+    model.zero_grad()
+    
+    # Re-run forward pass to ensure graph is built
+    outputs = model.get_teacher_outputs(batch)
+    ranking_scores = outputs["ranking_scores"]
+    loss = nn.functional.cross_entropy(ranking_scores, target_items - 1)
+    
+    loss.backward()
+    
+    # Check if some parameters have gradients
+    # item_prediction_head should definitely have gradients
+    assert model.item_prediction_head.weight.grad is not None
+    assert model.item_prediction_head.weight.grad.abs().sum() > 0

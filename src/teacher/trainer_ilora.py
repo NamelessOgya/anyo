@@ -51,13 +51,20 @@ class iLoRATrainer(pl.LightningModule):
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """
         1回の学習ステップ。
-        LLMの出力（Causal LM Loss）を計算し、ログに記録します。
+        iLoRAのランキングスコアを使用してCross Entropy Lossを計算します。
         """
         start_time = time.time()
         
-        # モデルのフォワードパス（内部で損失計算が行われる）
-        outputs = self.model(batch)
-        loss = outputs.loss
+        # 蒸留用出力の取得（ランキングスコアを含む）
+        outputs = self.model.get_teacher_outputs(batch)
+        ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
+        
+        # 正解アイテムのID (1-based)
+        target_items = batch["next_item"] # (batch_size,)
+        
+        # Cross Entropy Lossの計算
+        # ranking_scoresは0-based index (0 -> Item 1) なので、target_itemsから1を引く
+        loss = F.cross_entropy(ranking_scores, target_items - 1)
 
         # 損失と学習時間をログに記録
         self.log("train_loss_step", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
@@ -81,24 +88,27 @@ class iLoRATrainer(pl.LightningModule):
         target_items = batch["next_item"] # (batch_size,)
 
         # メトリクスの計算 (HR@K, NDCG@K)
-        # 簡易的な実装: 上位K個のアイテムを取得し、正解が含まれているか確認
+        # 上位K個のアイテムを取得
         _, topk_indices = torch.topk(ranking_scores, k=self.metrics_k, dim=-1) # (batch_size, k)
+        
+        # topk_indicesは0-basedなので、1を足してItem IDに変換
+        topk_item_ids = topk_indices + 1
         
         hits = torch.zeros(target_items.size(0), device=self.device)
         ndcgs = torch.zeros(target_items.size(0), device=self.device)
 
         for i in range(target_items.size(0)):
             target = target_items[i]
-            if target in topk_indices[i]:
+            if target in topk_item_ids[i]:
                 hits[i] = 1.0
                 # NDCG計算: 正解がランクのどこにあるか
-                rank = (topk_indices[i] == target).nonzero(as_tuple=True)[0].item()
+                rank = (topk_item_ids[i] == target).nonzero(as_tuple=True)[0].item()
                 ndcgs[i] = 1.0 / torch.log2(torch.tensor(rank + 2.0))
 
         self.log(f"val_hr@{self.metrics_k}", hits.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log(f"val_ndcg@{self.metrics_k}", ndcgs.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        return {"val_loss": 0.0} # ダミーの損失（必要に応じて実装）
+        return {"val_loss": 0.0} # ダミーの損失
 
     def configure_optimizers(self):
         """
@@ -108,11 +118,11 @@ class iLoRATrainer(pl.LightningModule):
         no_decay = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
             {
-                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad],
                 "weight_decay": self.weight_decay,
             },
             {
-                "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+                "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad],
                 "weight_decay": 0.0,
             },
         ]
@@ -141,7 +151,10 @@ class iLoRATrainer(pl.LightningModule):
 
         # Metric calculation
         _, predicted_indices = torch.topk(ranking_scores, k=self.metrics_k, dim=1)
-        predictions = predicted_indices.tolist()
+        
+        # 0-based indices -> 1-based Item IDs
+        predicted_item_ids = predicted_indices + 1
+        predictions = predicted_item_ids.tolist()
         
         ground_truths_list = []
         for item_id_tensor in target_items:
@@ -154,13 +167,7 @@ class iLoRATrainer(pl.LightningModule):
         
         return {"test_loss": 0.0} # Dummy loss
 
-    def configure_optimizers(self) -> Any:
-        # iLoRAでは、LoRAアダプターとゲーティングネットワークのパラメータのみを学習対象とする
-        # LLMのベースモデルのパラメータはフリーズされている
-        trainable_params = [n for n, p in self.model.named_parameters() if p.requires_grad]
-        logger.info(f"Trainable parameters: {trainable_params}") # Changed to logger.info
-        optimizer = AdamW(self.model.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
-        return optimizer
+
 
     def on_train_epoch_start(self):
         if torch.cuda.is_available():

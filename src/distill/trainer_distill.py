@@ -106,9 +106,12 @@ class DistillationTrainer(pl.LightningModule):
         item_seq = batch["seq"]
         item_seq_len = batch["len_seq"]
         next_item_original = batch["next_item"]
-        next_item = next_item_original.squeeze(-1) # Squeeze at the beginning
+        
+        # 1-based ID -> 0-based index
+        next_item = next_item_original.squeeze(-1) - 1
 
-        print(f"Debug: Batch size from dm.train_dataloader(): {item_seq.size(0)}")
+        # Debug print removed for cleaner output
+        # print(f"Debug: Batch size from dm.train_dataloader(): {item_seq.size(0)}")
 
         # 1. 教師モデルからソフトターゲットと埋め込みを取得
         if self.teacher_output_dataloader is not None:
@@ -120,7 +123,7 @@ class DistillationTrainer(pl.LightningModule):
             teacher_candidates = teacher_outputs_for_current_batch["candidates"].to(self.device)
             teacher_confidence = teacher_outputs_for_current_batch["confidence"].to(self.device)
             
-            print(f"Debug: Batch size from teacher_output_dataloader(): {teacher_embeddings.size(0)}")
+            # print(f"Debug: Batch size from teacher_output_dataloader(): {teacher_embeddings.size(0)}")
             
             teacher_outputs_raw = {
                 "ranking_scores": teacher_logits,
@@ -146,7 +149,19 @@ class DistillationTrainer(pl.LightningModule):
         distill_mask = self.selection_policy.select(
             student_logits=student_logits,
             teacher_logits=teacher_logits,
-            ground_truth=next_item_original
+            ground_truth=next_item_original.squeeze(-1) # SelectionPolicy might expect 1-based? Let's check.
+            # GroundTruthErrorPolicy uses gather with ground_truth. 
+            # If student_logits is 0-based (size C), ground_truth must be 0-based.
+            # So we should pass next_item (0-based).
+        )
+        # Wait, let's re-check SelectionPolicy.
+        # GroundTruthErrorPolicy: ground_truth_logits = student_logits.gather(1, ground_truth.unsqueeze(1))
+        # If student_logits is (B, C), ground_truth must be in [0, C-1].
+        # So we MUST pass 0-based index.
+        distill_mask = self.selection_policy.select(
+            student_logits=student_logits,
+            teacher_logits=teacher_logits,
+            ground_truth=next_item
         )
 
         # 4. ネガティブサンプリング (DLLM2Rec main.pyから移植)
@@ -158,7 +173,7 @@ class DistillationTrainer(pl.LightningModule):
         clamped_item_seq = torch.clamp(item_seq, max=num_items_total)
         zeros_tensor.scatter_(1, clamped_item_seq, 1)
         
-        zeros_tensor.scatter_(1, next_item_original.unsqueeze(1), 1)
+        zeros_tensor.scatter_(1, next_item_original.unsqueeze(1), 1) # next_item_original is 1-based, matches num_items_total+1 size
         
         zeros_tensor = zeros_tensor[:, :num_items_total]
         
@@ -215,7 +230,8 @@ class DistillationTrainer(pl.LightningModule):
         if self.ce_loss_weight > 0:
             ce_loss = self.ce_loss_fn(student_logits, next_item)
             if self.alpha > 0 and self.dro_loss_fn is not None:
-                dro_loss = self.dro_loss_fn(student_logits, next_item_original)
+                # Pass 0-based target to DROLoss
+                dro_loss = self.dro_loss_fn(student_logits, next_item)
                 ce_loss = ce_loss + self.alpha * dro_loss
                 self.log('train_ce_dro_loss', dro_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
             total_loss += self.ce_loss_weight * ce_loss
@@ -226,26 +242,30 @@ class DistillationTrainer(pl.LightningModule):
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int):
         item_seq = batch["seq"]
         item_seq_len = batch["len_seq"]
-        next_item = batch["next_item"]
+        next_item_original = batch["next_item"]
+        
+        # 1-based ID -> 0-based index
+        next_item = next_item_original.squeeze(-1) - 1
 
         logits = self.forward(item_seq, item_seq_len)
-        loss = self.ce_loss_fn(logits, next_item.squeeze(-1))
+        loss = self.ce_loss_fn(logits, next_item)
         
         # メトリクスの計算
         # logits (batch_size, num_items) -> predictions (List[List[int]])
         # next_item (batch_size,) -> ground_truths (List[List[int]])
         
-        # predictions: 各サンプルのトップKアイテムIDを取得
+        # predictions: 各サンプルのトップKアイテムIDを取得 (0-based indices)
         _, top_k_predictions = torch.topk(logits, k=self.metrics_k, dim=1)
         predictions_list = top_k_predictions.tolist()
 
         # ground_truths: 各サンプルの正解アイテムをリストのリストに変換
         # padding_item_idを除外
         ground_truths_list = []
-        for item_id_tensor in next_item:
+        for item_id_tensor in next_item_original:
             item_id = item_id_tensor.item()
             if item_id != self.datamodule.padding_item_id:
-                ground_truths_list.append([item_id])
+                # Convert 1-based ID to 0-based index to match predictions
+                ground_truths_list.append([item_id - 1])
         
         metrics = calculate_metrics(predictions_list, ground_truths_list, k=self.metrics_k)
         
@@ -256,20 +276,24 @@ class DistillationTrainer(pl.LightningModule):
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int):
         item_seq = batch["seq"]
         item_seq_len = batch["len_seq"]
-        next_item = batch["next_item"]
+        next_item_original = batch["next_item"]
+        
+        # 1-based ID -> 0-based index
+        next_item = next_item_original.squeeze(-1) - 1
 
         logits = self.forward(item_seq, item_seq_len)
-        loss = self.ce_loss_fn(logits, next_item.squeeze(-1))
+        loss = self.ce_loss_fn(logits, next_item)
         
         # メトリクスの計算
         _, top_k_predictions = torch.topk(logits, k=self.metrics_k, dim=1)
         predictions_list = top_k_predictions.tolist()
 
         ground_truths_list = []
-        for item_id_tensor in next_item:
+        for item_id_tensor in next_item_original:
             item_id = item_id_tensor.item()
             if item_id != self.datamodule.padding_item_id:
-                ground_truths_list.append([item_id])
+                # Convert 1-based ID to 0-based index to match predictions
+                ground_truths_list.append([item_id - 1])
         
         metrics = calculate_metrics(predictions_list, ground_truths_list, k=self.metrics_k)
         

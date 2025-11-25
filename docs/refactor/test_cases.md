@@ -53,5 +53,27 @@
 -   **Test 35:** [引数整合性検証] クラスのインスタンス化や `load_from_checkpoint` の呼び出しにおいて、渡されるキーワード引数が実際のクラス定義（`__init__`）と整合していることを静的解析で確認すること（`TypeError` の防止）。
 -   **Test 36:** [SASRec出力次元] `SASRec.predict` が返すロジットの形状が `(batch_size, num_items)` であり、パディングを含まないことを確認すること（`CUDA error` の防止）。
 -   **Test 37:** [メトリクス整合性] `ModelCheckpoint` が監視するメトリクス（例: `val_hr@10`）が、`LightningModule` によって実際にログ記録されていることを静的解析で確認すること（`MisconfigurationException` の防止）。Teacherモデル (`run_teacher.py`) も対象。
--   **Test 38:** [iLoRA出力動作] `iLoRAModel.get_teacher_outputs` が期待されるキー（`ranking_scores`, `embeddings`, `candidates`, `confidence`）と形状を持つ辞書を返すことを確認すること。
--   **Test 39:** [設定完全性] 実験スクリプト内で使用されている設定キー（例: `cfg.train.accumulate_grad_batches`）が、Hydra設定ファイルに実際に存在することを静的解析で確認すること（`ConfigAttributeError` の防止）。
+-   **Test 38: [iLoRA Output Behavior]**
+    - **Purpose**: Verify that `iLoRAModel.get_teacher_outputs` returns correct keys (`ranking_scores`, `embeddings`, `candidates`, `confidence`) and shapes.
+    - **Implementation**: `tests/reproducibility/test_model_behavior.py`
+    - **Status**: Passed
+-   **Test 39: [iLoRA Training Step Logic]**
+    - **Purpose**: Verify that `iLoRATrainer`'s training logic (CrossEntropy on `ranking_scores`) works correctly and gradients are propagated.
+    - **Implementation**: `tests/reproducibility/test_model_behavior.py`
+    - **Status**: Passed
+-   **Test 40:** [設定完全性] 実験スクリプト内で使用されている設定キー（例: `cfg.train.accumulate_grad_batches`）が、Hydra設定ファイルに実際に存在することを静的解析で確認すること（`ConfigAttributeError` の防止）。
+
+- **Test 41: [SASRec Trainer Correctness]**
+  - **Purpose**: Verify `SASRecTrainer`'s `training_step`, `validation_step`, and `test_step` execute correctly and produce valid loss/metrics.
+  - **Implementation**: `tests/reproducibility/test_trainer_correctness.py`
+  - **Status**: Passed
+
+- **Test 42: [iLoRA Trainer Correctness]**
+  - **Purpose**: Verify `iLoRATrainer`'s steps, specifically ensuring `NoneType` loss is prevented and metric indexing is correct (1-based vs 0-based).
+  - **Implementation**: `tests/reproducibility/test_trainer_correctness.py`
+  - **Status**: Passed
+
+- **Test 43: [Distillation Trainer Correctness]**
+  - **Purpose**: Verify `DistillationTrainer`'s steps, specifically ensuring correct indexing for `CrossEntropyLoss`, `DROLoss`, and metrics.
+  - **Implementation**: `tests/reproducibility/test_trainer_correctness.py`
+  - **Status**: Passed
