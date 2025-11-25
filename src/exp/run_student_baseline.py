@@ -1,14 +1,4 @@
-import sys
-import hydra
-from omegaconf import DictConfig, OmegaConf
-import logging
-from pathlib import Path
-from datetime import datetime
-
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
-
+from src.core.config_utils import load_hydra_config
 from src.core.paths import get_project_root
 from src.core.logging import setup_logging
 from src.core.seed import set_seed
@@ -20,14 +10,9 @@ from src.core.callbacks import CustomRichProgressBar
 logger = logging.getLogger(__name__)
 
 def main():
-    # Manually initialize Hydra. This is for environments where the decorator causes issues.
-    try:
-        overrides = sys.argv[1:]
-        with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="student_baseline_run"):
-            cfg = hydra.compose(config_name="config", overrides=overrides)
-    except Exception as e:
-        print(f"Hydra initialization failed: {e}")
-        return
+    # Centralized Hydra initialization
+    overrides = sys.argv[1:]
+    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
 
     # Manually create a unique output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

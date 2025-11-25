@@ -38,14 +38,17 @@ def distill_trainer_and_data():
 
     # データモジュール
     dm = SASRecDataModule(
-        batch_size=2, 
-        max_seq_len=20, 
+        dataset_name="movielens",
+        data_dir="data/ml-1m",
+        limit_data_rows=1000,
+        batch_size=2,
+        max_seq_len=20,
         num_workers=0,
         tokenizer=tokenizer # Pass tokenizer
     )
     dm.prepare_data()
     dm.setup()
-
+    
     # Propensity Scoresの計算
     train_next_items = []
     for batch in dm.train_dataloader():
@@ -65,7 +68,8 @@ def distill_trainer_and_data():
         num_layers=2,
         dropout_rate=0.1,
         max_seq_len=20,
-        teacher_embedding_dim=llm.config.hidden_size
+        teacher_embedding_dim=llm.config.hidden_size,
+        padding_item_id=dm.padding_item_id # padding_item_idを追加
     ).to(device)
     student_model_instance.train()
 
@@ -77,7 +81,8 @@ def distill_trainer_and_data():
         num_layers=2,
         dropout_rate=0.1,
         max_seq_len=20,
-        teacher_embedding_dim=llm.config.hidden_size
+        teacher_embedding_dim=llm.config.hidden_size,
+        padding_item_id=dm.padding_item_id # padding_item_idを追加
     ).to(device)
     dummy_rec_model.eval() # 評価モード
     for param in dummy_rec_model.parameters():
@@ -86,6 +91,9 @@ def distill_trainer_and_data():
     teacher_model_instance = iLoRAModel(
         llm=llm,
         tokenizer=tokenizer,
+        item_id_to_name=dm.mapped_id_to_title, # dmから渡す
+        padding_item_id=dm.padding_item_id, # dmから渡す
+        llm_dtype=torch.float32, #
         num_lora_experts=teacher_cfg.num_lora_experts,
         lora_r=teacher_cfg.lora_r,
         lora_alpha=teacher_cfg.lora_alpha,
@@ -101,7 +109,8 @@ def distill_trainer_and_data():
             dropout_rate=teacher_cfg.dropout_rate
         ),
         candidate_topk=10
-    )
+    ).to(device)
+    
     # 蒸留トレーナーのインスタンス化
     distill_trainer_no_dro = DistillationTrainer(
         student_model=student_model_instance,
@@ -122,6 +131,7 @@ def distill_trainer_and_data():
         gamma_consistency=1.0,
         candidate_topk=10,
         ed_weight=0.1,
+        num_neg_samples=5, # Add missing argument
         alpha=0.0, # DRO無効
         beta=1.0,
         propensity_scores=propensity_scores,
@@ -147,6 +157,7 @@ def distill_trainer_and_data():
         gamma_consistency=1.0,
         candidate_topk=10,
         ed_weight=0.1,
+        num_neg_samples=5, # Add missing argument
         alpha=0.5, # DRO有効
         beta=1.0,
         propensity_scores=propensity_scores,

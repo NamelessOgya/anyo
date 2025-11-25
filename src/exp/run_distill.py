@@ -1,15 +1,4 @@
-import sys
-import hydra
-from omegaconf import DictConfig, OmegaConf
-import logging
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from src.core.callbacks import CustomRichProgressBar
-from pytorch_lightning.loggers import TensorBoardLogger
-import re 
-from pathlib import Path
-from datetime import datetime
-
+from src.core.config_utils import load_hydra_config
 from src.core.paths import get_project_root
 from src.core.seed import set_seed
 from src.core.logging import setup_logging
@@ -30,16 +19,10 @@ import torch
 logger = logging.getLogger(__name__)
 
 def main():
-    # --- Manual Hydra Initialization ---
-    try:
-        overrides = sys.argv[1:]
-        with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="distill_run"):
-            cfg = hydra.compose(config_name="config", overrides=overrides)
-    except Exception as e:
-        print(f"Hydra initialization failed: {e}")
-        return
-    # --- End Manual Hydra Initialization ---
-
+    # --- Centralized Hydra Initialization ---
+    overrides = sys.argv[1:]
+    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
+    
     # 1. ロギング、シード、Git情報の初期化
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = get_project_root() / "result" / f"distill_{timestamp}"

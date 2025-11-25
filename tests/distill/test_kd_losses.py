@@ -139,7 +139,8 @@ def test_weighted_bce_loss_no_dro():
     weights = weights / weights.sum(dim=1, keepdim=True) # 正規化
     
     loss_fn = WeightedBCELoss(alpha=0.0)
-    loss = loss_fn(student_logits, teacher_candidates, weights)
+    neg_samples = torch.randint(0, num_items, (batch_size, 5)) # Add dummy neg_samples
+    loss = loss_fn(student_logits, teacher_candidates, weights, neg_samples)
     
     assert loss.shape == torch.Size([])
     assert loss.requires_grad
@@ -162,7 +163,8 @@ def test_weighted_bce_loss_with_dro():
 
     # alpha=0 (no DRO)
     weighted_bce_loss_no_dro_fn = WeightedBCELoss(alpha=0.0)
-    loss_no_dro = weighted_bce_loss_no_dro_fn(student_logits, teacher_candidates, weights)
+    neg_samples = torch.randint(0, num_items, (batch_size, 5)) # Add dummy neg_samples
+    loss_no_dro = weighted_bce_loss_no_dro_fn(student_logits, teacher_candidates, weights, neg_samples)
     print(f"WeightedBCELoss (no DRO): {loss_no_dro.item()}")
     student_logits.grad = None
     loss_no_dro.backward()
@@ -173,7 +175,7 @@ def test_weighted_bce_loss_with_dro():
     ps_for_weighted_bce = torch.rand(num_items + 1)
     ps_for_weighted_bce = ps_for_weighted_bce / ps_for_weighted_bce.sum() # 正規化
     weighted_bce_loss_with_dro_fn = WeightedBCELoss(alpha=0.5, ps=ps_for_weighted_bce, beta=1.0)
-    loss_with_dro = weighted_bce_loss_with_dro_fn(student_logits, teacher_candidates, weights)
+    loss_with_dro = weighted_bce_loss_with_dro_fn(student_logits, teacher_candidates, weights, neg_samples)
     print(f"WeightedBCELoss (with DRO): {loss_with_dro.item()}")
     student_logits.grad = None
     loss_with_dro.backward()

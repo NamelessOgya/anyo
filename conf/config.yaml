@@ -1,6 +1,7 @@
 defaults:
   - _self_
   - dataset: movielens
+  - train: default
   - teacher: ilora
   - student: sasrec
   - distill: dllm2rec

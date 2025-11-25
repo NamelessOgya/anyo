@@ -152,6 +152,12 @@ class SASRecDataModule(pl.LightningDataModule):
         pass
 
     def setup(self, stage: Optional[str] = None):
+        # Determine nrows for reading CSVs
+        nrows_train = self.limit_data_rows if self.limit_data_rows and self.limit_data_rows > 0 else None
+        # For validation and test, we usually want to evaluate on the full set, 
+        # but for quick tests, we can limit them as well. Let's limit them if limit_data_rows is set.
+        nrows_val_test = self.limit_data_rows if self.limit_data_rows and self.limit_data_rows > 0 else None
+
         # Load movie titles
         movies_df = pd.read_csv(
             self.data_dir / "movies.dat",
@@ -163,16 +169,17 @@ class SASRecDataModule(pl.LightningDataModule):
         )
         original_item_id_to_title = movies_df.set_index("item_id")["title"].to_dict()
 
-        # Load pre-split dataframes
-        self.train_df = pd.read_csv(self.data_dir / self.train_file)
-        self.val_df = pd.read_csv(self.data_dir / self.val_file)
-        self.test_df = pd.read_csv(self.data_dir / self.test_file)
+        # Load pre-split dataframes with nrows
+        self.train_df = pd.read_csv(self.data_dir / self.train_file, nrows=nrows_train)
+        self.val_df = pd.read_csv(self.data_dir / self.val_file, nrows=nrows_val_test)
+        self.test_df = pd.read_csv(self.data_dir / self.test_file, nrows=nrows_val_test)
 
         # Convert 'seq' column from string to list of ints
         for df in [self.train_df, self.val_df, self.test_df]:
             df['seq'] = df['seq'].apply(lambda x: [int(i) for i in x.split(' ')] if pd.notna(x) and x != '' else [])
 
         # Create a combined DataFrame to get all unique user and item IDs for consistent mapping
+        # Now this combined_df is also limited by limit_data_rows, which is what we want for testing.
         combined_df = pd.concat([self.train_df, self.val_df, self.test_df], ignore_index=True)
         
         # Extract all item IDs from 'seq' and 'next_item'
@@ -205,24 +212,8 @@ class SASRecDataModule(pl.LightningDataModule):
         
         self.num_users = len(self.user_id_map)
         self.num_items = len(self.item_id_map)
-
-        if self.limit_data_rows is not None and self.limit_data_rows > 0:
-            if len(self.train_df) > self.limit_data_rows:
-                self.train_df = self.train_df.sample(n=self.limit_data_rows, random_state=self.seed)
-            else:
-                logger.warning(f"train_df size ({len(self.train_df)}) is less than limit_data_rows ({self.limit_data_rows}). Using full training data.")
-            
-            if len(self.val_df) > self.limit_data_rows:
-                self.val_df = self.val_df.sample(n=self.limit_data_rows, random_state=self.seed)
-            else:
-                logger.warning(f"val_df size ({len(self.val_df)}) is less than limit_data_rows ({self.limit_data_rows}). Using full validation data.")
-
-            if len(self.test_df) > self.limit_data_rows:
-                self.test_df = self.test_df.sample(n=self.limit_data_rows, random_state=self.seed)
-            else:
-                logger.warning(f"test_df size ({len(self.test_df)}) is less than limit_data_rows ({self.limit_data_rows}). Using full test data.")
         
-        print("--- Data Split Statistics ---")
+        print("--- Data Split Statistics (limited by nrows) ---")
         print(f"Number of rows (train): {len(self.train_df)}")
         print(f"Number of rows (val): {len(self.val_df)}")
         print(f"Number of rows (test): {len(self.test_df)}")

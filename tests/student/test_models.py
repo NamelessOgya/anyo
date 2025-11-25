@@ -16,10 +16,11 @@ def sasrec_datamodule_for_models(): # Renamed to avoid name collision, and for c
 
     dm = SASRecDataModule(
         dataset_name="movielens",
-        data_dir="ref_repositories/iLoRA/data/ref/movielens",
+        data_dir="data/ml-1m",
         batch_size=4,
         max_seq_len=50,
         num_workers=0,
+        limit_data_rows=1000, # Limit rows for testing
         tokenizer=tokenizer
     )
     dm.prepare_data()

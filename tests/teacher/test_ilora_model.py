@@ -50,6 +50,9 @@ def ilora_model_and_data():
     model = iLoRAModel(
         llm=llm,
         tokenizer=tokenizer,
+        item_id_to_name={i: str(i) for i in range(num_items + 1)}, # Dummy map
+        padding_item_id=0, # Dummy padding id
+        llm_dtype=torch.float32, # Dummy dtype
         num_lora_experts=num_lora_experts,
         lora_r=lora_r,
         lora_alpha=lora_alpha,
@@ -59,7 +62,7 @@ def ilora_model_and_data():
         dropout_rate=dropout_rate,
         rec_model=dummy_rec_model,
         projector=dummy_projector,
-        candidate_topk=10  # Add dummy value
+        candidate_topk=10
     ).to(device)
 
     # ダミーのバッチデータを作成

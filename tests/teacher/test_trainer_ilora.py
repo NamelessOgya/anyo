@@ -36,6 +36,8 @@ def ilora_trainer_and_data():
 
     # データモジュール
     dm = SASRecDataModule(
+        dataset_name="movielens",
+        data_dir="data/ml-1m",
         batch_size=2, 
         max_seq_len=20, 
         num_workers=0,

@@ -158,7 +158,7 @@ class DistillationTrainer(pl.LightningModule):
         clamped_item_seq = torch.clamp(item_seq, max=num_items_total)
         zeros_tensor.scatter_(1, clamped_item_seq, 1)
         
-        zeros_tensor.scatter_(1, next_item_original, 1)
+        zeros_tensor.scatter_(1, next_item_original.unsqueeze(1), 1)
         
         zeros_tensor = zeros_tensor[:, :num_items_total]
         
