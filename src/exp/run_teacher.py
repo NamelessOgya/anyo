@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from datetime import datetime
 import sys
+import shutil
+import subprocess
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
 
@@ -126,6 +128,31 @@ def main():
         trainer.test(model=trainer_model, datamodule=dm)
     
     logger.info(f"iLoRA teacher run finished. Results are in: {output_dir}")
+
+    upload_results(cfg, output_dir)
+
+def upload_results(cfg, output_dir):
+    # 7. 結果のアップロード（オプション）
+    if cfg.get("upload_path"):
+        upload_path = Path(cfg.upload_path)
+        logger.info(f"Uploading results to: {upload_path}")
+        try:
+            # Create destination directory if it doesn't exist
+            upload_path.mkdir(parents=True, exist_ok=True)
+            
+            # Use cp -R for faster copy than shutil.copytree
+            # Copy contents of output_dir to upload_path
+            command = f"cp -R {output_dir}/* {upload_path}/"
+            logger.info(f"Executing: {command}")
+            
+            # subprocess.run with shell=True to handle wildcards
+            result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            
+            logger.info("Upload completed successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to upload results (cp command failed): {e.stderr}")
+        except Exception as e:
+            logger.error(f"Failed to upload results: {e}")
 
 if __name__ == "__main__":
     main()
