@@ -317,7 +317,9 @@ class SASRecDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=True, 
             num_workers=self.num_workers,
-            collate_fn=self.collater
+            collate_fn=self.collater,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -326,7 +328,9 @@ class SASRecDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=False, 
             num_workers=self.num_workers,
-            collate_fn=self.collater
+            collate_fn=self.collater,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -335,7 +339,9 @@ class SASRecDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=False, 
             num_workers=self.num_workers,
-            collate_fn=self.collater
+            collate_fn=self.collater,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False
         )
 
 if __name__ == "__main__":

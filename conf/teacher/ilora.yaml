@@ -12,5 +12,6 @@ rec_model_checkpoint_path: /content/drive/MyDrive/rec/anyo/result/student_baseli
 use_flash_attention: True
 
 use_torch_compile: True
+use_gradient_checkpointing: True
 use_qlora: False
 skip_output_generation: false

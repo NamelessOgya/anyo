@@ -48,6 +48,10 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         # llm.resize_token_embeddings will use the passed llm_tokenizer.
         llm.resize_token_embeddings(len(llm_tokenizer))
 
+        if cfg.teacher.get("use_gradient_checkpointing", False):
+            print("Gradient Checkpointing is enabled for LLM.")
+            llm.gradient_checkpointing_enable()
+
         if cfg.teacher.get("rec_model_checkpoint_path"):
             print(f"Loading pre-trained SASRec model from {cfg.teacher.rec_model_checkpoint_path}")
             rec_model = SASRec(
