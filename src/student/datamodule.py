@@ -248,6 +248,11 @@ class SASRecDataModule(pl.LightningDataModule):
         for df in [self.train_df, self.val_df, self.test_df]:
             df['seq'] = df['seq'].apply(lambda x: [int(i) for i in x.split(' ')] if pd.notna(x) and x != '' else [])
 
+        # Filter sequences with length < 3 (Consistent with iLoRA reference)
+        self.train_df = self.train_df[self.train_df['seq'].apply(len) >= 3]
+        self.val_df = self.val_df[self.val_df['seq'].apply(len) >= 3]
+        self.test_df = self.test_df[self.test_df['seq'].apply(len) >= 3]
+
         # Create a combined DataFrame to get all unique user and item IDs for consistent mapping
         # Now this combined_df is also limited by limit_data_rows, which is what we want for testing.
         combined_df = pd.concat([self.train_df, self.val_df, self.test_df], ignore_index=True)

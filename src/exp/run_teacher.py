@@ -98,6 +98,13 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval='step')
     # Use process_position=0 to attempt to fix multiple bars in Colab
     progress_bar = TQDMProgressBar(refresh_rate=50, process_position=0)
+    
+    early_stopping = pl.callbacks.EarlyStopping(
+        monitor="val_hr@10",
+        mode="max",
+        patience=5, # 5 validation checks (2.5 epochs) without improvement
+        verbose=True
+    )
 
     trainer = pl.Trainer(
         default_root_dir=str(output_dir),
@@ -105,7 +112,7 @@ def main():
         accelerator=cfg.train.accelerator,
         devices=cfg.train.devices,
         logger=tb_logger,
-        callbacks=[checkpoint_callback, lr_monitor, progress_bar],
+        callbacks=[checkpoint_callback, lr_monitor, progress_bar, early_stopping],
         val_check_interval=cfg.train.val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps,
         precision=cfg.train.precision,
