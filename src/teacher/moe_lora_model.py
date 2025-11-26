@@ -61,7 +61,14 @@ class MoeLoraModel(torch.nn.Module):
                         fan_in_fan_out=False,
                         bias=module.bias is not None,
                         gate_weights=self.gate_weights, # 共有リストを渡す
-                    ).to(module.weight.device, dtype=module.weight.dtype) # dtypeを明示的に設定
+                    )
+                    
+                    # 元の重みをコピー
+                    new_module.weight.data = module.weight.data.clone()
+                    if module.bias is not None:
+                        new_module.bias.data = module.bias.data.clone()
+                    
+                    new_module.to(module.weight.device, dtype=module.weight.dtype) # dtypeを明示的に設定
                     setattr(parent_module, child_name, new_module)
 
     def forward(self, *args, **kwargs):

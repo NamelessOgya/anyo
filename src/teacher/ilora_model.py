@@ -45,6 +45,10 @@ class iLoRAModel(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.llm_dtype = llm_dtype
         
+        # ベースLLMの全パラメータを凍結
+        for param in llm.parameters():
+            param.requires_grad = False
+
         # LLMをMoeLoraModelでラップする
         self.llm = MoeLoraModel(
             model=llm,
