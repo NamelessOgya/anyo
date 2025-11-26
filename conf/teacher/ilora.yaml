@@ -11,7 +11,7 @@ rec_model_checkpoint_path: /content/drive/MyDrive/rec/anyo/result/student_baseli
 # teacher_checkpoint_path: null # 学習済みモデルのパス (run_distill, run_eval_allで使用)
 use_flash_attention: True
 
-use_torch_compile: True
-use_gradient_checkpointing: False
+use_torch_compile: False
+use_gradient_checkpointing: True
 use_qlora: False
 skip_output_generation: false

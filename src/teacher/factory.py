@@ -50,7 +50,11 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
 
         if cfg.teacher.get("use_gradient_checkpointing", False):
             print("Gradient Checkpointing is enabled for LLM.")
-            llm.gradient_checkpointing_enable()
+            # use_reentrant=False is generally recommended for newer PyTorch versions and can save memory
+            # パラメータを凍結している場合、入力(Embeddings)に勾配を持たせないとCheckpointingが機能しないため、
+            # enable_input_require_grads() を呼び出す必要があります。
+            llm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            llm.enable_input_require_grads()
 
         if cfg.teacher.get("rec_model_checkpoint_path"):
             print(f"Loading pre-trained SASRec model from {cfg.teacher.rec_model_checkpoint_path}")
