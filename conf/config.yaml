@@ -1,0 +1,14 @@
+defaults:
+  - _self_
+  - experiment: ilora_movielens
+
+# Basic experiment settings
+seed: 42
+
+# Optional: Path to upload results after execution (e.g., to Google Drive)
+upload_path: null
+
+run:
+  dir: "result/result_${now:%Y%m%d_%H%M%S}"
+job:
+  chdir: true

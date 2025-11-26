@@ -1,0 +1,3 @@
+defaults:
+  - distill
+batch_size: 512

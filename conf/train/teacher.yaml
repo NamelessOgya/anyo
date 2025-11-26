@@ -1,0 +1,12 @@
+batch_size: 32
+max_epochs: 4
+learning_rate: 0.0008 # Reference: 8e-4
+weight_decay: 0.01
+accelerator: gpu # cpu or gpu
+precision: bf16-mixed
+
+devices: 1 # GPUの数
+num_workers: 4 # DataLoaderのワーカー数
+val_check_interval: 0.5 # 0.5は半エポックごとに検証
+log_every_n_steps: 10
+accumulate_grad_batches: 4 # 32 * 4 = 128 (Matches iLoRA effective batch size)

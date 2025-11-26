@@ -1,0 +1,61 @@
+seed: 42
+run:
+  dir: result/result_${now:%Y%m%d_%H%M%S}
+job:
+  chdir: true
+dataset:
+  name: movielens
+  data_dir: data/ml-1m
+  limit_data_rows: -1
+teacher:
+  model_type: ilora
+  llm_model_name: facebook/opt-125m
+  num_lora_experts: 3
+  lora_r: 9
+  lora_alpha: 16
+  lora_dropout: 0.05
+  hidden_size: 64
+  dropout_rate: 0.1
+  max_gen_length: 20
+  rec_model_checkpoint_path: /workspace/result/result_20251118_100122/checkpoints/best_model.ckpt
+student:
+  model_type: sasrec
+  hidden_size: 64
+  num_heads: 2
+  num_layers: 2
+  dropout_rate: 0.1
+  max_seq_len: 50
+distill:
+  ranking_loss_weight: 1.0
+  embedding_loss_weight: 1.0
+  ce_loss_weight: 1.0
+  ranking_temperature: 2.0
+  embedding_loss_type: mse
+  teacher_checkpoint_path: /workspace/result/result_20251118_073225/checkpoints/best_teacher_model.ckpt
+  teacher_outputs_batches_dir: ???
+  ed_weight: 0.1
+  gamma_position: 1.0
+  gamma_confidence: 1.0
+  gamma_consistency: 1.0
+  candidate_topk: 10
+  alpha: 0.0
+  beta: 1.0
+  ps_power: 0.05
+  lam: 0.8
+  num_neg_samples: 1
+eval:
+  metrics_k: 10
+  batch_size: 128
+  baseline_student_checkpoint_path: /workspace/result/result_20251117_025803/checkpoints/best_model.ckpt
+  distilled_student_checkpoint_path: /workspace/result/result_20251117_025321/checkpoints/best_distilled_student_model.ckpt
+  teacher_checkpoint_path: /workspace/result/result_20251117_025729/checkpoints/best_teacher_model.ckpt
+train:
+  batch_size: 256
+  max_epochs: 1
+  learning_rate: 0.001
+  weight_decay: 0.01
+  accelerator: gpu
+  devices: 1
+  num_workers: 4
+  val_check_interval: 1.0
+  log_every_n_steps: 50
