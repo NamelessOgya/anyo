@@ -38,6 +38,15 @@ def ilora_model_and_data():
             self.item_embeddings = nn.Embedding(num_items_rec + 1, hidden_size_rec)
             self.cacu_x = lambda x: self.item_embeddings(x)
             self.cacul_h = lambda x, y: torch.randn(x.shape[0], hidden_size_rec).to(x.device)
+            self.hidden_size = hidden_size_rec
+
+        def get_full_sequence_representations(self, item_seq, item_seq_len):
+            batch_size, seq_len = item_seq.shape
+            return torch.randn(batch_size, seq_len, self.hidden_size).to(item_seq.device)
+
+        def _get_last_item_representation(self, item_seq, item_seq_len):
+            batch_size = item_seq.shape[0]
+            return torch.randn(batch_size, self.hidden_size).to(item_seq.device)
     
     dummy_rec_model = DummyRecModel(hidden_size, num_items).to(device)
     dummy_projector = MLPProjector(
@@ -50,6 +59,9 @@ def ilora_model_and_data():
     model = iLoRAModel(
         llm=llm,
         tokenizer=tokenizer,
+        item_id_to_name={i: str(i) for i in range(num_items + 1)}, # Dummy map
+        padding_item_id=0, # Dummy padding id
+        llm_dtype=torch.float32, # Dummy dtype
         num_lora_experts=num_lora_experts,
         lora_r=lora_r,
         lora_alpha=lora_alpha,
@@ -59,7 +71,7 @@ def ilora_model_and_data():
         dropout_rate=dropout_rate,
         rec_model=dummy_rec_model,
         projector=dummy_projector,
-        candidate_topk=10  # Add dummy value
+        candidate_topk=10
     ).to(device)
 
     # ダミーのバッチデータを作成
@@ -79,7 +91,8 @@ def ilora_model_and_data():
     })
 
     batch = {
-        "tokens": tokens_batch_encoding,
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
         "seq": seq,
         "len_seq": len_seq,
         "cans": cans,

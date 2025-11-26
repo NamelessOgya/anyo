@@ -1,3 +1,3 @@
 name: movielens
 data_dir: data/ml-1m
-limit_data_rows: 5000
+limit_data_rows: -1

@@ -1,114 +1,173 @@
+# coding=utf-8
 import logging
-import time # Import time module
+import time
+from typing import Dict, Any, List, Tuple, Optional
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.optim import AdamW
-from typing import Dict, Any
-import torch.nn.functional as F # Import F
+from transformers import get_linear_schedule_with_warmup
 
 from src.teacher.ilora_model import iLoRAModel
 from src.core.metrics import calculate_metrics
 
-logger = logging.getLogger(__name__) # Added module-level logger
+logger = logging.getLogger(__name__)
+
 
 class iLoRATrainer(pl.LightningModule):
-    def __init__(self, 
-                 ilora_model: iLoRAModel,
-                 num_items: int,
-                 learning_rate: float = 1e-4,
-                 weight_decay: float = 0.01,
-                 metrics_k: int = 10,
-                 item_id_to_name: Dict[int, str] = None): # item_id_to_nameを追加
+    """
+    iLoRAモデルの学習および評価を行うPyTorch Lightning Module。
+    """
+    def __init__(
+        self,
+        ilora_model: iLoRAModel,
+        num_items: int,
+        learning_rate: float,
+        weight_decay: float,
+        metrics_k: int,
+        item_id_to_name: Dict[int, str],
+        warmup_steps: int = 0,
+        max_steps: int = 1000,
+    ):
         super().__init__()
-        # ilora_modelは複雑なオブジェクトなのでignoreする
-        # item_id_to_nameも直接保存せず、ilora_model経由でアクセスする
-        self.save_hyperparameters(ignore=['ilora_model', 'item_id_to_name']) 
-
+        self.save_hyperparameters(ignore=["ilora_model"])
         self.model = ilora_model
+        self.num_items = num_items
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.metrics_k = metrics_k
-        self.loss_fn = F.cross_entropy # Use F.cross_entropy directly
-        self.training_epoch_start_time = 0.0 # Initialize start time for epoch duration
-
+        self.item_id_to_name = item_id_to_name
+        self.warmup_steps = warmup_steps
+        self.max_steps = max_steps
 
     def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
-        # iLoRAModel.forward returns outputs object from LLM
+        """
+        学習ステップのフォワードパス。
+        """
         return self.model(batch)
 
-    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        outputs = self.forward(batch)
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
+        """
+        1回の学習ステップ。
+        iLoRAのランキングスコアを使用してCross Entropy Lossを計算します。
+        """
+        start_time = time.time()
         
-        # Extract last hidden state from LLM outputs
-        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+        # 蒸留用出力の取得（ランキングスコアを含む）
+        outputs = self.model.get_teacher_outputs(batch)
+        ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
         
-        # Project last hidden state to num_items logits using item_prediction_head
-        logits = self.model.item_prediction_head(last_hidden_state)
+        # 正解アイテムのID (1-based)
+        target_items = batch["next_item"] # (batch_size,)
         
-        # Get next_item from batch for loss calculation
-        next_item = batch["next_item"].squeeze(-1) - 1 # Convert 1-indexed to 0-indexed for CrossEntropyLoss
+        # Cross Entropy Lossの計算
+        # ranking_scoresは0-based index (0 -> Item 1) なので、target_itemsから1を引く
+        loss = F.cross_entropy(ranking_scores, target_items - 1)
+
+        # 損失と学習時間をログに記録
+        self.log("train_loss_step", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        self.log("train_loss_epoch", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
-        # Calculate loss using the projected logits and next_item
-        loss = self.loss_fn(logits, next_item)
-        
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        duration = time.time() - start_time
+        self.log("epoch_duration_seconds", duration, on_step=False, on_epoch=True, logger=True)
+
         return loss
 
-    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        outputs = self.forward(batch)
-        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Dict[str, torch.Tensor]:
+        """
+        検証ステップ。
+        iLoRAのランキングスコアを使用して、Hit Ratio (HR) や NDCG などのメトリクスを計算します。
+        """
+        # 蒸留用出力の取得（ランキングスコアを含む）
+        outputs = self.model.get_teacher_outputs(batch)
+        ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
         
-        logits = self.model.item_prediction_head(last_hidden_state)
-        next_item = batch["next_item"].squeeze(-1) - 1 # Convert 1-indexed to 0-indexed for CrossEntropyLoss
-        loss = self.loss_fn(logits, next_item)
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # 正解アイテムのID
+        target_items = batch["next_item"] # (batch_size,)
 
-        # Metric calculation
-        _, predicted_indices = torch.topk(logits, k=self.metrics_k, dim=1)
-        predictions = predicted_indices.tolist()
+        # メトリクスの計算 (HR@K, NDCG@K)
+        # 上位K個のアイテムを取得
+        _, topk_indices = torch.topk(ranking_scores, k=self.metrics_k, dim=-1) # (batch_size, k)
         
-        ground_truths_list = []
-        for item_id_tensor in next_item:
-            item_id = item_id_tensor.item()
-            # Assuming padding_item_id is not present here or handled by the datamodule
-            ground_truths_list.append([item_id])
+        # topk_indicesは0-basedなので、1を足してItem IDに変換
+        topk_item_ids = topk_indices + 1
         
-        metrics = calculate_metrics(predictions, ground_truths_list, k=self.metrics_k)
-        for metric_name, metric_value in metrics.items():
-            self.log(f"val_{metric_name}", metric_value, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        
-        return {"val_loss": loss}
+        hits = torch.zeros(target_items.size(0), device=self.device)
+        ndcgs = torch.zeros(target_items.size(0), device=self.device)
 
+        for i in range(target_items.size(0)):
+            target = target_items[i]
+            if target in topk_item_ids[i]:
+                hits[i] = 1.0
+                # NDCG計算: 正解がランクのどこにあるか
+                rank = (topk_item_ids[i] == target).nonzero(as_tuple=True)[0].item()
+                ndcgs[i] = 1.0 / torch.log2(torch.tensor(rank + 2.0))
+
+        self.log(f"val_hr@{self.metrics_k}", hits.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log(f"val_ndcg@{self.metrics_k}", ndcgs.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        return {"val_loss": 0.0} # ダミーの損失
+
+    def configure_optimizers(self):
+        """
+        オプティマイザとスケジューラの設定。
+        """
+        # 重み減衰の適用（バイアスとLayerNormを除く）
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad],
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad],
+                "weight_decay": 0.0,
+            },
+        ]
+        
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.learning_rate)
+        
+        # 線形ウォームアップ付きのスケジューラ
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer, num_warmup_steps=self.warmup_steps, num_training_steps=self.max_steps
+        )
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
+        }
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        outputs = self.forward(batch)
-        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
-        logits = self.model.item_prediction_head(last_hidden_state)
-        next_item = batch["next_item"].squeeze(-1) # Squeeze to (batch_size,)
-        loss = self.loss_fn(logits, next_item)
-        self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # 蒸留用出力の取得（ランキングスコアを含む）
+        outputs = self.model.get_teacher_outputs(batch)
+        ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
+        
+        # 正解アイテムのID
+        target_items = batch["next_item"] # (batch_size,)
 
         # Metric calculation
-        _, predicted_indices = torch.topk(logits, k=self.metrics_k, dim=1)
-        predictions = predicted_indices.tolist()
+        _, predicted_indices = torch.topk(ranking_scores, k=self.metrics_k, dim=1)
+        
+        # 0-based indices -> 1-based Item IDs
+        predicted_item_ids = predicted_indices + 1
+        predictions = predicted_item_ids.tolist()
         
         ground_truths_list = []
-        for item_id_tensor in next_item:
+        for item_id_tensor in target_items:
             item_id = item_id_tensor.item()
-            # Assuming padding_item_id is not present here or handled by the datamodule
             ground_truths_list.append([item_id])
 
         metrics = calculate_metrics(predictions, ground_truths_list, k=self.metrics_k)
         for metric_name, metric_value in metrics.items():
             self.log(f"test_{metric_name}", metric_value, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
-        return {"test_loss": loss}
+        return {"test_loss": 0.0} # Dummy loss
 
-    def configure_optimizers(self) -> Any:
-        # iLoRAでは、LoRAアダプターとゲーティングネットワークのパラメータのみを学習対象とする
-        # LLMのベースモデルのパラメータはフリーズされている
-        trainable_params = [n for n, p in self.model.named_parameters() if p.requires_grad]
-        logger.info(f"Trainable parameters: {trainable_params}") # Changed to logger.info
-        optimizer = AdamW(self.model.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
-        return optimizer
+
 
     def on_train_epoch_start(self):
         if torch.cuda.is_available():
@@ -124,6 +183,33 @@ class iLoRATrainer(pl.LightningModule):
         epoch_duration = time.time() - self.training_epoch_start_time
         self.log("epoch_duration_seconds", epoch_duration, prog_bar=True, logger=True)
         logger.info(f"Epoch duration: {epoch_duration:.2f} seconds")
+
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        """
+        チェックポイント保存時に呼び出されます。
+        凍結されたパラメータ（ベースLLMの重みなど）をstate_dictから削除して、
+        ファイルサイズを削減します。
+        """
+        state_dict = checkpoint["state_dict"]
+        
+        # 学習可能なパラメータの名前を取得
+        trainable_param_names = {n for n, p in self.named_parameters() if p.requires_grad}
+        # 全パラメータの名前を取得（バッファの判定用）
+        all_param_names = {n for n, p in self.named_parameters()}
+        
+        keys_to_keep = []
+        for key in state_dict.keys():
+            if key in trainable_param_names:
+                keys_to_keep.append(key)
+            elif key not in all_param_names:
+                # named_parametersに含まれないキーはバッファ（running_meanなど）とみなして保存
+                keys_to_keep.append(key)
+        
+        # フィルタリングされたstate_dictを作成
+        new_state_dict = {k: v for k, v in state_dict.items() if k in keys_to_keep}
+        checkpoint["state_dict"] = new_state_dict
+        
+        logger.info(f"Checkpoint optimized: Reduced state_dict from {len(state_dict)} to {len(new_state_dict)} keys.")
 
 if __name__ == "__main__":
     # テスト用のダミーデータとデータモジュール

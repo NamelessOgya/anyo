@@ -148,3 +148,21 @@
   - 各損失（ranking, embedding, ce）が正しく計算され、合計損失に反映されることを確認する。
   - 教師モデルのパラメータが学習中に更新されないことを確認する。
   - **更新:** 以前発生していた`RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn`は解決され、現在パスしています。
+
+---
+
+## 5. `tests/reproducibility` (New Tests)
+
+### 5.1. `test_model_behavior.py`
+- **`test_ilora_output_behavior` (Test 38)**:
+  - `iLoRAModel.get_teacher_outputs` が正しいキー（`ranking_scores`, `embeddings`, `candidates`, `confidence`）と形状を返すことを確認する。
+- **`test_ilora_training_step_logic` (Test 39)**:
+  - `iLoRATrainer` の `training_step` が `ranking_scores` を用いて CrossEntropyLoss を正しく計算し、勾配が伝播することを確認する。
+
+### 5.2. `test_trainer_correctness.py`
+- **`test_sasrec_trainer_steps` (Test 41)**:
+  - `SASRecTrainer` の `training_step`, `validation_step`, `test_step` が正常に実行され、有効な損失とメトリクスを生成することを確認する。
+- **`test_ilora_trainer_steps` (Test 42)**:
+  - `iLoRATrainer` のステップを検証。特に `NoneType` 損失が防止されていること、およびメトリクス計算におけるインデックス処理（1-based vs 0-based）が正しいことを確認する。
+- **`test_distillation_trainer_steps` (Test 43)**:
+  - `DistillationTrainer` のステップを検証。特に `CrossEntropyLoss`, `DROLoss`, メトリクス計算におけるインデックス処理が正しいことを確認する。

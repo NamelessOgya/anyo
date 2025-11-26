@@ -128,8 +128,8 @@ class SASRec(nn.Module):
         # predictではプロジェクション前の表現を使用
         last_item_representation_for_prediction = self._get_last_item_representation(item_seq, item_seq_len)
         # 全アイテム埋め込みとの内積を計算
-        # 有効なアイテム (0 to num_items-1) の埋め込みを取得
-        valid_item_embeds = self.item_embeddings.weight[:self.num_items, :]
+        # 有効なアイテム (1 to num_items) の埋め込みを取得 (0はパディング)
+        valid_item_embeds = self.item_embeddings.weight[1:self.num_items+1, :]
         # (batch_size, hidden_size) @ (hidden_size, num_items) -> (batch_size, num_items)
         scores = torch.matmul(last_item_representation_for_prediction, valid_item_embeds.transpose(0, 1))
         return scores

@@ -111,12 +111,14 @@
 ├── ref_repositories/              # 参考用の外部リポジトリ（import禁止）
 │   ├── ilora/
 │   └── dllm2rec/
-└── docs/
-    ├── implement.md               # 実装メモ（日本語, 実装状況/注意点を記録）
-    └── specification/             # 仕様書・設計書置き場（Markdown）
-        ├── 00_overview.md         # ← 本仕様書をここに保存することを推奨（例）
-        ├── 01_container_env.md    # 他の仕様書を分割する場合の例
-        └── ...                    # 必要に応じて追加
+├── docs/
+│   ├── implement.md               # 実装メモ（日本語, 実装状況/注意点を記録）
+│   ├── archive/                   # 過去の資料・引き継ぎノート（完了分）
+│   └── specification/             # 仕様書・設計書置き場（Markdown）
+│       ├── 00_overview.md         # ← 本仕様書
+│       ├── 03_test_cases.md       # テストケース定義
+│       ├── 04_execution_guide.md  # 実行・実験ガイド（Colab/FlashAttn含む）
+│       └── ...                    # その他仕様書
 ```
 
 ### 3.1 docs ディレクトリの運用ルール（★重要）

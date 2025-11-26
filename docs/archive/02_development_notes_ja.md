@@ -298,6 +298,21 @@ DLLM2RecのDRO (Distributionally Robust Optimization) 損失を再現するた�
 
 これらの変更により、DLLM2RecのDRO損失ロジックが本プロジェクトに統合され、関連するテストもパスする状態になりました。
 
+### 8.5. Trainer Correctness Fixes (2025-11-25)
+
+`iLoRATrainer` および `DistillationTrainer` における損失計算とメトリクス評価の正確性を担保するため、以下の修正を行いました。
+
+*   **`iLoRATrainer` の修正**:
+    *   `training_step` において `outputs.loss` が `None` になる問題を修正しました。`ranking_scores` と `next_item` を用いて手動で `CrossEntropyLoss` を計算するように変更しました。
+    *   `validation_step` および `test_step` において、1-based のアイテムIDと 0-based のインデックス（`ranking_scores` の出力）の不整合を修正しました。予測されたインデックスに +1 することで正しいアイテムIDとして評価するようにしました。
+*   **`DistillationTrainer` の修正**:
+    *   `training_step` において、1-based の `next_item` をそのまま `CrossEntropyLoss` に渡していたバグ（`IndexError` の原因）を修正しました。0-based に変換してから損失関数に渡すようにしました。
+    *   `DROLoss` および `WeightedBCELoss` に渡すターゲットも同様に 0-based に統一しました。
+    *   `validation_step` および `test_step` におけるメトリクス計算で、予測（0-based）と正解（1-based）の不整合を修正しました。正解データを 0-based に変換して比較するように統一しました。
+    *   `scatter_` 操作における次元不整合エラー（`RuntimeError`）を修正しました。
+*   **テストの追加**:
+    *   これらの修正を検証し、再発を防止するために `tests/reproducibility/test_trainer_correctness.py` を作成し、Test 41, 42, 43 を実装しました。
+
 #### 5.5.2. 現在の課題と次のエージェントへの依頼事項
 
 iLoRAロジックのリファクタリングと関連するテストの修正は完了し、教師モデルの学習が正常に実行されることを確認しました。

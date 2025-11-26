@@ -36,16 +36,46 @@ def distill_trainer_and_data():
     tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
     llm.resize_token_embeddings(len(tokenizer))
 
-    # データモジュール
-    dm = SASRecDataModule(
-        batch_size=2, 
-        max_seq_len=20, 
-        num_workers=0,
-        tokenizer=tokenizer # Pass tokenizer
-    )
-    dm.prepare_data()
-    dm.setup()
+    # Mock DataModule
+    class MockSASRecDataModule(pl.LightningDataModule):
+        def __init__(self, tokenizer, batch_size=2, max_seq_len=20):
+            super().__init__()
+            self.tokenizer = tokenizer
+            self.batch_size = batch_size
+            self.max_seq_len = max_seq_len
+            self.num_items = 1000
+            self.padding_item_id = 0
+            self.mapped_id_to_title = {i: str(i) for i in range(self.num_items + 1)}
 
+        def setup(self, stage=None):
+            pass
+
+        def train_dataloader(self):
+            # Create dummy batch
+            input_ids = torch.randint(0, len(self.tokenizer), (self.batch_size, self.max_seq_len))
+            attention_mask = torch.ones((self.batch_size, self.max_seq_len), dtype=torch.long)
+            seq = torch.randint(1, self.num_items, (self.batch_size, self.max_seq_len))
+            len_seq = torch.randint(1, self.max_seq_len + 1, (self.batch_size,))
+            cans = torch.randint(1, self.num_items, (self.batch_size, 20))
+            len_cans = torch.randint(1, 21, (self.batch_size,))
+            item_id = torch.randint(1, self.num_items, (self.batch_size,))
+            next_item = torch.randint(1, self.num_items, (self.batch_size,))
+            
+            batch = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "seq": seq,
+                "len_seq": len_seq,
+                "cans": cans,
+                "len_cans": len_cans,
+                "item_id": item_id,
+                "next_item": next_item
+            }
+            return torch.utils.data.DataLoader([batch], batch_size=None) # Return list of 1 batch
+
+    dm = MockSASRecDataModule(tokenizer=tokenizer)
+    dm.setup()
+    
     # Propensity Scoresの計算
     train_next_items = []
     for batch in dm.train_dataloader():
@@ -65,7 +95,8 @@ def distill_trainer_and_data():
         num_layers=2,
         dropout_rate=0.1,
         max_seq_len=20,
-        teacher_embedding_dim=llm.config.hidden_size
+        teacher_embedding_dim=llm.config.hidden_size,
+        padding_item_id=dm.padding_item_id # padding_item_idを追加
     ).to(device)
     student_model_instance.train()
 
@@ -77,7 +108,8 @@ def distill_trainer_and_data():
         num_layers=2,
         dropout_rate=0.1,
         max_seq_len=20,
-        teacher_embedding_dim=llm.config.hidden_size
+        teacher_embedding_dim=llm.config.hidden_size,
+        padding_item_id=dm.padding_item_id # padding_item_idを追加
     ).to(device)
     dummy_rec_model.eval() # 評価モード
     for param in dummy_rec_model.parameters():
@@ -86,6 +118,9 @@ def distill_trainer_and_data():
     teacher_model_instance = iLoRAModel(
         llm=llm,
         tokenizer=tokenizer,
+        item_id_to_name=dm.mapped_id_to_title, # dmから渡す
+        padding_item_id=dm.padding_item_id, # dmから渡す
+        llm_dtype=torch.float32, #
         num_lora_experts=teacher_cfg.num_lora_experts,
         lora_r=teacher_cfg.lora_r,
         lora_alpha=teacher_cfg.lora_alpha,
@@ -101,7 +136,8 @@ def distill_trainer_and_data():
             dropout_rate=teacher_cfg.dropout_rate
         ),
         candidate_topk=10
-    )
+    ).to(device)
+    
     # 蒸留トレーナーのインスタンス化
     distill_trainer_no_dro = DistillationTrainer(
         student_model=student_model_instance,
@@ -122,6 +158,7 @@ def distill_trainer_and_data():
         gamma_consistency=1.0,
         candidate_topk=10,
         ed_weight=0.1,
+        num_neg_samples=5, # Add missing argument
         alpha=0.0, # DRO無効
         beta=1.0,
         propensity_scores=propensity_scores,
@@ -147,6 +184,7 @@ def distill_trainer_and_data():
         gamma_consistency=1.0,
         candidate_topk=10,
         ed_weight=0.1,
+        num_neg_samples=5, # Add missing argument
         alpha=0.5, # DRO有効
         beta=1.0,
         propensity_scores=propensity_scores,

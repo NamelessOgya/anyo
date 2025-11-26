@@ -38,7 +38,7 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             print("QLoRA is configured but temporarily disabled.")
 
         if cfg.train.get("precision") == "bf16-mixed":
-             llm_load_kwargs["dtype"] = torch.bfloat16
+             llm_load_kwargs["torch_dtype"] = torch.bfloat16
 
         print("DEBUG: Attempting to load LLM from_pretrained...")
         llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
@@ -47,6 +47,14 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         # Removed internal tokenizer creation and special token handling.
         # llm.resize_token_embeddings will use the passed llm_tokenizer.
         llm.resize_token_embeddings(len(llm_tokenizer))
+
+        if cfg.teacher.get("use_gradient_checkpointing", False):
+            print("Gradient Checkpointing is enabled for LLM.")
+            # use_reentrant=False is generally recommended for newer PyTorch versions and can save memory
+            # パラメータを凍結している場合、入力(Embeddings)に勾配を持たせないとCheckpointingが機能しないため、
+            # enable_input_require_grads() を呼び出す必要があります。
+            llm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            llm.enable_input_require_grads()
 
         if cfg.teacher.get("rec_model_checkpoint_path"):
             print(f"Loading pre-trained SASRec model from {cfg.teacher.rec_model_checkpoint_path}")
@@ -100,6 +108,11 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             padding_item_id=padding_item_id,
             llm_dtype=llm.dtype, # Pass the LLM's dtype
         )
+
+        if cfg.teacher.get("use_torch_compile", False):
+            print("Compiling teacher model with torch.compile...")
+            model = torch.compile(model)
+            
         return model
     else:
         raise ValueError(f"Unknown teacher model type: {model_type}")

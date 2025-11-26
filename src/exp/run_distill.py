@@ -1,19 +1,9 @@
-import sys
-import hydra
-from omegaconf import DictConfig, OmegaConf
-import logging
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from src.core.callbacks import CustomRichProgressBar
-from pytorch_lightning.loggers import TensorBoardLogger
-import re 
-from pathlib import Path
-from datetime import datetime
-
+from src.core.config_utils import load_hydra_config
 from src.core.paths import get_project_root
 from src.core.seed import set_seed
 from src.core.logging import setup_logging
 from src.core.git_info import get_git_info
+from omegaconf import OmegaConf
 
 from src.student.datamodule import SASRecDataModule
 from src.student.models import SASRec
@@ -27,24 +17,25 @@ from src.distill.teacher_output_dataset import TeacherOutputDataset, teacher_out
 from torch.utils.data import DataLoader
 import torch
 
+import logging
+import sys
+from pathlib import Path
+from datetime import datetime
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
+
 logger = logging.getLogger(__name__)
 
 def main():
-    # --- Manual Hydra Initialization ---
-    try:
-        overrides = sys.argv[1:]
-        with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="distill_run"):
-            cfg = hydra.compose(config_name="config", overrides=overrides)
-    except Exception as e:
-        print(f"Hydra initialization failed: {e}")
-        return
-    # --- End Manual Hydra Initialization ---
-
-    # 1. ロギング、シード、Git情報の初期化
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = get_project_root() / "result" / f"distill_{timestamp}"
+    # --- Centralized Hydra Initialization ---
+    overrides = sys.argv[1:]
+    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
+    
+    # Use cfg.run.dir
+    output_dir = Path(cfg.run.dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"!!! SCRIPT RUNNING. MANUALLY CREATED OUTPUT DIR: {output_dir} !!!")
+    print(f"!!! SCRIPT RUNNING. OUTPUT DIR: {output_dir} !!!")
 
     with open(output_dir / "config.yaml", "w") as f:
         f.write(OmegaConf.to_yaml(cfg))

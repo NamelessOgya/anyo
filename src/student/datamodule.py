@@ -11,12 +11,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 class SASRecDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, max_seq_len: int, num_items: int, item_id_to_name: Dict[int, str]):
+    def __init__(self, df: pd.DataFrame, max_seq_len: int, num_items: int, item_id_to_name: Dict[int, str], num_candidates: int, padding_item_id: int, id_to_history_part: Dict[int, str], id_to_candidate_part: Dict[int, str]):
         self.df = df
         self.max_seq_len = max_seq_len
         self.num_items = num_items
-        self.padding_item_id = 0 # 0をパディング用のIDとする
+        self.padding_item_id = padding_item_id
         self.item_id_to_name = item_id_to_name
+        self.num_candidates = num_candidates
+        self.id_to_history_part = id_to_history_part
+        self.id_to_candidate_part = id_to_candidate_part
+        
+        # Valid item IDs for negative sampling (exclude padding)
+        self.valid_item_ids = [i for i in self.item_id_to_name.keys() if i != self.padding_item_id]
 
     def __len__(self):
         return len(self.df)
@@ -26,64 +32,126 @@ class SASRecDataset(Dataset):
         seq_ids = row['seq']
         next_item_id = row['next_item']
         
-        # item_id_to_name is 1-indexed, so we use original IDs for lookup
-        seq_names = [self.item_id_to_name.get(i, "") for i in seq_ids]
+        seq_len = len(seq_ids)
+        
+        # --- Prompt Construction Parts ---
+        # 1. History String
+        # Use last max_seq_len items or fewer
+        history_ids = seq_ids[-self.max_seq_len:] if seq_len > 0 else []
+        # パディングIDを除外
+        history_ids = [i for i in history_ids if i != self.padding_item_id]
+        
+        # Use pre-computed strings for efficiency
+        history_parts = [self.id_to_history_part.get(i, str(i)) for i in history_ids]
+        history_str = ", ".join(history_parts)
+        
+        # 2. Candidates String (Negative Sampling)
+        # 履歴に含まれるアイテムと正解アイテムを除外セットに追加
+        exclude_set = set(history_ids) | {next_item_id}
+        
+        # 除外セットに含まれないアイテムを候補プールとする
+        candidates_pool = [i for i in self.valid_item_ids if i not in exclude_set]
+        
+        # Sample negatives
+        num_negatives = self.num_candidates - 1
+        # 候補プールから負例をサンプリング
+        if len(candidates_pool) >= num_negatives:
+            negatives = np.random.choice(candidates_pool, num_negatives, replace=False).tolist()
+        else:
+            # 候補が足りない場合は重複を許容してサンプリング
+            negatives = np.random.choice(self.valid_item_ids, num_negatives, replace=True).tolist()
+        
+        # 正解アイテムと負例を合わせて候補リストを作成し、シャッフル
+        candidates = negatives + [next_item_id]
+        np.random.shuffle(candidates)
+        
+        # Use pre-computed strings for efficiency
+        candidates_parts = [self.id_to_candidate_part.get(i, str(i)) for i in candidates]
+        candidates_str = ", ".join(candidates_parts)
 
         return {
             "seq_ids": seq_ids,
-            "seq_names": seq_names,
             "next_item_id": next_item_id,
+            "history_str": history_str,
+            "candidates_str": candidates_str,
+            "candidates": candidates, # Return candidate IDs
         }
 
 class TeacherTrainCollater:
+    """
+    Teacherモデルの学習用コレーター。
+    バッチ内の各サンプルに対して、iLoRA形式のプロンプトを作成し、
+    トークナイズとパディングを行います。
+    """
     def __init__(self, tokenizer: AutoTokenizer, max_seq_len: int, padding_item_id: int):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.padding_item_id = padding_item_id
+        
+        # iLoRAのプロンプトテンプレート
+        # [HistoryHere] は視聴履歴の映画タイトルリストに置換されます
+        # [CansHere] は候補映画タイトルリスト（正解 + 負例）に置換されます
+        self.prompt_template = "This user has watched [HistoryHere] in the previous. Please predict the next movie this user will watch. Choose the answer from the following 20 movie titles: [CansHere]. Answer:"
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         
         # --- 1. Pad sequences and gather lengths ---
-        padded_seqs = []
-        len_seqs = []
+        padded_seqs: List[List[int]] = []
+        len_seqs: List[int] = []
+        prompts: List[str] = []
+        next_items: List[int] = []
+        
         for sample in batch:
             seq = sample["seq_ids"]
+            next_item = sample["next_item_id"]
+            next_items.append(next_item) # Collect next_item_id for the final batch
+            
             seq_len = len(seq)
-            len_seqs.append(min(seq_len, self.max_seq_len))
+            current_seq_len = min(seq_len, self.max_seq_len)
+            len_seqs.append(current_seq_len)
+            
+            # Padding logic
             if seq_len < self.max_seq_len:
                 padded_seq = [self.padding_item_id] * (self.max_seq_len - seq_len) + seq
             else:
                 padded_seq = seq[-self.max_seq_len:]
             padded_seqs.append(padded_seq)
+            
+            # --- Prompt Construction ---
+            # Use pre-computed strings from dataset
+            history_str = sample["history_str"]
+            candidates_str = sample["candidates_str"]
+            
+            # 3. Fill Template
+            prompt = self.prompt_template.replace("[HistoryHere]", history_str).replace("[CansHere]", candidates_str)
+            prompts.append(prompt)
 
-        # --- 2. Build prompts and tokenize ---
-        # Create a fixed prompt template with a placeholder for the history.
-        # The history part will consist of max_seq_len [HistoryEmb] tokens.
-        history_placeholder = "".join(["[HistoryEmb]"] * self.max_seq_len)
-        prompt_template = f"This user has watched {history_placeholder} in the previous. Please predict the next movie this user will watch. Answer:"
-        
-        # All samples in the batch use the same prompt template.
-        prompts = [prompt_template] * len(batch)
-
+        # --- 2. Tokenize Prompts ---
+        # プロンプトのトークナイズ
         tokenized_inputs = self.tokenizer(
             prompts,
             return_tensors="pt",
-            padding="max_length", # This will pad the template itself if it's shorter than max_length
-            truncation=True,    # This will truncate the template if it's longer than max_length
-            max_length=256, # Increase max_length to ensure the template fits
+            padding="max_length",
+            truncation=True,
+            max_length=512, # Increased for text prompts
         )
 
         # --- 3. Collate other fields and convert to tensor ---
-        next_items = [sample["next_item_id"] for sample in batch]
+        # next_items = [sample["next_item_id"] for sample in batch] # Already collected in the loop
+        
+        candidates_batch = [sample["candidates"] for sample in batch]
+        len_cans = [len(c) for c in candidates_batch]
 
         # --- 4. Return the final batch dictionary ---
         return {
             "seq": torch.LongTensor(padded_seqs),
             "len_seq": torch.LongTensor(len_seqs),
             "next_item": torch.LongTensor(next_items),
-            # Add tokenized prompts to the batch
+            "cans": torch.LongTensor(candidates_batch), # (batch_size, num_candidates)
+            "len_cans": torch.LongTensor(len_cans),
             "input_ids": tokenized_inputs["input_ids"],
             "attention_mask": tokenized_inputs["attention_mask"],
+            "prompts": prompts # Useful for debugging/logging
         }
 
 
@@ -131,6 +199,7 @@ class SASRecDataModule(pl.LightningDataModule):
                  train_file: str = "train.csv",
                  val_file: str = "val.csv",
                  test_file: str = "test.csv",
+                 num_candidates: int = 20, # Added num_candidates (cans_num)
                  seed: int = 42):
         super().__init__()
         self.dataset_name = dataset_name
@@ -144,6 +213,7 @@ class SASRecDataModule(pl.LightningDataModule):
         self.train_file = train_file
         self.val_file = val_file
         self.test_file = test_file
+        self.num_candidates = num_candidates # Store num_candidates
         self.seed = seed
 
     def prepare_data(self):
@@ -152,6 +222,12 @@ class SASRecDataModule(pl.LightningDataModule):
         pass
 
     def setup(self, stage: Optional[str] = None):
+        # Determine nrows for reading CSVs
+        nrows_train = self.limit_data_rows if self.limit_data_rows and self.limit_data_rows > 0 else None
+        # For validation and test, we usually want to evaluate on the full set, 
+        # but for quick tests, we can limit them as well. Let's limit them if limit_data_rows is set.
+        nrows_val_test = self.limit_data_rows if self.limit_data_rows and self.limit_data_rows > 0 else None
+
         # Load movie titles
         movies_df = pd.read_csv(
             self.data_dir / "movies.dat",
@@ -163,27 +239,29 @@ class SASRecDataModule(pl.LightningDataModule):
         )
         original_item_id_to_title = movies_df.set_index("item_id")["title"].to_dict()
 
-        # Load pre-split dataframes
-        self.train_df = pd.read_csv(self.data_dir / self.train_file)
-        self.val_df = pd.read_csv(self.data_dir / self.val_file)
-        self.test_df = pd.read_csv(self.data_dir / self.test_file)
+        # Load pre-split dataframes with nrows
+        self.train_df = pd.read_csv(self.data_dir / self.train_file, nrows=nrows_train)
+        self.val_df = pd.read_csv(self.data_dir / self.val_file, nrows=nrows_val_test)
+        self.test_df = pd.read_csv(self.data_dir / self.test_file, nrows=nrows_val_test)
 
         # Convert 'seq' column from string to list of ints
         for df in [self.train_df, self.val_df, self.test_df]:
             df['seq'] = df['seq'].apply(lambda x: [int(i) for i in x.split(' ')] if pd.notna(x) and x != '' else [])
 
+        # Filter sequences with length < 3 (Consistent with iLoRA reference)
+        self.train_df = self.train_df[self.train_df['seq'].apply(len) >= 3]
+        self.val_df = self.val_df[self.val_df['seq'].apply(len) >= 3]
+        self.test_df = self.test_df[self.test_df['seq'].apply(len) >= 3]
+
         # Create a combined DataFrame to get all unique user and item IDs for consistent mapping
+        # Now this combined_df is also limited by limit_data_rows, which is what we want for testing.
         combined_df = pd.concat([self.train_df, self.val_df, self.test_df], ignore_index=True)
-        
-        # Extract all item IDs from 'seq' and 'next_item'
-        all_item_ids = []
-        for seq_list in combined_df['seq']:
-            all_item_ids.extend(seq_list)
-        all_item_ids.extend(combined_df['next_item'].tolist())
         
         # Item IDとユーザーIDをリマップ
         # 0はパディングIDとして予約するため、1から開始
-        unique_original_item_ids = sorted(list(set(all_item_ids)))
+        # iLoRAの負例サンプリングと一致させるため、観測されたアイテムだけでなく、
+        # movies.datに含まれる全てのアイテムをマッピング対象とする。
+        unique_original_item_ids = sorted(movies_df['item_id'].unique().tolist())
         self.item_id_map = {original: mapped for mapped, original in enumerate(unique_original_item_ids, 1)}
         
         # Create a map from the NEW mapped IDs to original titles
@@ -205,33 +283,26 @@ class SASRecDataModule(pl.LightningDataModule):
         
         self.num_users = len(self.user_id_map)
         self.num_items = len(self.item_id_map)
-
-        if self.limit_data_rows is not None and self.limit_data_rows > 0:
-            if len(self.train_df) > self.limit_data_rows:
-                self.train_df = self.train_df.sample(n=self.limit_data_rows, random_state=self.seed)
-            else:
-                logger.warning(f"train_df size ({len(self.train_df)}) is less than limit_data_rows ({self.limit_data_rows}). Using full training data.")
-            
-            if len(self.val_df) > self.limit_data_rows:
-                self.val_df = self.val_df.sample(n=self.limit_data_rows, random_state=self.seed)
-            else:
-                logger.warning(f"val_df size ({len(self.val_df)}) is less than limit_data_rows ({self.limit_data_rows}). Using full validation data.")
-
-            if len(self.test_df) > self.limit_data_rows:
-                self.test_df = self.test_df.sample(n=self.limit_data_rows, random_state=self.seed)
-            else:
-                logger.warning(f"test_df size ({len(self.test_df)}) is less than limit_data_rows ({self.limit_data_rows}). Using full test data.")
         
-        print("--- Data Split Statistics ---")
+        print("--- Data Split Statistics (limited by nrows) ---")
         print(f"Number of rows (train): {len(self.train_df)}")
         print(f"Number of rows (val): {len(self.val_df)}")
         print(f"Number of rows (test): {len(self.test_df)}")
         print("-----------------------------")
 
-        # The dataset now needs the item_id_to_name map
-        self.train_dataset = SASRecDataset(self.train_df, self.max_seq_len, self.num_items, mapped_id_to_title)
-        self.val_dataset = SASRecDataset(self.val_df, self.max_seq_len, self.num_items, mapped_id_to_title)
-        self.test_dataset = SASRecDataset(self.test_df, self.max_seq_len, self.num_items, mapped_id_to_title)
+        # Pre-compute prompt parts for efficiency
+        # Format: "ItemName [HistoryEmb]" and "ItemName [CansEmb]"
+        id_to_history_part = {
+            i: f"{name} [HistoryEmb]" for i, name in self.mapped_id_to_title.items()
+        }
+        id_to_candidate_part = {
+            i: f"{name} [CansEmb]" for i, name in self.mapped_id_to_title.items()
+        }
+
+        # The dataset now needs the item_id_to_name map and pre-computed parts
+        self.train_dataset = SASRecDataset(self.train_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
+        self.val_dataset = SASRecDataset(self.val_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
+        self.test_dataset = SASRecDataset(self.test_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
 
         if self.tokenizer:
             self.collater = TeacherTrainCollater(
@@ -251,7 +322,9 @@ class SASRecDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=True, 
             num_workers=self.num_workers,
-            collate_fn=self.collater
+            collate_fn=self.collater,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -260,7 +333,9 @@ class SASRecDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=False, 
             num_workers=self.num_workers,
-            collate_fn=self.collater
+            collate_fn=self.collater,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -269,7 +344,9 @@ class SASRecDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=False, 
             num_workers=self.num_workers,
-            collate_fn=self.collater
+            collate_fn=self.collater,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False
         )
 
 if __name__ == "__main__":

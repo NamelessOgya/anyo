@@ -124,12 +124,12 @@ class DROLoss(nn.Module):
         clamped_weighted_model_output_sq_div_beta = torch.clamp(weighted_model_output_sq / self.beta, max=80.0)
         exp_term_sum = torch.sum(torch.exp(clamped_weighted_model_output_sq_div_beta), 1) # (batch_size,)
 
-        pos_scores_dro = torch.gather(weighted_model_output_sq, 1, target)
+        pos_scores_dro = torch.gather(weighted_model_output_sq, 1, target.unsqueeze(1))
         pos_scores_dro = torch.squeeze(pos_scores_dro) # (batch_size,)
         clamped_pos_scores_dro_div_beta = torch.clamp(pos_scores_dro / self.beta, max=80.0)
 
         weighted_model_output_minus_1_sq = torch.mul((model_output - 1) * (model_output - 1), ps_on_device[1:])
-        pos_loss_dro = torch.gather(weighted_model_output_minus_1_sq, 1, target)
+        pos_loss_dro = torch.gather(weighted_model_output_minus_1_sq, 1, target.unsqueeze(1))
         pos_loss_dro = torch.squeeze(pos_loss_dro) # (batch_size,)
         clamped_pos_loss_dro_div_beta = torch.clamp(pos_loss_dro / self.beta, max=80.0)
         

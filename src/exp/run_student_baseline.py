@@ -1,39 +1,33 @@
-import sys
-import hydra
-from omegaconf import DictConfig, OmegaConf
-import logging
-from pathlib import Path
-from datetime import datetime
-
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
-
+from src.core.config_utils import load_hydra_config
 from src.core.paths import get_project_root
 from src.core.logging import setup_logging
 from src.core.seed import set_seed
 from src.core.git_info import get_git_info
+from omegaconf import OmegaConf
 from src.student.datamodule import SASRecDataModule
+from src.student.models import SASRec
 from src.student.trainer_baseline import SASRecTrainer
 from src.core.callbacks import CustomRichProgressBar
+
+import logging
+import sys
+from pathlib import Path
+from datetime import datetime
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 logger = logging.getLogger(__name__)
 
 def main():
-    # Manually initialize Hydra. This is for environments where the decorator causes issues.
-    try:
-        overrides = sys.argv[1:]
-        with hydra.initialize(config_path="../../conf", version_base="1.3", job_name="student_baseline_run"):
-            cfg = hydra.compose(config_name="config", overrides=overrides)
-    except Exception as e:
-        print(f"Hydra initialization failed: {e}")
-        return
+    # Centralized Hydra initialization
+    overrides = sys.argv[1:]
+    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
 
-    # Manually create a unique output directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = get_project_root() / "result" / f"student_baseline_{timestamp}"
+    # Use cfg.run.dir
+    output_dir = Path(cfg.run.dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"!!! SCRIPT RUNNING. MANUALLY CREATED OUTPUT DIR: {output_dir} !!!")
+    print(f"!!! SCRIPT RUNNING. OUTPUT DIR: {output_dir} !!!")
     
     # Save the Hydra config to the experiment directory
     with open(output_dir / "config.yaml", "w") as f:
@@ -61,14 +55,21 @@ def main():
     dm.prepare_data()
     dm.setup()
 
-    # 3. SASRecTrainerのインスタンス化
-    trainer_model = SASRecTrainer(
+    # 3. SASRecモデルのインスタンス化
+    student_model = SASRec(
         num_items=dm.num_items,
         hidden_size=cfg.student.hidden_size,
         num_heads=cfg.student.num_heads,
         num_layers=cfg.student.num_layers,
         dropout_rate=cfg.student.dropout_rate,
         max_seq_len=cfg.student.max_seq_len,
+        padding_item_id=dm.padding_item_id
+    )
+
+    # 4. SASRecTrainerのインスタンス化
+    trainer_model = SASRecTrainer(
+        rec_model=student_model,
+        num_items=dm.num_items,
         learning_rate=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
         metrics_k=cfg.eval.metrics_k
@@ -79,8 +80,8 @@ def main():
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir / "checkpoints",
-        filename="student-baseline-{epoch:02d}-{val_recall@10:.4f}",
-        monitor="val_recall@10",
+        filename="student-baseline-{epoch:02d}-{val_hr@10:.4f}",
+        monitor="val_hr@10",
         mode="max",
         save_top_k=1,
         save_last=True,
