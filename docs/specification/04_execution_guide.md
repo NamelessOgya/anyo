@@ -162,3 +162,84 @@ poetry run python -m src.exp.run_eval_all
 **出力:**
 - 各モデルの評価結果がコンソールに出力されます。
 - すべての評価結果をまとめたJSONファイルが `result/result_{timestamp}/all_evaluation_results.json` に保存されます。
+
+---
+
+## 4. Google Colab での実行
+
+Google Colab などの非コンテナ環境で実行する場合の手順です。
+
+### 4.1. 環境構築
+
+1.  **Poetryのインストール**:
+    ```bash
+    bash cmd/colab/00_install_poetry.sh
+    ```
+
+2.  **依存関係のインストール**:
+    ```bash
+    bash cmd/colab/01_install_dependencies.sh
+    ```
+    ※ `SentencePiece` エラーが出た場合は `poetry add sentencepiece` を実行後に再試行してください。
+
+3.  **Hugging Face 認証**:
+    LLMモデル（Qwen/OPT等）のダウンロードに必要です。
+    ```bash
+    python authenticate_hf.py
+    ```
+
+### 4.2. 実験の実行（Colab用スクリプト）
+
+`cmd/colab/` 配下のスクリプトを使用します。これらは依存関係のパス解決などを自動で行います。
+
+*   **データ準備**:
+    ```bash
+    bash cmd/colab/02_prepare_dataset.sh
+    ```
+
+*   **生徒モデル（SASRec）学習**:
+    ```bash
+    bash cmd/colab/10_run_student_baseline.sh
+    ```
+
+*   **教師モデル（iLoRA）学習**:
+    ```bash
+    # 生徒モデルのチェックポイントパスは引数で指定可能です（任意）
+    bash cmd/colab/11_run_teacher.sh
+    ```
+
+*   **知識蒸留**:
+    ```bash
+    bash cmd/colab/12_run_distill.sh
+    ```
+
+---
+
+## 5. Flash Attention Best Practices
+
+A100/L4 GPU環境で Flash Attention 2 を有効化するためのガイドです。
+
+### 5.1. Google Colab / 非コンテナ環境
+
+`pip install flash-attn` はビルドに時間がかかるため、**Pre-built Wheel** の使用を推奨します。
+
+1.  **環境確認**:
+    ```python
+    import torch
+    print(torch.__version__)       # 例: 2.4.0+cu121
+    print(torch.version.cuda)      # 例: 12.1
+    ```
+
+2.  **インストール**:
+    [Flash Attention Releases](https://github.com/Dao-AILab/flash-attention/releases) から環境に合うWheelを探してインストールします。
+    ```bash
+    # 例: PyTorch 2.4, CUDA 12.3, Python 3.10
+    pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+    ```
+
+### 5.2. トラブルシューティング
+
+*   **"undefined symbol" エラー**:
+    *   PyTorchとFlash Attentionのビルド環境（GLIBC, cxx11abi）の不一致が原因です。別のWheelを試すか、ソースビルドを行ってください。
+*   **"CUDA capability sm_xx is not compatible"**:
+    *   T4 GPUなどはFlash Attention 2に対応していません。A100またはL4を使用してください。

@@ -281,6 +281,15 @@ class iLoRAModel(nn.Module):
         """
         return self._get_llm_outputs(batch)
 
+    def train(self, mode: bool = True):
+        """
+        Override train mode to ensure rec_model stays in eval mode.
+        """
+        super().train(mode)
+        if mode:
+            self.rec_model.eval()
+        return self
+
     def get_teacher_outputs(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         """
         蒸留用のフォワードパス。ランキングスコア、埋め込み、候補、信頼度を返します。
