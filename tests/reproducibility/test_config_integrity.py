@@ -27,8 +27,8 @@ def test_experiment_configs_batch_size():
     # 1. Test Teacher Config
     with initialize(version_base=None, config_path=config_path):
         cfg = compose(config_name="config", overrides=["experiment=ilora_teacher"])
-        assert cfg.train.batch_size == 16, f"Teacher batch_size should be 16, got {cfg.train.batch_size}"
-        assert cfg.train.accumulate_grad_batches == 32
+        assert cfg.train.batch_size == 32, f"Teacher batch_size should be 32, got {cfg.train.batch_size}"
+        assert cfg.train.accumulate_grad_batches == 4
 
     # 2. Test Student Config
     with initialize(version_base=None, config_path=config_path):
@@ -43,4 +43,4 @@ def test_experiment_configs_batch_size():
     # 4. Test MovieLens Experiment (which we modified to use teacher)
     with initialize(version_base=None, config_path=config_path):
         cfg = compose(config_name="config", overrides=["experiment=ilora_movielens"])
-        assert cfg.train.batch_size == 16, f"MovieLens experiment should use teacher config (16), got {cfg.train.batch_size}"
+        assert cfg.train.batch_size == 32, f"MovieLens experiment should use teacher config (32), got {cfg.train.batch_size}"

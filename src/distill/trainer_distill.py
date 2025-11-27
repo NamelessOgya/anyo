@@ -114,8 +114,24 @@ class DistillationTrainer(pl.LightningModule):
         # print(f"Debug: Batch size from dm.train_dataloader(): {item_seq.size(0)}")
 
         # 1. 教師モデルからソフトターゲットと埋め込みを取得
-        if self.teacher_output_dataloader is not None:
-            # 事前生成された教師出力を利用
+        if "teacher_targets" in batch and "has_teacher_target" in batch:
+            # Partial Distillation Mode
+            teacher_outputs_raw = batch["teacher_targets"]
+            has_teacher = batch["has_teacher_target"]
+            
+            # Extract fields
+            teacher_logits = teacher_outputs_raw.get("ranking_scores")
+            teacher_embeddings = teacher_outputs_raw.get("embeddings")
+            teacher_candidates = teacher_outputs_raw.get("candidates")
+            teacher_confidence = teacher_outputs_raw.get("confidence")
+            
+            # Move to device if not already (Collater usually returns CPU tensors if not using Lightning's auto-move?)
+            # Lightning auto-moves batch to device.
+            
+            # Masking will be handled in Loss calculation
+            
+        elif self.teacher_output_dataloader is not None:
+            # 事前生成された教師出力を利用 (Full Distillation via Dataloader)
             teacher_outputs_for_current_batch = next(self.teacher_output_iterator)
             
             teacher_logits = teacher_outputs_for_current_batch["ranking_scores"].to(self.device)
@@ -123,14 +139,8 @@ class DistillationTrainer(pl.LightningModule):
             teacher_candidates = teacher_outputs_for_current_batch["candidates"].to(self.device)
             teacher_confidence = teacher_outputs_for_current_batch["confidence"].to(self.device)
             
-            # print(f"Debug: Batch size from teacher_output_dataloader(): {teacher_embeddings.size(0)}")
+            has_teacher = torch.ones(item_seq.size(0), dtype=torch.bool, device=self.device)
             
-            teacher_outputs_raw = {
-                "ranking_scores": teacher_logits,
-                "embeddings": teacher_embeddings,
-                "candidates": teacher_candidates,
-                "confidence": teacher_confidence,
-            }
         else:
             # オンザフライで教師出力を生成
             with torch.no_grad():
@@ -140,29 +150,47 @@ class DistillationTrainer(pl.LightningModule):
             teacher_embeddings = teacher_outputs_raw.get("embeddings")
             teacher_candidates = teacher_outputs_raw.get("candidates") # (batch_size, candidate_topk)
             teacher_confidence = teacher_outputs_raw.get("confidence") # (batch_size, candidate_topk)
+            
+            has_teacher = torch.ones(item_seq.size(0), dtype=torch.bool, device=self.device)
 
         # 2. 生徒モデルの出力を取得
         student_embeddings = self.student_model_module(item_seq, item_seq_len, teacher_embeddings=teacher_embeddings)
         student_logits = self.student_model_module.predict(item_seq, item_seq_len)
 
         # 3. 蒸留サンプルを選択
-        distill_mask = self.selection_policy.select(
-            student_logits=student_logits,
-            teacher_logits=teacher_logits,
-            ground_truth=next_item_original.squeeze(-1) # SelectionPolicy might expect 1-based? Let's check.
-            # GroundTruthErrorPolicy uses gather with ground_truth. 
-            # If student_logits is 0-based (size C), ground_truth must be 0-based.
-            # So we should pass next_item (0-based).
-        )
-        # Wait, let's re-check SelectionPolicy.
-        # GroundTruthErrorPolicy: ground_truth_logits = student_logits.gather(1, ground_truth.unsqueeze(1))
-        # If student_logits is (B, C), ground_truth must be in [0, C-1].
-        # So we MUST pass 0-based index.
-        distill_mask = self.selection_policy.select(
-            student_logits=student_logits,
-            teacher_logits=teacher_logits,
-            ground_truth=next_item
-        )
+        distill_mask = torch.zeros(item_seq.size(0), dtype=torch.bool, device=self.device)
+        
+        if has_teacher.any():
+            # Only compute selection for samples with teacher info
+            # Mask the result of selection policy with has_teacher
+            policy_mask = self.selection_policy.select(
+                student_logits=student_logits,
+                teacher_logits=teacher_logits if teacher_logits is not None else student_logits, 
+                ground_truth=next_item
+            )
+            distill_mask = policy_mask & has_teacher
+
+        # --- Metrics on Distilled Subset ---
+        if distill_mask.any():
+            with torch.no_grad():
+                subset_indices = torch.nonzero(distill_mask).squeeze()
+                if subset_indices.numel() > 0:
+                    # Student Accuracy
+                    student_preds = student_logits[subset_indices].argmax(dim=1)
+                    student_acc = (student_preds == next_item[subset_indices]).float().mean()
+                    self.log('train_distill_subset_acc_student', student_acc, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+                    
+                    # Teacher Accuracy (if logits available)
+                    if teacher_logits is not None:
+                        teacher_preds = teacher_logits[subset_indices].argmax(dim=1)
+                        teacher_acc = (teacher_preds == next_item[subset_indices]).float().mean()
+                        self.log('train_distill_subset_acc_teacher', teacher_acc, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+                        
+                        # Teacher vs Student Agreement
+                        agreement = (student_preds == teacher_preds).float().mean()
+                        self.log('train_distill_subset_agreement', agreement, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+
+        self.log('train_distill_subset_count', distill_mask.sum().float(), on_step=True, on_epoch=True, prog_bar=False, logger=True)
 
         # 4. ネガティブサンプリング (DLLM2Rec main.pyから移植)
         real_batch_size = item_seq.size(0)
@@ -191,40 +219,46 @@ class DistillationTrainer(pl.LightningModule):
         
         # 5.1. ランキング蒸留損失
         if self.ranking_loss_weight > 0 and distill_mask.any():
-            _lambda = 1
-            _K = self.candidate_topk
-            weight_static = torch.arange(1, _K + 1, dtype=torch.float32, device=self.device)
-            weight_static = torch.exp(-weight_static / _lambda)
-            weight_static = torch.unsqueeze(weight_static, 0).repeat(student_logits.size(0), 1)
-            weight_rank = weight_static / torch.sum(weight_static, dim=1, keepdim=True)
-            
-            cf_rank_top = (-student_logits).argsort(dim=1)[:, :_K]
-            common_tensor = (teacher_candidates.unsqueeze(2) == cf_rank_top.unsqueeze(1)).any(dim=2).int() + 1e-8
-            weight_com = common_tensor.to(self.device)
+            # Ensure we have necessary teacher outputs
+            if teacher_candidates is not None and teacher_confidence is not None:
+                _lambda = 1
+                _K = self.candidate_topk
+                weight_static = torch.arange(1, _K + 1, dtype=torch.float32, device=self.device)
+                weight_static = torch.exp(-weight_static / _lambda)
+                weight_static = torch.unsqueeze(weight_static, 0).repeat(student_logits.size(0), 1)
+                weight_rank = weight_static / torch.sum(weight_static, dim=1, keepdim=True)
+                
+                cf_rank_top = (-student_logits).argsort(dim=1)[:, :_K]
+                common_tensor = (teacher_candidates.unsqueeze(2) == cf_rank_top.unsqueeze(1)).any(dim=2).int() + 1e-8
+                weight_com = common_tensor.to(self.device)
 
-            weight_confidence = torch.exp(-teacher_confidence) + 1e-8
-            weight_confidence = weight_confidence / torch.sum(weight_confidence, dim=1, keepdim=True)
+                weight_confidence = torch.exp(-teacher_confidence) + 1e-8
+                weight_confidence = weight_confidence / torch.sum(weight_confidence, dim=1, keepdim=True)
 
-            weight_fin = self.gamma_position * weight_rank + self.gamma_confidence * weight_confidence + self.gamma_consistency * weight_com
-            weights = weight_fin / torch.sum(weight_fin, dim=1, keepdim=True)
+                weight_fin = self.gamma_position * weight_rank + self.gamma_confidence * weight_confidence + self.gamma_consistency * weight_com
+                weights = weight_fin / torch.sum(weight_fin, dim=1, keepdim=True)
 
-            ranking_kd_loss = self.ranking_kd_loss_fn(
-                student_logits[distill_mask],
-                teacher_candidates[distill_mask],
-                weights[distill_mask],
-                neg_samples[distill_mask]
-            )
-            total_loss += self.lam * self.ranking_loss_weight * ranking_kd_loss
-            self.log('train_ranking_kd_loss', ranking_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+                ranking_kd_loss = self.ranking_kd_loss_fn(
+                    student_logits[distill_mask],
+                    teacher_candidates[distill_mask],
+                    weights[distill_mask],
+                    neg_samples[distill_mask]
+                )
+                total_loss += self.lam * self.ranking_loss_weight * ranking_kd_loss
+                self.log('train_ranking_kd_loss', ranking_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            else:
+                 # Warn or skip if missing
+                 pass
 
         # 5.2. 埋め込み蒸留損失
         if self.embedding_loss_weight > 0 and distill_mask.any():
-            embedding_kd_loss = self.embedding_kd_loss_fn(
-                student_embeddings[distill_mask],
-                teacher_embeddings[distill_mask]
-            )
-            total_loss += self.embedding_loss_weight * embedding_kd_loss
-            self.log('train_embedding_kd_loss', embedding_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            if teacher_embeddings is not None:
+                embedding_kd_loss = self.embedding_kd_loss_fn(
+                    student_embeddings[distill_mask],
+                    teacher_embeddings[distill_mask]
+                )
+                total_loss += self.embedding_loss_weight * embedding_kd_loss
+                self.log('train_embedding_kd_loss', embedding_kd_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
         # 5.3. 元のタスク損失 (Cross-Entropy + DRO)
         if self.ce_loss_weight > 0:

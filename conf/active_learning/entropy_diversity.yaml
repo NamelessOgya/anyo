@@ -1,0 +1,3 @@
+strategy_name: entropy_diversity
+mining_ratio: 0.5
+hard_indices_output_path: entropy_diversity_indices.pt

@@ -40,10 +40,12 @@ class iLoRAModel(nn.Module):
         item_id_to_name: Dict[int, str],
         padding_item_id: int,
         llm_dtype: torch.dtype,
+        use_item_embeddings_head: bool = True,
     ):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.llm_dtype = llm_dtype
+        self.use_item_embeddings_head = use_item_embeddings_head
         
         # ベースLLMの全パラメータを凍結
         for param in llm.parameters():
@@ -85,7 +87,25 @@ class iLoRAModel(nn.Module):
         ).to(self.device, dtype=self.llm_dtype) # ゲーティングネットワークをllm_dtypeにキャスト
 
         # LLMの最後の隠れ状態をnum_items個のロジットに射影する線形層を追加
-        self.item_prediction_head = nn.Linear(self.llm.model.config.hidden_size, num_items).to(self.device, dtype=self.llm_dtype) # item_prediction_headをllm_dtypeにキャスト
+        if not self.use_item_embeddings_head:
+            self.item_prediction_head = nn.Linear(self.llm.model.config.hidden_size, num_items).to(self.device, dtype=self.llm_dtype)
+        else:
+            self.item_prediction_head = None
+
+        # Store initial item embeddings for Reverse Distillation Loss
+        # We clone the weights to keep the original values
+        # Only needed if we use item embeddings head (and thus unfreeze them)
+        if self.use_item_embeddings_head:
+            if hasattr(self.rec_model, "item_embeddings"):
+                self.register_buffer("student_item_embeddings", self.rec_model.item_embeddings.weight.clone().detach())
+            elif hasattr(self.rec_model, "cacu_x"):
+                 # For SASRecModules_ori.py compatibility
+                 if hasattr(self.rec_model, "item_embeddings"):
+                     self.register_buffer("student_item_embeddings", self.rec_model.item_embeddings.weight.clone().detach())
+                 else:
+                     logger.warning("Could not find item_embeddings to store for Reverse Distillation.")
+            else:
+                logger.warning("Could not find item_embeddings to store for Reverse Distillation.")
 
     def encode_items(self, items: torch.Tensor) -> torch.Tensor:
         """
@@ -186,7 +206,6 @@ class iLoRAModel(nn.Module):
         rank_idx_i = i_rank[valid_item_mask]
         
         # ランクが負になることはないはずだが、念のためチェック (mask外は計算上どうなる？)
-        # mask外はrankがcount以上になるか、負になるか。
         # mask外は無視するのでOK。
         
         # 安全のためにランクをクランプ (index out of boundsを防ぐ)
@@ -291,6 +310,10 @@ class iLoRAModel(nn.Module):
         """
         super().train(mode)
         if mode:
+            # We want rec_model to be in eval mode generally (for dropout etc),
+            # BUT we want item_embeddings to be trainable.
+            # If we set rec_model.eval(), dropout is disabled, which is good.
+            # Gradients for item_embeddings will still be computed if requires_grad=True.
             self.rec_model.eval()
         return self
 
@@ -300,8 +323,43 @@ class iLoRAModel(nn.Module):
         """
         outputs = self._get_llm_outputs(batch)
         
-        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
-        ranking_scores = self.item_prediction_head(last_hidden_state)
+        # LLM Output: (Batch, Seq, Hidden)
+        # We take the last token's hidden state
+        last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (Batch, LLM_Hidden)
+        
+        # Project to Rec Model Space (if needed) or use as is?
+        # We want to compare with Item Embeddings.
+        # Item Embeddings are in Rec Space (e.g. 64 dim).
+        # LLM Hidden is 2048 dim.
+        # So we need to project LLM Hidden -> Rec Space.
+        # Wait, self.projector projects Rec -> LLM.
+        # We need LLM -> Rec.
+        # But we don't have that projector.
+        
+        # Alternative:
+        # We project Item Embeddings to LLM Space using self.projector.
+        # Then calculate dot product in LLM Space.
+        # This is consistent with how we input items to LLM.
+        
+        # 3. Calculate Logits
+        if self.use_item_embeddings_head:
+            # Embedding Head Logic
+            all_items_indices = torch.arange(self.rec_model.item_embeddings.num_embeddings, device=self.device)
+            all_item_embs_rec = self.rec_model.item_embeddings(all_items_indices) # (N, H_rec)
+            
+            # Project to LLM space
+            all_item_embs_llm = self.projector(all_item_embs_rec.to(self.projector.model[0].weight.dtype)) # (N, H_llm)
+            
+            # Calculate logits
+            ranking_scores = last_hidden_state @ all_item_embs_llm.T # (B, N)
+        else:
+            # Linear Head Logic
+            ranking_scores = self.item_prediction_head(last_hidden_state)
+        
+        # Mask padding item (index 0) if necessary?
+        # Usually index 0 is padding. We can set its score to -inf.
+        if self.padding_item_id is not None:
+             ranking_scores[:, self.padding_item_id] = float('-inf')
         
         confidence, candidates = torch.topk(ranking_scores, k=self.candidate_topk, dim=-1)
         confidence = F.softmax(confidence, dim=-1)

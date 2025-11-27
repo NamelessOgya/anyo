@@ -1,0 +1,3 @@
+strategy_name: kmeans
+mining_ratio: 0.5
+hard_indices_output_path: kmeans_indices.pt

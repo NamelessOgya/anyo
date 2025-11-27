@@ -1,0 +1,3 @@
+strategy_name: least_confidence
+mining_ratio: 0.5
+hard_indices_output_path: least_confidence_indices.pt

@@ -1,0 +1,4 @@
+# Default to Loss strategy (Hard Example Mining)
+strategy_name: loss
+mining_ratio: 0.5
+hard_indices_output_path: hard_sample_indices.pt

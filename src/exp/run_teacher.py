@@ -59,7 +59,8 @@ def main():
         train_file="train.csv",
         val_file="val.csv",
         test_file="test.csv",
-        seed=cfg.seed
+        seed=cfg.seed,
+        subset_indices_path=cfg.teacher.get("subset_indices_path") # Pass subset indices for Active Learning
     )
     dm.prepare_data()
     dm.setup()
@@ -82,7 +83,12 @@ def main():
         learning_rate=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
         metrics_k=cfg.eval.metrics_k,
-        item_id_to_name=dm.mapped_id_to_title
+        item_id_to_name=dm.mapped_id_to_title,
+        distill_lambda=cfg.teacher.get("distill_lambda", 0.0),
+        distill_loss_type=cfg.teacher.get("distill_loss_type", "mse"),
+        distill_decay_type=cfg.teacher.get("distill_decay_type", "none"),
+        distill_min_lambda=cfg.teacher.get("distill_min_lambda", 0.0),
+        distill_decay_steps=cfg.teacher.get("distill_decay_steps", None)
     )
 
     # 5. PyTorch Lightning Trainerのセットアップ

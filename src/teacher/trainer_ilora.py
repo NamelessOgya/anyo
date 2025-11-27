@@ -30,6 +30,11 @@ class iLoRATrainer(pl.LightningModule):
         item_id_to_name: Dict[int, str],
         warmup_steps: int = 0,
         max_steps: int = 1000,
+        distill_lambda: float = 0.0,
+        distill_loss_type: str = "mse",
+        distill_decay_type: str = "none",
+        distill_min_lambda: float = 0.0,
+        distill_decay_steps: Optional[int] = None,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["ilora_model"])
@@ -41,12 +46,95 @@ class iLoRATrainer(pl.LightningModule):
         self.item_id_to_name = item_id_to_name
         self.warmup_steps = warmup_steps
         self.max_steps = max_steps
+        self.distill_lambda = distill_lambda
+        self.distill_loss_type = distill_loss_type
+        self.distill_decay_type = distill_decay_type
+        self.distill_min_lambda = distill_min_lambda
+        self.distill_decay_steps = distill_decay_steps
 
     def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
         """
         学習ステップのフォワードパス。
         """
         return self.model(batch)
+
+    def _get_current_lambda(self) -> float:
+        """
+        Calculate current distillation lambda based on decay schedule.
+        """
+        if self.distill_lambda <= 0 or self.distill_decay_type == "none":
+            return self.distill_lambda
+            
+        # Determine duration for decay
+        if self.distill_decay_steps is not None and self.distill_decay_steps > 0:
+            decay_duration = self.distill_decay_steps
+        elif self.trainer.max_steps and self.trainer.max_steps > 0:
+            decay_duration = self.trainer.max_steps
+        else:
+            # Fallback: estimate from max_epochs or just return initial
+            return self.distill_lambda
+
+        current_step = self.global_step
+        progress = min(current_step / decay_duration, 1.0)
+        
+        start = self.distill_lambda
+        end = self.distill_min_lambda
+        
+        if self.distill_decay_type == "linear":
+            return start - (start - end) * progress
+        elif self.distill_decay_type == "cosine":
+            import math
+            return end + 0.5 * (start - end) * (1 + math.cos(math.pi * progress))
+        elif self.distill_decay_type == "exponential":
+            # start * (end/start)^progress
+            if start == 0: return 0.0
+            if end <= 0: end = 1e-6 
+            return start * ((end / start) ** progress)
+        else:
+            return start
+
+    def _compute_distill_loss(self, current_embeddings: torch.Tensor, original_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Compute distillation loss based on configured type.
+        """
+        if self.distill_loss_type == "mse":
+            return F.mse_loss(current_embeddings, original_embeddings)
+        elif self.distill_loss_type == "l1":
+            return F.l1_loss(current_embeddings, original_embeddings)
+        elif self.distill_loss_type == "huber":
+            return F.huber_loss(current_embeddings, original_embeddings)
+        elif self.distill_loss_type == "cosine":
+            # Cosine Embedding Loss: 1 - cosine_similarity
+            # target is 1 (perfect alignment)
+            # F.cosine_embedding_loss expects input1, input2, target
+            # But we can just compute mean cosine similarity manually
+            cos_sim = F.cosine_similarity(current_embeddings, original_embeddings, dim=-1)
+            return 1.0 - cos_sim.mean()
+        elif self.distill_loss_type == "contrastive":
+            # Simple Contrastive Loss (InfoNCE style)
+            # Positive pair: (current[i], original[i])
+            # Negative pairs: (current[i], original[j]) where j != i
+            # We can compute similarity matrix: current @ original.T
+            # Target is diagonal.
+            
+            # Normalize first for stability
+            curr_norm = F.normalize(current_embeddings, p=2, dim=-1)
+            orig_norm = F.normalize(original_embeddings, p=2, dim=-1)
+            
+            # Similarity matrix (N, N)
+            logits = torch.matmul(curr_norm, orig_norm.T)
+            
+            # Temperature scaling (optional, usually 0.1 or similar)
+            temperature = 0.1
+            logits = logits / temperature
+            
+            # Labels are 0, 1, 2, ... N-1 (diagonal)
+            labels = torch.arange(logits.size(0), device=logits.device)
+            
+            return F.cross_entropy(logits, labels)
+        else:
+            # Default to MSE if unknown
+            return F.mse_loss(current_embeddings, original_embeddings)
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """
@@ -55,10 +143,24 @@ class iLoRATrainer(pl.LightningModule):
         """
         start_time = time.time()
         
-        # 蒸留用出力の取得（ランキングスコアを含む）
-        outputs = self.model.get_teacher_outputs(batch)
-        ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
+        # LLMのフォワードパス
+        outputs = self.model(batch)
         
+        # Ranking Loss (Cross Entropy)
+        # outputsはLLMの生出力 (Batch, Seq, Hidden)
+        # ヘッダロジックを使用してロジットを計算
+        last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (B, H)
+        
+        if self.model.use_item_embeddings_head:
+             # Embedding Head
+             all_items_indices = torch.arange(self.model.rec_model.item_embeddings.num_embeddings, device=self.model.device)
+             all_item_embs_rec = self.model.rec_model.item_embeddings(all_items_indices)
+             all_item_embs_llm = self.model.projector(all_item_embs_rec.to(self.model.projector.model[0].weight.dtype))
+             ranking_scores = last_hidden_state @ all_item_embs_llm.T
+        else:
+             # Linear Head
+             ranking_scores = self.model.item_prediction_head(last_hidden_state)
+
         # 正解アイテムのID (1-based)
         target_items = batch["next_item"] # (batch_size,)
         
@@ -66,6 +168,21 @@ class iLoRATrainer(pl.LightningModule):
         # ranking_scoresは0-based index (0 -> Item 1) なので、target_itemsから1を引く
         loss = F.cross_entropy(ranking_scores, target_items - 1)
 
+        # Reverse Distillation Loss
+        current_lambda = self._get_current_lambda()
+        
+        if current_lambda > 0 and hasattr(self.model, "student_item_embeddings"):
+            current_embeddings = self.model.rec_model.item_embeddings.weight
+            original_embeddings = self.model.student_item_embeddings
+            
+            # Distillation Lossの計算
+            reg_loss = self._compute_distill_loss(current_embeddings, original_embeddings)
+            
+            loss += current_lambda * reg_loss
+            
+            self.log("train_reg_loss", reg_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+            self.log("distill_lambda", current_lambda, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            
         # 損失と学習時間をログに記録
         self.log("train_loss_step", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log("train_loss_epoch", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)

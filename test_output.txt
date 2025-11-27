@@ -1,0 +1,172 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.9, pytest-8.4.2, pluggy-1.6.0
+rootdir: /workspace
+configfile: pyproject.toml
+plugins: hydra-core-1.3.2
+collected 1 item
+
+tests/reproducibility/test_teacher_improvement.py F                      [100%]
+
+=================================== FAILURES ===================================
+___________________ test_teacher_embedding_head_and_unfreeze ___________________
+
+    def test_teacher_embedding_head_and_unfreeze():
+        # 1. Setup Dummy Config
+        cfg = OmegaConf.create({
+            "teacher": {
+                "model_type": "ilora",
+                "llm_model_name": "facebook/opt-125m",
+                "num_lora_experts": 2,
+                "lora_r": 4,
+                "lora_alpha": 16,
+                "lora_dropout": 0.0,
+                "hidden_size": 32,
+                "dropout_rate": 0.0,
+                "rec_model_checkpoint_path": "dummy_ckpt.pth",
+                "use_flash_attention": False,
+                "use_qlora": False,
+                "use_gradient_checkpointing": False,
+                "use_torch_compile": False
+            },
+            "student": {
+                "hidden_size": 32,
+                "num_heads": 2,
+                "num_layers": 2,
+                "dropout_rate": 0.0,
+                "max_seq_len": 20,
+            },
+            "train": {
+                "precision": "32"
+            }
+        })
+    
+        # 2. Create Dummy Checkpoint
+        ckpt_path = os.path.abspath("dummy_ckpt.pth")
+        cfg.teacher.rec_model_checkpoint_path = ckpt_path
+    
+        dummy_state = {
+            'state_dict': {
+                'model.item_embeddings.weight': torch.randn(101, 32), # 100 items + 1 padding
+                'model.position_embeddings.weight': torch.randn(20, 32),
+                'model.emb_dropout.weight': torch.randn(32), # Dummy
+                # Add other layers if needed by SASRec load
+            }
+        }
+        # SASRec strict loading might fail if we don't provide all keys.
+        # But factory.py does: rec_model.load_state_dict(new_state_dict) (default strict=True)
+        # We need to populate enough keys or mock SASRec.
+    
+        # Let's just mock the SASRec class inside factory? No, we want to test factory logic.
+        # We can use a real SASRec and save its state.
+        from src.student.models import SASRec
+        rec_model = SASRec(num_items=100, hidden_size=32, num_heads=2, num_layers=2, dropout_rate=0.0, max_seq_len=20, padding_item_id=0)
+    
+        # Wrap in 'model.' prefix as expected by factory
+        save_dict = {'state_dict': {f'model.{k}': v for k, v in rec_model.state_dict().items()}}
+        torch.save(save_dict, ckpt_path)
+    
+        # 3. Create Teacher Model
+        tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
+    
+        try:
+            model = create_teacher_model(
+                cfg,
+                llm_tokenizer=tokenizer,
+                num_items=100,
+                max_seq_len=20,
+                item_id_to_name={i: str(i) for i in range(101)},
+                padding_item_id=0,
+                candidate_topk=5
+            )
+    
+            # 4. Verify Item Embeddings are Unfrozen
+            assert model.rec_model.item_embeddings.weight.requires_grad == True, "Item embeddings should be trainable"
+    
+            # Verify other parameters are frozen
+            for name, param in model.rec_model.named_parameters():
+                if "item_embeddings" not in name:
+                    assert param.requires_grad == False, f"Parameter {name} should be frozen"
+    
+            # 5. Verify Forward Pass (Logits Shape)
+            # Create dummy batch
+            batch = {
+                "seq": torch.randint(1, 100, (2, 5)),
+                "len_seq": torch.tensor([5, 5]),
+                "input_ids": torch.randint(0, 1000, (2, 10)),
+                "attention_mask": torch.ones(2, 10),
+                "next_item": torch.tensor([1, 2])
+            }
+    
+>           outputs = model.get_teacher_outputs(batch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/reproducibility/test_teacher_improvement.py:96: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/teacher/ilora_model.py:304: in get_teacher_outputs
+    outputs = self._get_llm_outputs(batch)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/teacher/ilora_model.py:134: in _get_llm_outputs
+    full_sequence_rec_embs = self.rec_model.get_full_sequence_representations(item_seq, item_seq_len)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/student/models.py:101: in get_full_sequence_representations
+    return self._run_transformer_blocks(item_seq, item_seq_len, teacher_embeddings)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = SASRec(
+  (item_embeddings): Embedding(101, 32, padding_idx=0)
+  (position_embeddings): Embedding(20, 32)
+  (dropout):...ropout2): Dropout(p=0.0, inplace=False)
+    )
+  )
+  (layernorm): LayerNorm((32,), eps=1e-05, elementwise_affine=True)
+)
+item_seq = tensor([[67, 75,  9,  4, 38],
+        [15, 83, 75, 97, 17]])
+item_seq_len = tensor([5, 5]), teacher_embeddings = None
+
+    def _run_transformer_blocks(self, item_seq: torch.Tensor, item_seq_len: torch.Tensor, teacher_embeddings: torch.Tensor = None):
+        """
+        Transformerブロックを通過した後のシーケンス全体の表現を計算します。
+        """
+        # アイテム埋め込み
+        item_embeddings = self.item_embeddings(item_seq)
+    
+        # 位置埋め込み
+        positions = torch.arange(self.max_seq_len, device=item_seq.device).unsqueeze(0)
+        position_embeddings = self.position_embeddings(positions)
+    
+        # 埋め込みの合計
+>       input_embeddings = item_embeddings + position_embeddings
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       RuntimeError: The size of tensor a (5) must match the size of tensor b (20) at non-singleton dimension 1
+
+src/student/models.py:54: RuntimeError
+----------------------------- Captured stdout call -----------------------------
+Loading LLM for teacher model...
+Flash Attention is disabled for LLM.
+DEBUG: Attempting to load LLM from_pretrained...
+Loading pre-trained SASRec model from /workspace/dummy_ckpt.pth
+SASRec item embeddings unfrozen for refinement.
+SASRec model parameters frozen (except item embeddings).
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+tests/reproducibility/test_teacher_improvement.py::test_teacher_embedding_head_and_unfreeze
+tests/reproducibility/test_teacher_improvement.py::test_teacher_embedding_head_and_unfreeze
+  /root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py:942: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
+    warnings.warn(
+
+tests/reproducibility/test_teacher_improvement.py::test_teacher_embedding_head_and_unfreeze
+  /workspace/src/teacher/factory.py:70: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+    checkpoint = torch.load(cfg.teacher.rec_model_checkpoint_path, map_location='cpu')
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/reproducibility/test_teacher_improvement.py::test_teacher_embedding_head_and_unfreeze
+======================== 1 failed, 5 warnings in 4.24s =========================
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

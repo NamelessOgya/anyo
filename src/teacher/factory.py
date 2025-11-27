@@ -80,10 +80,6 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         else:
             raise ValueError("rec_model_checkpoint_path must be provided in the teacher config for iLoRAModel.")
         
-        for param in rec_model.parameters():
-            param.requires_grad = False
-        print("SASRec model parameters frozen.")
-        
         projector = MLPProjector(
             input_dim=cfg.student.hidden_size,
             output_dim=llm.config.hidden_size,
@@ -107,7 +103,25 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             item_id_to_name=item_id_to_name,
             padding_item_id=padding_item_id,
             llm_dtype=llm.dtype, # Pass the LLM's dtype
+            use_item_embeddings_head=cfg.teacher.get("use_item_embeddings_head", True)
         )
+
+        # SASRecモデルのパラメータを凍結
+        for param in rec_model.parameters():
+            param.requires_grad = False
+
+        # Unfreeze item embeddings ONLY if we are using the Embedding Head approach
+        use_item_embeddings_head = cfg.teacher.get("use_item_embeddings_head", True)
+        if use_item_embeddings_head:
+            if hasattr(rec_model, "item_embeddings"):
+                rec_model.item_embeddings.weight.requires_grad = True
+                print("SASRec item embeddings unfrozen for refinement (Embedding Head Mode).")
+            else:
+                print("Warning: Could not find item_embeddings in rec_model to unfreeze.")
+        else:
+            print("SASRec item embeddings frozen (Linear Head Mode).")
+
+        print("SASRec model parameters frozen (except item embeddings if enabled).")
 
         if cfg.teacher.get("use_torch_compile", False):
             print("Compiling teacher model with torch.compile...")

@@ -127,6 +127,47 @@ poetry run python -m src.exp.run_teacher train=teacher
 - 学習ログ、TensorBoardログ、チェックポイントが `result/result_{timestamp}/` ディレクトリに保存されます。
 - テストセットに対する評価結果がコンソールに出力されます。
 
+#### 3.2.1. Teacherモデルの高度な設定 (2025-11-27 追加)
+
+以下のパラメータを `conf/teacher/ilora.yaml` またはコマンドライン引数で設定することで、学習挙動を詳細に制御できます。
+
+**1. Student Embeddingの利用設定**
+*   `use_item_embeddings_head` (bool, default: `True`):
+    *   `True`: StudentのItem EmbeddingをHeadとして使用し、Reverse Distillationを行います。
+    *   `False`: ランダム初期化されたLinear Headを使用し、Student Embeddingは使用しません（従来手法）。
+
+**2. Embedding Imitation (Reverse Distillation) のLoss設定**
+*   `distill_loss_type` (str, default: `mse`):
+    *   `mse`: 平均二乗誤差。ベクトルの大きさと方向の両方を近づけます。
+    *   `cosine`: コサイン類似度。ベクトルの方向のみを近づけます。
+    *   `l1`: 絶対値誤差。外れ値にロバストです。
+    *   `huber`: MSEとL1のハイブリッド。
+    *   `contrastive`: InfoNCE形式。正例ペアの類似度を上げ、負例ペアを下げます。
+
+**3. 正則化強度の減衰 (Decay) 設定**
+*   `distill_decay_type` (str, default: `linear`):
+    *   `none`: 減衰なし。常に `distill_lambda` の値を使用します。
+    *   `linear`: 直線的に減衰します。
+    *   `cosine`: コサインカーブに従って減衰します。
+    *   `exponential`: 指数関数的に減衰します。
+*   `distill_min_lambda` (float, default: `0.0`): 減衰後の最小値。
+*   `distill_decay_steps` (int, default: `null`):
+    *   減衰が完了するまでのステップ数。
+    *   `null` の場合は全学習ステップ (`max_steps`) かけて減衰します。
+    *   例: `1000` に設定すると、最初の1000ステップで `distill_min_lambda` まで減衰し、以降は維持されます。
+
+**コマンド例:**
+```bash
+# Cosine Lossを使用し、最初の100ステップで正則化を0にする設定
+poetry run python -m src.exp.run_teacher \
+    train=teacher \
+    teacher.use_item_embeddings_head=True \
+    teacher.distill_loss_type=cosine \
+    teacher.distill_decay_type=linear \
+    teacher.distill_min_lambda=0.0 \
+    teacher.distill_decay_steps=100
+```
+
 ### 3.3. 知識蒸留
 
 学習済みの教師モデルを用いて、生徒モデルに知識を蒸留します。

@@ -7,12 +7,16 @@ import numpy as np
 from pathlib import Path
 from transformers import AutoTokenizer
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 class SASRecDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, max_seq_len: int, num_items: int, item_id_to_name: Dict[int, str], num_candidates: int, padding_item_id: int, id_to_history_part: Dict[int, str], id_to_candidate_part: Dict[int, str]):
-        self.df = df
+    def __init__(self, df: pd.DataFrame, max_seq_len: int, num_items: int, item_id_to_name: Dict[int, str], num_candidates: int, padding_item_id: int, id_to_history_part: Dict[int, str], id_to_candidate_part: Dict[int, str], indices: Optional[List[int]] = None, subset_indices: Optional[List[int]] = None, teacher_outputs: Optional[Dict[str, torch.Tensor]] = None):
+        if indices is not None:
+            self.df = df.iloc[indices].reset_index(drop=True)
+        else:
+            self.df = df
         self.max_seq_len = max_seq_len
         self.num_items = num_items
         self.padding_item_id = padding_item_id
@@ -23,6 +27,27 @@ class SASRecDataset(Dataset):
         
         # Valid item IDs for negative sampling (exclude padding)
         self.valid_item_ids = [i for i in self.item_id_to_name.keys() if i != self.padding_item_id]
+
+        # Partial Distillation Setup
+        self.has_teacher_target = torch.zeros(len(self.df), dtype=torch.bool)
+        self.teacher_targets = {} # Dict of buffers
+        
+        if subset_indices is not None and teacher_outputs is not None:
+            # teacher_outputs: Dict[str, Tensor]
+            # Check length consistency
+            first_key = next(iter(teacher_outputs))
+            if len(subset_indices) != len(teacher_outputs[first_key]):
+                raise ValueError(f"Length mismatch: subset_indices ({len(subset_indices)}) vs teacher_outputs[{first_key}] ({len(teacher_outputs[first_key])})")
+            
+            # Initialize buffers for each key
+            for key, tensor in teacher_outputs.items():
+                # tensor shape: (num_subset, ...)
+                # buffer shape: (len(df), ...)
+                shape = (len(self.df),) + tensor.shape[1:]
+                self.teacher_targets[key] = torch.zeros(shape, dtype=tensor.dtype)
+                self.teacher_targets[key][subset_indices] = tensor
+            
+            self.has_teacher_target[subset_indices] = True
 
     def __len__(self):
         return len(self.df)
@@ -68,6 +93,13 @@ class SASRecDataset(Dataset):
         # Use pre-computed strings for efficiency
         candidates_parts = [self.id_to_candidate_part.get(i, str(i)) for i in candidates]
         candidates_str = ", ".join(candidates_parts)
+        
+        # Partial Distillation Data
+        has_teacher = self.has_teacher_target[index]
+        teacher_target_sample = {}
+        if self.teacher_targets:
+            for key, buffer in self.teacher_targets.items():
+                teacher_target_sample[key] = buffer[index]
 
         return {
             "seq_ids": seq_ids,
@@ -75,6 +107,8 @@ class SASRecDataset(Dataset):
             "history_str": history_str,
             "candidates_str": candidates_str,
             "candidates": candidates, # Return candidate IDs
+            "has_teacher_target": has_teacher,
+            "teacher_targets": teacher_target_sample # Dict
         }
 
 class TeacherTrainCollater:
@@ -164,6 +198,8 @@ class StudentCollater:
         padded_seqs = []
         len_seqs = []
         next_items = []
+        has_teacher_targets = []
+        teacher_targets = []
 
         for sample in batch:
             seq = sample["seq_ids"]
@@ -175,16 +211,35 @@ class StudentCollater:
             else:
                 padded_seq = seq[-self.max_seq_len:]
             padded_seqs.append(padded_seq)
+            
+            # Partial Distillation
+            if "has_teacher_target" in sample:
+                has_teacher_targets.append(sample["has_teacher_target"])
+                teacher_targets.append(sample["teacher_targets"])
 
-        # The 'seq' key is used by the student model (SASRec), so we keep it.
-        # We also create 'input_ids' and 'attention_mask' as dummy keys to avoid breaking
-        # the teacher model which might expect them, although they are not used by the student.
-        # This is a pragmatic choice to allow the same dataloader to be used in different contexts.
-        return {
+        batch_dict = {
             "seq": torch.LongTensor(padded_seqs),
             "len_seq": torch.LongTensor(len_seqs),
             "next_item": torch.LongTensor(next_items),
         }
+        
+        if has_teacher_targets:
+            batch_dict["has_teacher_target"] = torch.tensor(has_teacher_targets, dtype=torch.bool)
+            
+            # Stack teacher targets
+            # teacher_targets is List[Dict[str, Tensor]]
+            if teacher_targets and len(teacher_targets) > 0:
+                keys = teacher_targets[0].keys()
+                batch_dict["teacher_targets"] = {}
+                for key in keys:
+                    # Stack tensors for this key
+                    tensors = [t[key] for t in teacher_targets]
+                    if tensors and tensors[0].numel() > 0:
+                        batch_dict["teacher_targets"][key] = torch.stack(tensors)
+                    else:
+                        batch_dict["teacher_targets"][key] = torch.tensor([])
+        
+        return batch_dict
 
 
 class SASRecDataModule(pl.LightningDataModule):
@@ -200,6 +255,8 @@ class SASRecDataModule(pl.LightningDataModule):
                  val_file: str = "val.csv",
                  test_file: str = "test.csv",
                  num_candidates: int = 20, # Added num_candidates (cans_num)
+                 subset_indices_path: Optional[str] = None, # Added for Active Learning
+                 teacher_outputs_path: Optional[str] = None, # Added for Partial Distillation
                  seed: int = 42):
         super().__init__()
         self.dataset_name = dataset_name
@@ -214,6 +271,8 @@ class SASRecDataModule(pl.LightningDataModule):
         self.val_file = val_file
         self.test_file = test_file
         self.num_candidates = num_candidates # Store num_candidates
+        self.subset_indices_path = subset_indices_path
+        self.teacher_outputs_path = teacher_outputs_path
         self.seed = seed
 
     def prepare_data(self):
@@ -299,8 +358,42 @@ class SASRecDataModule(pl.LightningDataModule):
             i: f"{name} [CansEmb]" for i, name in self.mapped_id_to_title.items()
         }
 
+        # Load subset indices if provided
+        train_indices = None
+        subset_indices = None
+        teacher_outputs = None
+        
+        if self.subset_indices_path and os.path.exists(self.subset_indices_path):
+            logger.info(f"Loading subset indices from {self.subset_indices_path}")
+            loaded_indices = torch.load(self.subset_indices_path).tolist()
+            
+            if self.teacher_outputs_path and os.path.exists(self.teacher_outputs_path):
+                # Partial Distillation Mode
+                # We train on FULL dataset (train_indices = None)
+                # But we pass subset_indices and teacher_outputs to dataset
+                logger.info(f"Loading teacher outputs from {self.teacher_outputs_path}")
+                teacher_outputs = torch.load(self.teacher_outputs_path)
+                subset_indices = loaded_indices
+                logger.info(f"Partial Distillation Mode: {len(subset_indices)} samples have teacher targets.")
+            else:
+                # Active Learning Mode (Train on Subset)
+                train_indices = loaded_indices
+                logger.info(f"Active Learning Mode: Training on {len(train_indices)} subset samples.")
+
         # The dataset now needs the item_id_to_name map and pre-computed parts
-        self.train_dataset = SASRecDataset(self.train_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
+        self.train_dataset = SASRecDataset(
+            self.train_df, 
+            self.max_seq_len, 
+            self.num_items, 
+            mapped_id_to_title, 
+            self.num_candidates, 
+            self.padding_item_id, 
+            id_to_history_part, 
+            id_to_candidate_part, 
+            indices=train_indices,
+            subset_indices=subset_indices,
+            teacher_outputs=teacher_outputs
+        )
         self.val_dataset = SASRecDataset(self.val_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
         self.test_dataset = SASRecDataset(self.test_df, self.max_seq_len, self.num_items, mapped_id_to_title, self.num_candidates, self.padding_item_id, id_to_history_part, id_to_candidate_part)
 

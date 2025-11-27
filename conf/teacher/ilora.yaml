@@ -15,3 +15,11 @@ use_torch_compile: False
 use_gradient_checkpointing: True
 use_qlora: False
 skip_output_generation: false
+subset_indices_path: null # Active Learning用のインデックスファイルパス
+subset_indices_path: null # Active Learning用のインデックスファイルパス
+distill_lambda: 0.1 # Reverse Distillation Loss (Regularization) weight
+use_item_embeddings_head: True # True: Use Student Embeddings as Head, False: Use Random Linear Head
+distill_loss_type: "mse" # Options: mse, cosine, l1, huber, contrastive
+distill_decay_type: "linear" # Options: none, linear, cosine, exponential
+distill_min_lambda: 0.0 # Minimum value for distill_lambda after decay
+distill_decay_steps: null # Number of steps to reach min_lambda. If null, use max_steps.

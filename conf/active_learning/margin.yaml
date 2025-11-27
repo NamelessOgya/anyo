@@ -1,0 +1,3 @@
+strategy_name: margin
+mining_ratio: 0.5
+hard_indices_output_path: margin_indices.pt

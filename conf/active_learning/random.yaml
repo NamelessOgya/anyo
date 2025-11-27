@@ -1,0 +1,3 @@
+strategy_name: random
+mining_ratio: 0.5
+hard_indices_output_path: random_indices.pt
