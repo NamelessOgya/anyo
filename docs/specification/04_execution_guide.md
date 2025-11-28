@@ -22,7 +22,7 @@ docker build -t ilora-dllm2rec:latest .
 
 ```bash
 # コンテナをバックグラウンドで起動
-docker run -d --name ilora-dev-container -v "$(pwd)":/workspace -w /workspace --gpus all -it ilora-dllm2rec:latest
+docker run -d --name ilora-dev-container -v "$(pwd)":/workspace -w /workspace --gpus '"device=0"' --memory=200g -it ilora-dllm2rec:latest
 
 # 依存関係のインストール (初回のみ)
 docker exec ilora-dev-container bash -c "poetry lock && poetry install"

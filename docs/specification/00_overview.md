@@ -205,7 +205,8 @@ then
 fi
 
 docker run -it --rm \
-  --gpus all \
+  --gpus '"device=0"' \
+  --memory=200g \
   --name "${CONTAINER_NAME}" \
   -v "${HOST_PROJECT_ROOT}:/workspace" \
   -w /workspace \
