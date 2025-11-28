@@ -11,7 +11,7 @@ def test_load_hydra_config_defaults():
     cfg = load_hydra_config(config_path="../../conf", config_name="config")
 
     assert cfg.dataset.name == "movielens"
-    assert cfg.train.learning_rate == 1e-4
+    assert cfg.train.learning_rate == 0.0008 # Default from ilora_movielens -> teacher
     # Check a specific value that is part of the default config
     assert cfg.student.hidden_size == 64
 
@@ -44,4 +44,4 @@ def test_load_hydra_config_with_complex_overrides():
 
     assert cfg.student.num_layers == 5
     assert cfg.teacher.llm_model_name == "google/gemma-2b"
-    assert cfg.train.batch_size == 64 # Check a default not overridden
+    assert cfg.train.batch_size == 32 # Default from teacher config

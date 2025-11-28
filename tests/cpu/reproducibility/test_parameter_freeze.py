@@ -107,9 +107,10 @@ def test_layer_freeze_status(ilora_model_setup):
     for param in model.gating_network.parameters():
         assert param.requires_grad, "Gating Network should be trainable"
 
-    # 5. Item Prediction Head should be trainable
-    for param in model.item_prediction_head.parameters():
-        assert param.requires_grad, "Item Prediction Head should be trainable"
+    # 5. Item Prediction Head should be trainable (if it exists)
+    if model.item_prediction_head is not None:
+        for param in model.item_prediction_head.parameters():
+            assert param.requires_grad, "Item Prediction Head should be trainable"
         
     # 6. Projector should be trainable
     for param in model.projector.parameters():

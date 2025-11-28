@@ -43,6 +43,7 @@ def model_behavior_fixture():
             super().__init__()
             self.hidden_size = hidden_size
             self.num_items = num_items
+            self.item_embeddings = nn.Embedding(num_items + 1, hidden_size)
             
         def get_full_sequence_representations(self, item_seq, item_seq_len):
             batch_size, seq_len = item_seq.shape
@@ -232,8 +233,8 @@ def test_38_ilora_output_behavior(model_behavior_fixture):
     assert set(outputs.keys()) == expected_keys
     
     # Verify shapes
-    # ranking_scores: (batch_size, num_items)
-    assert outputs["ranking_scores"].shape == (batch_size, num_items)
+    # ranking_scores: (batch_size, num_items + 1)
+    assert outputs["ranking_scores"].shape == (batch_size, num_items + 1)
     
     # embeddings: (batch_size, llm_hidden_size)
     # llm_hidden_size depends on the model (OPT-125m is 768)
@@ -247,10 +248,8 @@ def test_38_ilora_output_behavior(model_behavior_fixture):
     
     # Verify values range
     assert (outputs["confidence"] >= 0).all() and (outputs["confidence"] <= 1).all()
-    # Candidates should be valid item indices (0 to num_items-1)
-    # Note: item_prediction_head maps to num_items. If items are 1-indexed, this might be 0..num_items-1 mapping to 1..num_items?
-    # Usually it's 0-indexed logits corresponding to 1-indexed items if consistent with SASRec.predict logic.
-    assert (outputs["candidates"] >= 0).all() and (outputs["candidates"] < num_items).all()
+    # Candidates should be valid item indices (0 to num_items)
+    assert (outputs["candidates"] >= 0).all() and (outputs["candidates"] <= num_items).all()
 
 def test_39_ilora_training_step_logic(model_behavior_fixture):
     """
@@ -274,7 +273,7 @@ def test_39_ilora_training_step_logic(model_behavior_fixture):
     
     # Run get_teacher_outputs
     outputs = model.get_teacher_outputs(batch)
-    ranking_scores = outputs["ranking_scores"] # (batch_size, num_items)
+    ranking_scores = outputs["ranking_scores"] # (batch_size, num_items + 1)
     
     # Target items (1-based)
     target_items = batch["next_item"]
@@ -283,10 +282,10 @@ def test_39_ilora_training_step_logic(model_behavior_fixture):
     assert ranking_scores.shape[0] == target_items.shape[0]
     
     # Calculate CrossEntropyLoss
-    # ranking_scores corresponds to items 1..N (indices 0..N-1)
+    # ranking_scores corresponds to items 0..N
     # target_items are 1..N
-    # So target for loss should be target_items - 1
-    loss = nn.functional.cross_entropy(ranking_scores, target_items - 1)
+    # So we can use target_items directly as indices
+    loss = nn.functional.cross_entropy(ranking_scores, target_items)
     
     assert not torch.isnan(loss)
     assert loss.item() > 0
@@ -300,11 +299,11 @@ def test_39_ilora_training_step_logic(model_behavior_fixture):
     # Re-run forward pass to ensure graph is built
     outputs = model.get_teacher_outputs(batch)
     ranking_scores = outputs["ranking_scores"]
-    loss = nn.functional.cross_entropy(ranking_scores, target_items - 1)
+    loss = nn.functional.cross_entropy(ranking_scores, target_items)
     
     loss.backward()
     
     # Check if some parameters have gradients
-    # item_prediction_head should definitely have gradients
-    assert model.item_prediction_head.weight.grad is not None
-    assert model.item_prediction_head.weight.grad.abs().sum() > 0
+    # Projector should have gradients
+    assert model.projector.model[0].weight.grad is not None
+    assert model.projector.model[0].weight.grad.abs().sum() > 0

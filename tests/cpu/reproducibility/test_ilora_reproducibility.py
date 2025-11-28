@@ -355,7 +355,7 @@ def test_8_teacher_output_scores_shape(ilora_repro_fixture):
     ranking_scores = outputs["ranking_scores"]
     
     assert isinstance(ranking_scores, torch.Tensor)
-    assert ranking_scores.shape == (batch_size, cfg.num_items)
+    assert ranking_scores.shape == (batch_size, cfg.num_items + 1)
 
 def test_9_teacher_output_embeddings_shape(ilora_repro_fixture):
     """

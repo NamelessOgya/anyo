@@ -16,7 +16,7 @@ use_gradient_checkpointing: True
 use_qlora: False
 skip_output_generation: false
 subset_indices_path: null # Active Learning用のインデックスファイルパス
-subset_indices_path: null # Active Learning用のインデックスファイルパス
+
 distill_lambda: 0.1 # Reverse Distillation Loss (Regularization) weight
 use_item_embeddings_head: True # True: Use Student Embeddings as Head, False: Use Random Linear Head
 distill_loss_type: "mse" # Options: mse, cosine, l1, huber, contrastive

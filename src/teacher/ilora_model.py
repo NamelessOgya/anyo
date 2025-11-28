@@ -47,11 +47,12 @@ class iLoRAModel(nn.Module):
         self.llm_dtype = llm_dtype
         self.use_item_embeddings_head = use_item_embeddings_head
         
-        # ベースLLMの全パラメータを凍結
+        # ベースLLMの全パラメータを凍結（学習させない）
         for param in llm.parameters():
             param.requires_grad = False
 
         # LLMをMoeLoraModelでラップする
+        # これにより、LoRAアダプターとMoEゲーティング機構が追加されます
         self.llm = MoeLoraModel(
             model=llm,
             target_modules=["q_proj", "v_proj"],
@@ -61,7 +62,7 @@ class iLoRAModel(nn.Module):
             num_lora_experts=num_lora_experts,
         ).to(self.device) # LLMはfactory.pyですでに正しいdtypeにキャストされています
 
-        # ベースLLMの全パラメータの凍結は、MoeLoraModel内で
+        # ベースLLMのパラメータ凍結は、MoeLoraModel内で
         # 元の重みのrequires_grad=Falseを設定することで処理されます
 
         self.tokenizer = tokenizer
@@ -71,14 +72,15 @@ class iLoRAModel(nn.Module):
         self.item_id_to_name = item_id_to_name
         self.padding_item_id = padding_item_id
 
-        # item_idから名前への高速なルックアップのためのリストを作成（SASRecDatasetのitem_id_to_nameのためにまだ必要）
-        # item_idが0または1から始まり、連続した範囲をカバーしていると仮定
+        # item_idから名前への高速なルックアップのためのリストを作成
+        # （SASRecDatasetのitem_id_to_nameのためにまだ必要）
+        # item_idが0または1から始まり、連続した範囲をカバーしていると仮定しています
         max_item_id = max(self.item_id_to_name.keys())
         self.item_name_lookup = [None] * (max_item_id + 1)
         for item_id, item_name in self.item_id_to_name.items():
             self.item_name_lookup[item_id] = item_name
 
-        # ゲーティングネットワークはエキスパートの重みを予測します
+        # ゲーティングネットワーク：ユーザー埋め込みからエキスパートの重みを予測します
         self.gating_network = MLPProjector(
             input_dim=self.rec_model.hidden_size, # ゲーティングのための正しい入力次元
             output_dim=num_lora_experts,
@@ -86,38 +88,44 @@ class iLoRAModel(nn.Module):
             dropout_rate=dropout_rate,
         ).to(self.device, dtype=self.llm_dtype) # ゲーティングネットワークをllm_dtypeにキャスト
 
-        # LLMの最後の隠れ状態をnum_items個のロジットに射影する線形層を追加
+        # アイテム予測ヘッドの初期化
+        # use_item_embeddings_headがFalseの場合、線形層を使用してロジットを計算します
         if not self.use_item_embeddings_head:
             self.item_prediction_head = nn.Linear(self.llm.model.config.hidden_size, num_items).to(self.device, dtype=self.llm_dtype)
         else:
             self.item_prediction_head = None
 
-        # Store initial item embeddings for Reverse Distillation Loss
-        # We clone the weights to keep the original values
-        # Only needed if we use item embeddings head (and thus unfreeze them)
+        # Reverse Distillation Lossのために、初期状態のアイテム埋め込みを保存します
+        # Embedding Headを使用する場合（つまりアイテム埋め込みを学習する場合）にのみ必要です
+        # 元の値を保持するために重みを複製（clone）してバッファに登録します
         if self.use_item_embeddings_head:
             if hasattr(self.rec_model, "item_embeddings"):
                 self.register_buffer("student_item_embeddings", self.rec_model.item_embeddings.weight.clone().detach())
             elif hasattr(self.rec_model, "cacu_x"):
-                 # For SASRecModules_ori.py compatibility
+                 # SASRecModules_ori.py との互換性のため
                  if hasattr(self.rec_model, "item_embeddings"):
                      self.register_buffer("student_item_embeddings", self.rec_model.item_embeddings.weight.clone().detach())
                  else:
-                     logger.warning("Could not find item_embeddings to store for Reverse Distillation.")
+                     logger.warning("Reverse Distillation用のitem_embeddingsが見つかりませんでした。")
             else:
-                logger.warning("Could not find item_embeddings to store for Reverse Distillation.")
+                logger.warning("Reverse Distillation用のitem_embeddingsが見つかりませんでした。")
 
     def encode_items(self, items: torch.Tensor) -> torch.Tensor:
         """
         SASRecのアイテム表現をLLMの埋め込み空間に射影します。
-        items: (batch_size, seq_len, hidden_size) の埋め込み、または (batch_size, seq_len) のID
+        
+        Args:
+            items: (batch_size, seq_len, hidden_size) の埋め込みテンソル、
+                   または (batch_size, seq_len) のアイテムIDテンソル
+        
+        Returns:
+            torch.Tensor: LLMの次元に射影されたアイテム埋め込み
         """
         if items.dtype == torch.long or items.dtype == torch.int:
             # IDが渡された場合、SASRecモデルを使って埋め込みを取得
-            # SASRecモデルの実装に依存するが、通常はEmbedding層を持つ
             if hasattr(self.rec_model, "item_embeddings"):
                 item_embs = self.rec_model.item_embeddings(items)
-            elif hasattr(self.rec_model, "cacu_x"): # For SASRecModules_ori.py compatibility
+            elif hasattr(self.rec_model, "cacu_x"): # SASRecModules_ori.py 互換性
                 item_embs = self.rec_model.cacu_x(items)
             else:
                 raise AttributeError("rec_model does not have 'item_embeddings' or 'cacu_x' method.")
@@ -129,7 +137,8 @@ class iLoRAModel(nn.Module):
 
     def encode_users(self, last_item_representation: torch.Tensor) -> torch.Tensor:
         """
-        最後のアイテム表現（ユーザー埋め込み）をゲーティングに使用します。
+        最後のアイテム表現（ユーザー埋め込み）をゲーティングに使用するために処理します。
+        現在はそのまま返していますが、将来的な拡張のためにメソッド化しています。
         """
         # last_item_representationはすでにSASRecからの出力であると仮定
         return last_item_representation
@@ -137,11 +146,13 @@ class iLoRAModel(nn.Module):
     def _get_llm_outputs(self, batch: Dict[str, Any]) -> torch.Tensor:
         """
         入力を準備し、LLMを実行し、生の出力を返します。
-        このメソッドは以下を処理します:
-        1. SASRecからのユーザー埋め込みの計算。
-        2. ユーザー埋め込みからのゲート重みの計算。
-        3. プロンプト内の[HistoryEmb]プレースホルダーの、射影されたアイテム埋め込みへの置換。
-        4. MoE-LoRA LLMの実行。
+        
+        このメソッドの主な処理:
+        1. SASRecからユーザー埋め込み（全シーケンス表現）を取得。
+        2. ユーザー埋め込みに基づいて、MoE-LoRAのゲート重みを計算。
+        3. プロンプト内の特別なプレースホルダー（[HistoryEmb], [CansEmb]）を、
+           射影されたアイテム埋め込みに置換。
+        4. MoE-LoRA LLMを実行。
         """
         item_seq, item_seq_len = batch["seq"], batch["len_seq"]
 
@@ -161,10 +172,13 @@ class iLoRAModel(nn.Module):
         gate_weights = gate_weights.to(input_embeds.dtype)
 
         # MoeLoraModelインスタンスにgate_weightsを直接設定
+        # これにより、LLMの各層でこの重みが使用されます
         self.llm.gate_weights.clear()
         self.llm.gate_weights.append(gate_weights)
 
-        # 置換用のアイテム埋め込みの準備
+        # --- [HistoryEmb] の置換ロジック ---
+        # プロンプト内の [HistoryEmb] トークンを、ユーザーの履歴アイテム埋め込みに置き換えます
+        
         his_token_id = self.tokenizer.additional_special_tokens_ids[
             self.tokenizer.additional_special_tokens.index("[HistoryEmb]")
         ]
@@ -172,7 +186,7 @@ class iLoRAModel(nn.Module):
 
         modified_input_embeds = input_embeds.clone()
 
-        # プレースホルダー埋め込みのベクトル化された置換
+        # プレースホルダー埋め込みのベクトル化された置換処理
         history_emb_mask = (input_ids == his_token_id)
         
         # シーケンス内の有効なアイテム（パディングでなく、seq_len内）のマスクを作成
@@ -180,42 +194,38 @@ class iLoRAModel(nn.Module):
         seq_len_mask = torch.arange(max_seq_len, device=item_seq.device)[None, :] >= (max_seq_len - item_seq_len[:, None])
         valid_item_mask = seq_len_mask & (item_seq != self.padding_item_id)
 
-        # ランク計算 (後ろから0, 1, 2...)
-        # Placeholders
+        # ランク計算 (後ろから0, 1, 2...と数える)
+        # これにより、最新のアイテムから順にプレースホルダーに埋めていくことができます
+        
+        # Placeholdersのランク
         p_cumsum = history_emb_mask.cumsum(dim=1)
         p_count = p_cumsum[:, -1].unsqueeze(1)
         p_rank = p_count - p_cumsum # 0-based rank from end (0 is last)
 
-        # Valid Items
+        # 有効なアイテムのランク
         i_cumsum = valid_item_mask.cumsum(dim=1)
         i_count = i_cumsum[:, -1].unsqueeze(1)
         i_rank = i_count - i_cumsum # 0-based rank from end (0 is last)
 
         # バッファへのスキャッター (Items -> Buffer)
-        # バッファサイズは max_seq_len
-        # batch_indicesを用意
+        # 一度バッファに集めることで、プレースホルダーとアイテムの位置がずれていても対応可能にします
         batch_size = input_ids.shape[0]
         batch_indices = torch.arange(batch_size, device=input_ids.device).unsqueeze(1)
         
         # アイテムをランクに基づいてバッファに配置
-        # valid_item_maskがTrueの場所のみ
         item_buffer = torch.zeros(batch_size, max_seq_len, his_item_embeds.shape[-1], device=his_item_embeds.device, dtype=his_item_embeds.dtype)
         
-        # Advanced indexing
+        # Advanced indexingを使用して配置
         b_idx_i = batch_indices.expand_as(valid_item_mask)[valid_item_mask]
         rank_idx_i = i_rank[valid_item_mask]
         
-        # ランクが負になることはないはずだが、念のためチェック (mask外は計算上どうなる？)
-        # mask外は無視するのでOK。
-        
         # 安全のためにランクをクランプ (index out of boundsを防ぐ)
-        # ただし論理的に正しいなら不要。max_seq_len内に収まるはず。
         rank_idx_i = rank_idx_i.clamp(0, max_seq_len - 1)
         
         item_buffer[b_idx_i, rank_idx_i] = his_item_embeds[valid_item_mask]
 
         # バッファからのギャザー (Buffer -> Placeholders)
-        # history_emb_maskがTrue かつ p_rank < i_count の場所のみ置換
+        # history_emb_maskがTrue かつ p_rank < i_count (アイテムが存在する) 場所のみ置換
         replace_mask = history_emb_mask & (p_rank < i_count)
         
         b_idx_p = batch_indices.expand_as(replace_mask)[replace_mask]
@@ -224,25 +234,20 @@ class iLoRAModel(nn.Module):
         
         modified_input_embeds[replace_mask] = item_buffer[b_idx_p, rank_idx_p].to(modified_input_embeds.dtype)
 
-        # --- [CansEmb] Replacement Logic ---
+        # --- [CansEmb] の置換ロジック ---
+        # プロンプト内の [CansEmb] トークンを、候補アイテムの埋め込みに置き換えます
+        
         cans_token_id = self.tokenizer.additional_special_tokens_ids[
             self.tokenizer.additional_special_tokens.index("[CansEmb]")
         ]
         
-        # Check if [CansEmb] exists in the batch
+        # バッチ内に [CansEmb] が存在する場合のみ処理
         if (input_ids == cans_token_id).any():
-            # Encode candidate items
-            # batch["cans"] should be available now
             if "cans" in batch:
-                cans_item_embeds = self.encode_items(batch["cans"]) # (batch_size, num_candidates, hidden_size)
+                # 候補アイテムをエンコード: (batch_size, num_candidates, hidden_size)
+                cans_item_embeds = self.encode_items(batch["cans"])
                 
                 cans_emb_mask = (input_ids == cans_token_id)
-                
-                # Rank calculation for candidates
-                # Assuming candidates are already valid and ordered?
-                # Usually candidates are dense (no padding in middle).
-                # But we might have padding at end if num_candidates varies?
-                # batch["len_cans"] exists.
                 
                 max_cans_len = cans_item_embeds.shape[1]
                 if "len_cans" in batch:
@@ -250,36 +255,18 @@ class iLoRAModel(nn.Module):
                 else:
                     cans_len_mask = torch.ones(batch_size, max_cans_len, device=input_ids.device, dtype=torch.bool)
                     
-                # Placeholders ranks
+                # プレースホルダーのランク計算
+                # 候補アイテムは「先頭から」順に埋めていくため、通常の累積和を使用
                 cp_cumsum = cans_emb_mask.cumsum(dim=1)
-                # We want to replace FIRST N placeholders with FIRST N candidates?
-                # Original logic:
-                # indices_to_replace = cans_placeholder_indices[:num_to_replace_cans]
-                # valid_cans_embeds = cans_item_embeds[i][:num_to_replace_cans]
-                # So it's FIRST to FIRST. (0-th candidate to 0-th placeholder)
+                cp_rank = cp_cumsum - 1 # 0-based rank from start
                 
-                # So we need 0-based rank from START.
-                # cp_rank = cp_cumsum - 1. (where mask is True)
-                cp_rank = cp_cumsum - 1
-                
-                # Candidates ranks
-                # Since candidates are dense and ordered, the index IS the rank.
-                # We don't need scatter/gather for candidates if we assume they are dense.
-                # We can just use the index.
-                
-                # But we need to match Placeholder Rank K to Candidate Index K.
-                
-                # Create a buffer? Or just index into cans_item_embeds directly?
-                # cans_item_embeds is (B, C, H).
-                # We want: modified[b, p_idx] = cans_item_embeds[b, cp_rank[b, p_idx]]
-                
-                # Condition: mask is True AND cp_rank < num_valid_cans
-                
+                # 候補アイテムの有効数
                 if "len_cans" in batch:
                     num_valid_cans = batch["len_cans"].unsqueeze(1)
                 else:
                     num_valid_cans = torch.tensor(max_cans_len, device=input_ids.device).unsqueeze(0).expand(batch_size, 1)
                     
+                # 置換マスク: [CansEmb]の場所 かつ ランクが有効な候補数未満
                 c_replace_mask = cans_emb_mask & (cp_rank < num_valid_cans)
                 
                 b_idx_c = batch_indices.expand_as(c_replace_mask)[c_replace_mask]
@@ -288,7 +275,7 @@ class iLoRAModel(nn.Module):
                 
                 modified_input_embeds[c_replace_mask] = cans_item_embeds[b_idx_c, rank_idx_c].to(modified_input_embeds.dtype)
             else:
-                logger.warning("Batch does not contain 'cans' key, skipping [CansEmb] replacement.")
+                logger.warning("バッチに 'cans' キーが含まれていないため、[CansEmb] の置換をスキップします。")
 
         outputs = self.llm(
             inputs_embeds=modified_input_embeds,
@@ -306,61 +293,51 @@ class iLoRAModel(nn.Module):
 
     def train(self, mode: bool = True):
         """
-        Override train mode to ensure rec_model stays in eval mode.
+        trainモードの上書き。
+        rec_model (SASRec) は常にevalモード（Dropout無効化など）に保ちつつ、
+        item_embeddings の学習（requires_grad=True）は許可します。
         """
         super().train(mode)
         if mode:
-            # We want rec_model to be in eval mode generally (for dropout etc),
-            # BUT we want item_embeddings to be trainable.
-            # If we set rec_model.eval(), dropout is disabled, which is good.
-            # Gradients for item_embeddings will still be computed if requires_grad=True.
+            # rec_modelは基本的にevalモードで動作させたい（Dropoutなどを無効化するため）
+            # しかし、item_embeddingsの勾配計算はrequires_grad=Trueであれば行われる
             self.rec_model.eval()
         return self
 
     def get_teacher_outputs(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         """
-        蒸留用のフォワードパス。ランキングスコア、埋め込み、候補、信頼度を返します。
+        蒸留用のフォワードパス。
+        ランキングスコア、埋め込み、候補、信頼度を含む辞書を返します。
         """
         outputs = self._get_llm_outputs(batch)
         
-        # LLM Output: (Batch, Seq, Hidden)
-        # We take the last token's hidden state
+        # LLMの出力: (Batch, Seq, Hidden)
+        # 最後のトークンの隠れ状態を取得
         last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (Batch, LLM_Hidden)
         
-        # Project to Rec Model Space (if needed) or use as is?
-        # We want to compare with Item Embeddings.
-        # Item Embeddings are in Rec Space (e.g. 64 dim).
-        # LLM Hidden is 2048 dim.
-        # So we need to project LLM Hidden -> Rec Space.
-        # Wait, self.projector projects Rec -> LLM.
-        # We need LLM -> Rec.
-        # But we don't have that projector.
-        
-        # Alternative:
-        # We project Item Embeddings to LLM Space using self.projector.
-        # Then calculate dot product in LLM Space.
-        # This is consistent with how we input items to LLM.
-        
-        # 3. Calculate Logits
+        # ランキングスコア（ロジット）の計算
         if self.use_item_embeddings_head:
-            # Embedding Head Logic
+            # Embedding Head ロジック:
+            # Studentのアイテム埋め込みを正解（ターゲット）として使用します。
+            # 1. 全アイテムの埋め込みを取得 (N, H_rec)
             all_items_indices = torch.arange(self.rec_model.item_embeddings.num_embeddings, device=self.device)
-            all_item_embs_rec = self.rec_model.item_embeddings(all_items_indices) # (N, H_rec)
+            all_item_embs_rec = self.rec_model.item_embeddings(all_items_indices)
             
-            # Project to LLM space
-            all_item_embs_llm = self.projector(all_item_embs_rec.to(self.projector.model[0].weight.dtype)) # (N, H_llm)
+            # 2. LLMの次元に射影 (N, H_llm)
+            all_item_embs_llm = self.projector(all_item_embs_rec.to(self.projector.model[0].weight.dtype))
             
-            # Calculate logits
-            ranking_scores = last_hidden_state @ all_item_embs_llm.T # (B, N)
+            # 3. 内積によりスコア計算 (B, N)
+            ranking_scores = last_hidden_state @ all_item_embs_llm.T
         else:
-            # Linear Head Logic
+            # Linear Head ロジック:
+            # 従来の線形層による予測
             ranking_scores = self.item_prediction_head(last_hidden_state)
         
-        # Mask padding item (index 0) if necessary?
-        # Usually index 0 is padding. We can set its score to -inf.
+        # パディングアイテム（通常ID 0）のスコアをマスク
         if self.padding_item_id is not None:
              ranking_scores[:, self.padding_item_id] = float('-inf')
         
+        # 上位K個の候補と信頼度（Softmax確率）を計算
         confidence, candidates = torch.topk(ranking_scores, k=self.candidate_topk, dim=-1)
         confidence = F.softmax(confidence, dim=-1)
 

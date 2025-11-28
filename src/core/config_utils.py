@@ -6,7 +6,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 def load_hydra_config(
-    config_path: str = "../conf",
+    config_path: str = "../../conf",
     config_name: str = "config",
     overrides: Optional[List[str]] = None,
 ) -> DictConfig:
@@ -45,5 +45,7 @@ def load_hydra_config(
     finally:
         # sys.argvを元に戻す
         sys.argv = original_argv
+        # テスト間の干渉を防ぐためにGlobalHydraをクリアする
+        hydra.core.global_hydra.GlobalHydra.instance().clear()
 
     return cfg

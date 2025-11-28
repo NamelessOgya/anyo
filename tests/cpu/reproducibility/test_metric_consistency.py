@@ -72,7 +72,7 @@ def test_student_baseline_metric_consistency():
     Test that the metric monitored by ModelCheckpoint in run_student_baseline.py
     is actually logged by SASRecTrainer in trainer_baseline.py.
     """
-    project_root = Path(__file__).parent.parent.parent
+    project_root = Path(__file__).parent.parent.parent.parent
     script_path = project_root / "src/exp/run_student_baseline.py"
     trainer_path = project_root / "src/student/trainer_baseline.py"
     
@@ -112,7 +112,7 @@ def test_distill_metric_consistency():
     Test that the metric monitored by ModelCheckpoint in run_distill.py
     is actually logged by DistillationTrainer in trainer_distill.py.
     """
-    project_root = Path(__file__).parent.parent.parent
+    project_root = Path(__file__).parent.parent.parent.parent
     script_path = project_root / "src/exp/run_distill.py"
     trainer_path = project_root / "src/distill/trainer_distill.py"
     
@@ -151,7 +151,7 @@ def test_teacher_metric_consistency():
     Test that the metric monitored by ModelCheckpoint in run_teacher.py
     is actually logged by iLoRATrainer in trainer_ilora.py.
     """
-    project_root = Path(__file__).parent.parent.parent
+    project_root = Path(__file__).parent.parent.parent.parent
     script_path = project_root / "src/exp/run_teacher.py"
     trainer_path = project_root / "src/teacher/trainer_ilora.py"
     

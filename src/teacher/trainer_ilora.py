@@ -60,18 +60,19 @@ class iLoRATrainer(pl.LightningModule):
 
     def _get_current_lambda(self) -> float:
         """
-        Calculate current distillation lambda based on decay schedule.
+        現在の学習ステップに基づいて、蒸留損失の重み（Lambda）を計算します。
+        設定された減衰スケジュール（linear, cosine, exponential）に従って値を変化させます。
         """
         if self.distill_lambda <= 0 or self.distill_decay_type == "none":
             return self.distill_lambda
             
-        # Determine duration for decay
+        # 減衰にかける期間（ステップ数）を決定
         if self.distill_decay_steps is not None and self.distill_decay_steps > 0:
             decay_duration = self.distill_decay_steps
         elif self.trainer.max_steps and self.trainer.max_steps > 0:
             decay_duration = self.trainer.max_steps
         else:
-            # Fallback: estimate from max_epochs or just return initial
+            # フォールバック: max_epochsから推定するか、初期値を返す
             return self.distill_lambda
 
         current_step = self.global_step
@@ -81,12 +82,14 @@ class iLoRATrainer(pl.LightningModule):
         end = self.distill_min_lambda
         
         if self.distill_decay_type == "linear":
+            # 線形減衰
             return start - (start - end) * progress
         elif self.distill_decay_type == "cosine":
+            # コサイン減衰
             import math
             return end + 0.5 * (start - end) * (1 + math.cos(math.pi * progress))
         elif self.distill_decay_type == "exponential":
-            # start * (end/start)^progress
+            # 指数関数的減衰: start * (end/start)^progress
             if start == 0: return 0.0
             if end <= 0: end = 1e-6 
             return start * ((end / start) ** progress)
@@ -95,51 +98,57 @@ class iLoRATrainer(pl.LightningModule):
 
     def _compute_distill_loss(self, current_embeddings: torch.Tensor, original_embeddings: torch.Tensor) -> torch.Tensor:
         """
-        Compute distillation loss based on configured type.
+        設定されたタイプに基づいて蒸留損失（Reverse Distillation Loss）を計算します。
+        
+        Args:
+            current_embeddings: 現在のStudentモデル（学習中）のアイテム埋め込み
+            original_embeddings: 教師（初期状態のStudent）のアイテム埋め込み
         """
         if self.distill_loss_type == "mse":
+            # 平均二乗誤差: ベクトルの大きさと方向の両方を近づける
             return F.mse_loss(current_embeddings, original_embeddings)
         elif self.distill_loss_type == "l1":
+            # L1損失（平均絶対誤差）: 外れ値に対してロバスト
             return F.l1_loss(current_embeddings, original_embeddings)
         elif self.distill_loss_type == "huber":
+            # Huber損失: MSEとL1のハイブリッド
             return F.huber_loss(current_embeddings, original_embeddings)
         elif self.distill_loss_type == "cosine":
-            # Cosine Embedding Loss: 1 - cosine_similarity
-            # target is 1 (perfect alignment)
-            # F.cosine_embedding_loss expects input1, input2, target
-            # But we can just compute mean cosine similarity manually
+            # コサイン埋め込み損失: 1 - cosine_similarity
+            # ベクトルの方向のみを近づけ、大きさは無視する
+            # F.cosine_embedding_loss は input1, input2, target を期待するが、
+            # ここでは単純に平均コサイン類似度を計算して 1 から引く
             cos_sim = F.cosine_similarity(current_embeddings, original_embeddings, dim=-1)
             return 1.0 - cos_sim.mean()
         elif self.distill_loss_type == "contrastive":
-            # Simple Contrastive Loss (InfoNCE style)
-            # Positive pair: (current[i], original[i])
-            # Negative pairs: (current[i], original[j]) where j != i
-            # We can compute similarity matrix: current @ original.T
-            # Target is diagonal.
+            # 単純な対照学習損失 (InfoNCE形式)
+            # 正例ペア: (current[i], original[i]) -> 類似度を上げる
+            # 負例ペア: (current[i], original[j]) where j != i -> 類似度を下げる
             
-            # Normalize first for stability
+            # 安定性のために正規化
             curr_norm = F.normalize(current_embeddings, p=2, dim=-1)
             orig_norm = F.normalize(original_embeddings, p=2, dim=-1)
             
-            # Similarity matrix (N, N)
+            # 類似度行列 (N, N)
             logits = torch.matmul(curr_norm, orig_norm.T)
             
-            # Temperature scaling (optional, usually 0.1 or similar)
+            # 温度パラメータ (通常 0.1 程度)
             temperature = 0.1
             logits = logits / temperature
             
-            # Labels are 0, 1, 2, ... N-1 (diagonal)
+            # 正解ラベルは対角成分 (0, 1, 2, ... N-1)
             labels = torch.arange(logits.size(0), device=logits.device)
             
             return F.cross_entropy(logits, labels)
         else:
-            # Default to MSE if unknown
+            # 未知のタイプの場合はデフォルトでMSEを使用
             return F.mse_loss(current_embeddings, original_embeddings)
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """
         1回の学習ステップ。
-        iLoRAのランキングスコアを使用してCross Entropy Lossを計算します。
+        iLoRAのランキングスコアを使用したCross Entropy Lossと、
+        オプションでReverse Distillation Lossを計算します。
         """
         start_time = time.time()
         
@@ -152,13 +161,13 @@ class iLoRATrainer(pl.LightningModule):
         last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (B, H)
         
         if self.model.use_item_embeddings_head:
-             # Embedding Head
+             # Embedding Head: アイテム埋め込みとの内積
              all_items_indices = torch.arange(self.model.rec_model.item_embeddings.num_embeddings, device=self.model.device)
              all_item_embs_rec = self.model.rec_model.item_embeddings(all_items_indices)
              all_item_embs_llm = self.model.projector(all_item_embs_rec.to(self.model.projector.model[0].weight.dtype))
              ranking_scores = last_hidden_state @ all_item_embs_llm.T
         else:
-             # Linear Head
+             # Linear Head: 線形層による予測
              ranking_scores = self.model.item_prediction_head(last_hidden_state)
 
         # 正解アイテムのID (1-based)
@@ -168,7 +177,7 @@ class iLoRATrainer(pl.LightningModule):
         # ranking_scoresは0-based index (0 -> Item 1) なので、target_itemsから1を引く
         loss = F.cross_entropy(ranking_scores, target_items - 1)
 
-        # Reverse Distillation Loss
+        # Reverse Distillation Loss (Embedding Imitation)
         current_lambda = self._get_current_lambda()
         
         if current_lambda > 0 and hasattr(self.model, "student_item_embeddings"):

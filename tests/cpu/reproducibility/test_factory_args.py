@@ -19,7 +19,17 @@ def test_create_teacher_model_dtype_args(mock_torch_load, mock_sasrec, mock_toke
     mock_tokenizer = MagicMock()
     mock_tokenizer_cls.from_pretrained.return_value = mock_tokenizer
     
-    mock_rec_model = MagicMock()
+    class Dummy:
+        pass
+    mock_rec_model = Dummy()
+    mock_rec_model.hidden_size = 32
+    mock_rec_model.num_items = 100
+    mock_rec_model.item_embeddings = torch.nn.Embedding(10, 32)
+    mock_rec_model.parameters = MagicMock(return_value=[])
+    mock_rec_model.load_state_dict = MagicMock()
+    mock_rec_model.eval = MagicMock()
+    mock_rec_model.to = MagicMock(return_value=mock_rec_model)
+    
     mock_sasrec.return_value = mock_rec_model
     
     mock_torch_load.return_value = {'state_dict': {}}

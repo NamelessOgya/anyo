@@ -5,7 +5,7 @@ from pathlib import Path
 from omegaconf import DictConfig
 
 @pytest.mark.parametrize("experiment_file", [
-    f for f in os.listdir(os.path.join(os.path.dirname(__file__), "../../conf/experiment")) 
+    f for f in os.listdir(os.path.join(os.path.dirname(__file__), "../../../conf/experiment")) 
     if f.endswith(".yaml")
 ])
 def test_experiment_configs(experiment_file):

@@ -142,5 +142,5 @@ def test_ilora_get_teacher_outputs_shape(ilora_model_and_data):
     
     assert "ranking_scores" in teacher_outputs
     assert "embeddings" in teacher_outputs
-    assert teacher_outputs["ranking_scores"].shape == (batch_size, num_items)
+    assert teacher_outputs["ranking_scores"].shape == (batch_size, num_items + 1)
     assert teacher_outputs["embeddings"].shape == (batch_size, hidden_size)

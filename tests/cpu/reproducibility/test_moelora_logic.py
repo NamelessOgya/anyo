@@ -10,7 +10,7 @@ def dummy_llm():
     config.hidden_size = 32 # Small hidden size for testing
     config.num_hidden_layers = 1
     config.num_attention_heads = 4
-    return AutoModelForCausalLM.from_config(config)fkbgk
+    return AutoModelForCausalLM.from_config(config)
 
 def test_moelora_rank_interpretation(dummy_llm):
     """

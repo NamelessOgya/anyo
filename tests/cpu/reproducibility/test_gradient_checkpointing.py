@@ -10,7 +10,7 @@ from src.teacher.factory import create_teacher_model
 @patch("src.teacher.factory.AutoTokenizer")
 @patch("src.teacher.factory.SASRec")
 @patch("torch.load")
-def test_create_teacher_model_torch_compile(mock_torch_load, mock_sasrec, mock_tokenizer_cls, mock_automodel_cls, mock_torch_compile):
+def test_create_teacher_model_gradient_checkpointing(mock_torch_load, mock_sasrec, mock_tokenizer_cls, mock_automodel_cls, mock_torch_compile):
     # Setup mocks
     mock_llm = MagicMock()
     mock_llm.config.hidden_size = 768
@@ -20,12 +20,22 @@ def test_create_teacher_model_torch_compile(mock_torch_load, mock_sasrec, mock_t
     mock_tokenizer = MagicMock()
     mock_tokenizer_cls.from_pretrained.return_value = mock_tokenizer
     
-    mock_rec_model = MagicMock()
+    class Dummy:
+        pass
+    mock_rec_model = Dummy()
+    mock_rec_model.hidden_size = 32
+    mock_rec_model.num_items = 100
+    mock_rec_model.item_embeddings = torch.nn.Embedding(10, 32)
+    mock_rec_model.parameters = MagicMock(return_value=[])
+    mock_rec_model.load_state_dict = MagicMock()
+    mock_rec_model.eval = MagicMock()
+    mock_rec_model.to = MagicMock(return_value=mock_rec_model)
+    
     mock_sasrec.return_value = mock_rec_model
     
     mock_torch_load.return_value = {'state_dict': {}}
 
-    # Case 1: use_torch_compile = True
+    # Case 1: use_gradient_checkpointing = True
     cfg_true = OmegaConf.create({
         "teacher": {
             "model_type": "ilora",
@@ -39,7 +49,8 @@ def test_create_teacher_model_torch_compile(mock_torch_load, mock_sasrec, mock_t
             "rec_model_checkpoint_path": "dummy_path.ckpt",
             "use_flash_attention": False,
             "use_qlora": False,
-            "use_torch_compile": True
+            "use_torch_compile": False,
+            "use_gradient_checkpointing": True
         },
         "student": {
             "hidden_size": 32,
@@ -62,12 +73,12 @@ def test_create_teacher_model_torch_compile(mock_torch_load, mock_sasrec, mock_t
         candidate_topk=10
     )
 
-    assert mock_torch_compile.called, "torch.compile should be called when use_torch_compile=True"
+    mock_llm.gradient_checkpointing_enable.assert_called_once()
 
     # Reset mocks
-    mock_torch_compile.reset_mock()
+    mock_llm.gradient_checkpointing_enable.reset_mock()
 
-    # Case 2: use_torch_compile = False
+    # Case 2: use_gradient_checkpointing = False
     cfg_false = OmegaConf.create({
         "teacher": {
             "model_type": "ilora",
@@ -81,7 +92,8 @@ def test_create_teacher_model_torch_compile(mock_torch_load, mock_sasrec, mock_t
             "rec_model_checkpoint_path": "dummy_path.ckpt",
             "use_flash_attention": False,
             "use_qlora": False,
-            "use_torch_compile": False
+            "use_torch_compile": False,
+            "use_gradient_checkpointing": False
         },
         "student": {
             "hidden_size": 32,
@@ -104,4 +116,4 @@ def test_create_teacher_model_torch_compile(mock_torch_load, mock_sasrec, mock_t
         candidate_topk=10
     )
 
-    assert not mock_torch_compile.called, "torch.compile should NOT be called when use_torch_compile=False"
+    mock_llm.gradient_checkpointing_enable.assert_not_called()

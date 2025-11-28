@@ -22,7 +22,7 @@ def test_experiment_configs_batch_size():
     # pytest-hydra or clearing the instance might be needed.
     # For simplicity, we use the context manager.
     
-    config_path = "../../conf"
+    config_path = "../../../conf"
     
     # 1. Test Teacher Config
     with initialize(version_base=None, config_path=config_path):

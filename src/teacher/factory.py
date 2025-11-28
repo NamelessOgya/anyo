@@ -13,8 +13,19 @@ logger = logging.getLogger(__name__)
 
 def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_items: int, max_seq_len: int, item_id_to_name: Dict[int, str], padding_item_id: int, candidate_topk: int) -> TeacherModel:
     """
-    Hydraの設定に基づいて教師モデルのインスタンスを生成します。
-    注: QLoRAのサポートは、カスタムMoeLoraModelとの互換性問題のため一時的に無効化されています。
+    Hydraの設定に基づいて教師モデル（iLoRA）のインスタンスを生成します。
+    
+    Args:
+        cfg: Hydraの設定オブジェクト
+        llm_tokenizer: ロード済みのLLMトークナイザー
+        num_items: アイテムの総数
+        max_seq_len: シーケンスの最大長
+        item_id_to_name: アイテムIDから名前へのマッピング辞書
+        padding_item_id: パディング用のアイテムID
+        candidate_topk: 評価時に考慮する上位候補数
+        
+    Returns:
+        TeacherModel: 初期化された教師モデル
     """
     torch.set_float32_matmul_precision('high')
     model_type = cfg.teacher.model_type
@@ -22,42 +33,41 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
     if model_type == "ilora":
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        print("Loading LLM for teacher model...")
+        print("教師モデル用のLLMをロードしています...")
         
         llm_load_kwargs = {}
         
         if cfg.teacher.get("use_flash_attention", False):
-            print("Flash Attention 2 is enabled for LLM.")
+            print("LLMでFlash Attention 2が有効化されました。")
             llm_load_kwargs["attn_implementation"] = "flash_attention_2"
         else:
-            print("Flash Attention is disabled for LLM.")
+            print("LLMでFlash Attentionは無効化されています。")
 
         if cfg.teacher.get("use_qlora", False):
-            # QLoRA is temporarily disabled due to incompatibility with custom MoeLoraModel
-            # logger.warning("QLoRA is configured but temporarily disabled.")
-            print("QLoRA is configured but temporarily disabled.")
+            # QLoRAはカスタムMoeLoraModelとの互換性の問題により一時的に無効化されています
+            print("QLoRAが設定されていますが、一時的に無効化されています。")
 
         if cfg.train.get("precision") == "bf16-mixed":
              llm_load_kwargs["torch_dtype"] = torch.bfloat16
 
-        print("DEBUG: Attempting to load LLM from_pretrained...")
+        print("DEBUG: from_pretrainedを使用してLLMのロードを試みています...")
         llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
-        logger.info(f"Successfully loaded LLM: {llm.config._name_or_path}")
+        logger.info(f"LLMのロードに成功しました: {llm.config._name_or_path}")
 
-        # Removed internal tokenizer creation and special token handling.
-        # llm.resize_token_embeddings will use the passed llm_tokenizer.
+        # 内部でのトークナイザー作成と特殊トークン処理は削除されました。
+        # llm.resize_token_embeddingsは渡されたllm_tokenizerを使用します。
         llm.resize_token_embeddings(len(llm_tokenizer))
 
         if cfg.teacher.get("use_gradient_checkpointing", False):
-            print("Gradient Checkpointing is enabled for LLM.")
-            # use_reentrant=False is generally recommended for newer PyTorch versions and can save memory
+            print("LLMでGradient Checkpointingが有効化されました。")
+            # use_reentrant=False は新しいPyTorchバージョンで推奨されており、メモリを節約できます
             # パラメータを凍結している場合、入力(Embeddings)に勾配を持たせないとCheckpointingが機能しないため、
             # enable_input_require_grads() を呼び出す必要があります。
             llm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             llm.enable_input_require_grads()
 
         if cfg.teacher.get("rec_model_checkpoint_path"):
-            print(f"Loading pre-trained SASRec model from {cfg.teacher.rec_model_checkpoint_path}")
+            print(f"{cfg.teacher.rec_model_checkpoint_path} から事前学習済みSASRecモデルをロードしています")
             rec_model = SASRec(
                 num_items=num_items,
                 hidden_size=cfg.student.hidden_size,
@@ -78,18 +88,18 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             rec_model.eval()
             rec_model.to(device)
         else:
-            raise ValueError("rec_model_checkpoint_path must be provided in the teacher config for iLoRAModel.")
+            raise ValueError("iLoRAModelを使用する場合、teacher configでrec_model_checkpoint_pathを指定する必要があります。")
         
         projector = MLPProjector(
             input_dim=cfg.student.hidden_size,
             output_dim=llm.config.hidden_size,
             hidden_size=cfg.teacher.hidden_size,
             dropout_rate=cfg.teacher.dropout_rate
-        ).to(device, dtype=llm.dtype) # Cast projector to llm.dtype
+        ).to(device, dtype=llm.dtype) # プロジェクターをLLMのdtypeにキャスト
 
         model = iLoRAModel(
             llm=llm,
-            tokenizer=llm_tokenizer, # Pass the received llm_tokenizer
+            tokenizer=llm_tokenizer, # 受け取ったllm_tokenizerを渡す
             num_lora_experts=cfg.teacher.num_lora_experts,
             lora_r=cfg.teacher.lora_r,
             lora_alpha=cfg.teacher.lora_alpha,
@@ -102,7 +112,7 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             candidate_topk=candidate_topk,
             item_id_to_name=item_id_to_name,
             padding_item_id=padding_item_id,
-            llm_dtype=llm.dtype, # Pass the LLM's dtype
+            llm_dtype=llm.dtype, # LLMのdtypeを渡す
             use_item_embeddings_head=cfg.teacher.get("use_item_embeddings_head", True)
         )
 
@@ -110,21 +120,21 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         for param in rec_model.parameters():
             param.requires_grad = False
 
-        # Unfreeze item embeddings ONLY if we are using the Embedding Head approach
+        # Embedding Headアプローチを使用する場合のみ、アイテム埋め込みを解凍（学習可能に）します
         use_item_embeddings_head = cfg.teacher.get("use_item_embeddings_head", True)
         if use_item_embeddings_head:
             if hasattr(rec_model, "item_embeddings"):
                 rec_model.item_embeddings.weight.requires_grad = True
-                print("SASRec item embeddings unfrozen for refinement (Embedding Head Mode).")
+                print("SASRecのアイテム埋め込みをリファインメントのために解凍しました (Embedding Head Mode)。")
             else:
-                print("Warning: Could not find item_embeddings in rec_model to unfreeze.")
+                print("警告: 解凍するためのitem_embeddingsがrec_modelに見つかりませんでした。")
         else:
-            print("SASRec item embeddings frozen (Linear Head Mode).")
+            print("SASRecのアイテム埋め込みは凍結されています (Linear Head Mode)。")
 
-        print("SASRec model parameters frozen (except item embeddings if enabled).")
+        print("SASRecモデルのパラメータは凍結されました（有効な場合のアイテム埋め込みを除く）。")
 
         if cfg.teacher.get("use_torch_compile", False):
-            print("Compiling teacher model with torch.compile...")
+            print("torch.compileを使用して教師モデルをコンパイルしています...")
             model = torch.compile(model)
             
         return model

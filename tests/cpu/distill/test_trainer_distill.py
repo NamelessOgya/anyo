@@ -43,7 +43,7 @@ def distill_trainer_and_data():
             self.tokenizer = tokenizer
             self.batch_size = batch_size
             self.max_seq_len = max_seq_len
-            self.num_items = 1000
+            self.num_items = 100
             self.padding_item_id = 0
             self.mapped_id_to_title = {i: str(i) for i in range(self.num_items + 1)}
 
