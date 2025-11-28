@@ -7,7 +7,16 @@
 
 ## 1. 準備
 
-### 1.1. コンテナの起動と接続
+### 1.1. コンテナイメージのビルド
+
+実験環境を構築するために、まずDockerイメージをビルドします。
+プロジェクトのルートディレクトリで以下のコマンドを実行してください。
+
+```bash
+docker build -t ilora-dllm2rec:latest .
+```
+
+### 1.2. コンテナの起動と接続
 
 まず、以下のコマンドでコンテナを起動します。初回起動時は依存関係のインストールに時間がかかります。
 
@@ -26,7 +35,7 @@ docker exec ilora-dev-container bash -c "poetry lock && poetry install"
 docker exec -it ilora-dev-container bash
 ```
 
-### 1.2. 設定ファイルの確認
+### 1.3. 設定ファイルの確認
 
 すべての実験は、`conf/` ディレクトリ以下の設定ファイルに基づいて実行されます。
 メインの設定ファイルは `conf/config.yaml` であり、ここから各モジュールの設定が読み込まれます。
@@ -42,7 +51,7 @@ docker exec -it ilora-dev-container bash
 poetry run python -m src.exp.run_student_baseline train=student train.batch_size=64
 ```
 
-### 1.3. データセットの準備
+### 1.4. データセットの準備
 
 本プロジェクトでは MovieLens 1M データセットを使用します。
 以下のスクリプトを実行することで、データセットのダウンロードと展開が自動的に行われます。
