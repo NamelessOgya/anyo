@@ -30,16 +30,29 @@
 **`start_experiment_container.sh` のスニペット例:**
 
 ```bash
-docker run -it --rm \
-  --gpus '"device=0"' \
-  --memory=200g \
-  --name "${CONTAINER_NAME}" \
-  -v "${HOST_PROJECT_ROOT}:/workspace" \
-  -w /workspace \
-  -e "HOST_UID=$(id -u)" \
-  -e "HOST_GID=$(id -g)" \
-  "${IMAGE_NAME}" \
-  bash
+# コンテナの状態を確認
+CONTAINER_STATUS=$(docker inspect --format="{{.State.Status}}" "${CONTAINER_NAME}" 2>/dev/null || echo "not_found")
+
+if [ "${CONTAINER_STATUS}" = "running" ]; then
+    echo "Container ${CONTAINER_NAME} is already running."
+elif [ "${CONTAINER_STATUS}" = "exited" ] || [ "${CONTAINER_STATUS}" = "created" ]; then
+    echo "Starting existing container ${CONTAINER_NAME}..."
+    docker start "${CONTAINER_NAME}"
+else
+    echo "Creating and starting new container ${CONTAINER_NAME}..."
+    docker run -d \
+      --gpus '"device=0"' \
+      --memory=200g \
+      --name "${CONTAINER_NAME}" \
+      -v "${HOST_PROJECT_ROOT}:/workspace" \
+      -w /workspace \
+      -e "HOST_UID=$(id -u)" \
+      -e "HOST_GID=$(id -g)" \
+      "${IMAGE_NAME}" \
+      tail -f /dev/null
+fi
+
+docker exec -it "${CONTAINER_NAME}" bash
 ```
 
 ---

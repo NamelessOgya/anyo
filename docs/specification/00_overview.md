@@ -177,7 +177,7 @@
 FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn9-devel
 
 RUN apt-get update && apt-get install -y \
-    git curl build-essential \
+    git curl build-essential unzip tmux \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir "poetry>=1.7"
@@ -204,14 +204,27 @@ then
   docker build -t "${IMAGE_NAME}" "${HOST_PROJECT_ROOT}"
 fi
 
-docker run -it --rm \
-  --gpus '"device=0"' \
-  --memory=200g \
-  --name "${CONTAINER_NAME}" \
-  -v "${HOST_PROJECT_ROOT}:/workspace" \
-  -w /workspace \
-  "${IMAGE_NAME}" \
-  bash
+# コンテナの状態を確認
+CONTAINER_STATUS=$(docker inspect --format="{{.State.Status}}" "${CONTAINER_NAME}" 2>/dev/null || echo "not_found")
+
+if [ "${CONTAINER_STATUS}" = "running" ]; then
+    echo "Container ${CONTAINER_NAME} is already running."
+elif [ "${CONTAINER_STATUS}" = "exited" ] || [ "${CONTAINER_STATUS}" = "created" ]; then
+    echo "Starting existing container ${CONTAINER_NAME}..."
+    docker start "${CONTAINER_NAME}"
+else
+    echo "Creating and starting new container ${CONTAINER_NAME}..."
+    docker run -d \
+      --gpus '"device=0"' \
+      --memory=200g \
+      --name "${CONTAINER_NAME}" \
+      -v "${HOST_PROJECT_ROOT}:/workspace" \
+      -w /workspace \
+      "${IMAGE_NAME}" \
+      tail -f /dev/null
+fi
+
+docker exec -it "${CONTAINER_NAME}" bash
 ```
 
 * 実験は基本的に：

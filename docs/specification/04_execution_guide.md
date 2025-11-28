@@ -17,25 +17,42 @@ docker build -t ilora-dllm2rec:latest .
 ```
 
 ### 1.2. コンテナの起動と接続
-
-まず、以下のコマンドでコンテナを起動します。初回起動時は依存関係のインストールに時間がかかります。
-
-```bash
-# コンテナをバックグラウンドで起動
-docker run -d --name ilora-dev-container -v "$(pwd)":/workspace -w /workspace --gpus '"device=0"' --memory=200g -it ilora-dllm2rec:latest
-
-# 依存関係のインストール (初回のみ)
-docker exec ilora-dev-container bash -c "poetry lock && poetry install"
-```
-
-以降、コンテナ内でコマンドを実行するには `docker exec` を使用します。
-コンテナ内のシェルに入る場合は、以下のコマンドを実行します。
-
-```bash
-docker exec -it ilora-dev-container bash
-```
-
-### 1.3. 設定ファイルの確認
+ 
+ 以下のコマンドでコンテナを起動し、接続します。
+ 
+ ```bash
+ ./env_shell/start_experiment_container.sh
+ ```
+ 
+ **変更点 (2025-11-29):**
+ *   コンテナはバックグラウンド（Detached mode）で起動し、`tail -f /dev/null` で待機し続けます。
+ *   スクリプトを再実行すると、既存のコンテナに再接続します（コンテナは再作成されません）。
+ *   これにより、接続を切断してもコンテナ内のプロセス（学習など）は終了しません。
+ 
+ **初回のみ:** 依存関係のインストールが必要です。
+ ```bash
+ docker exec ilora-dev-container bash -c "poetry lock && poetry install"
+ ```
+ 
+ ### 1.3. 長時間学習の実行 (tmux の利用)
+ 
+ 学習プロセスを接続切断後も継続させるために、`tmux` の利用を推奨します。
+ 
+ 1.  コンテナに接続後、`tmux` セッションを開始します。
+     ```bash
+     tmux new -s train
+     ```
+ 2.  学習コマンドを実行します。
+     ```bash
+     poetry run python -m src.exp.run_student_baseline train=student
+     ```
+ 3.  セッションからデタッチ（切断）するには、`Ctrl+b` を押した後に `d` を押します。
+ 4.  再度セッションにアタッチ（接続）するには、以下のコマンドを実行します。
+     ```bash
+     tmux attach -t train
+     ```
+ 
+ ### 1.4. 設定ファイルの確認
 
 すべての実験は、`conf/` ディレクトリ以下の設定ファイルに基づいて実行されます。
 メインの設定ファイルは `conf/config.yaml` であり、ここから各モジュールの設定が読み込まれます。
@@ -51,7 +68,7 @@ docker exec -it ilora-dev-container bash
 poetry run python -m src.exp.run_student_baseline train=student train.batch_size=64
 ```
 
-### 1.4. データセットの準備
+### 1.5. データセットの準備
 
 本プロジェクトでは MovieLens 1M データセットを使用します。
 以下のスクリプトを実行することで、データセットのダウンロードと展開が自動的に行われます。
