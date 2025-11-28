@@ -57,7 +57,7 @@ poetry run python -m src.exp.run_student_baseline train=student train.batch_size
 以下のスクリプトを実行することで、データセットのダウンロードと展開が自動的に行われます。
 
 ```bash
-./data/download_movielens.sh
+./cmd/movielens.sh
 ```
 
 このスクリプトは、`data/ml-1m/` ディレクトリに `ratings.dat` などのデータファイルを配置します。
