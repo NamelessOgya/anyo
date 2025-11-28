@@ -26,7 +26,13 @@ fi
 
 echo "Extracting dataset..."
 # 解凍
-unzip -o "${DATA_DIR}/ml-1m.zip" -d "${DATA_DIR}"
+# 解凍
+if command -v unzip >/dev/null 2>&1; then
+    unzip -o "${DATA_DIR}/ml-1m.zip" -d "${DATA_DIR}"
+else
+    echo "'unzip' command not found. Falling back to python..."
+    python3 -c "import zipfile; import sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "${DATA_DIR}/ml-1m.zip" "${DATA_DIR}"
+fi
 
 # 不要なzipファイルを削除
 rm "${DATA_DIR}/ml-1m.zip"
