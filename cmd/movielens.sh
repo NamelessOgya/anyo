@@ -16,9 +16,9 @@ mkdir -p "${DATA_DIR}"
 echo "Downloading MovieLens 1M dataset..."
 # ダウンロード (curlを使用、なければwget)
 if command -v curl >/dev/null 2>&1; then
-    curl -o "${DATA_DIR}/ml-1m.zip" "http://files.grouplens.org/datasets/movielens/ml-1m.zip"
+    curl -fL -o "${DATA_DIR}/ml-1m.zip" "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
 elif command -v wget >/dev/null 2>&1; then
-    wget -O "${DATA_DIR}/ml-1m.zip" "http://files.grouplens.org/datasets/movielens/ml-1m.zip"
+    wget -O "${DATA_DIR}/ml-1m.zip" "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
 else
     echo "Error: curl or wget is required."
     exit 1
