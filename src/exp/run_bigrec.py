@@ -18,7 +18,14 @@ from src.exp.compute_item_embeddings import compute_embeddings
 logger = logging.getLogger(__name__)
 
 def run_experiment(cfg: DictConfig):
-    pl.seed_everything(cfg.experiment.seed)
+    pl.seed_everything(cfg.seed)
+
+    # DEBUG: Print Config
+    logger.info("DEBUG: cfg.teacher keys: " + str(cfg.teacher.keys()))
+    logger.info(f"DEBUG: cfg.teacher.model_type: {cfg.teacher.get('model_type')}")
+    logger.info(f"DEBUG: cfg.teacher.compute_item_embeddings: {cfg.teacher.get('compute_item_embeddings')}")
+    logger.info(f"DEBUG: cfg.teacher.val_check_interval: {cfg.teacher.get('val_check_interval')}")
+    logger.info(f"DEBUG: cfg.train.val_check_interval: {cfg.train.get('val_check_interval')}")
 
     # Validate Config
     if cfg.teacher.get("model_type") != "bigrec":

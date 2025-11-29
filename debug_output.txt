@@ -1,0 +1,88 @@
+Seed set to 42
+[2025-11-29 16:32:14,803][__main__][INFO] - DEBUG: cfg.teacher keys: dict_keys(['model_type', 'llm_model_name', 'lora_r', 'lora_alpha', 'lora_dropout', 'learning_rate', 'max_source_length', 'max_target_length', 'use_cot', 'max_history_items', 'metrics_k', 'num_beams', 'item_embeddings_path', 'compute_item_embeddings', 'val_check_interval', 'limit_data_rows', 'batch_size'])
+[2025-11-29 16:32:14,804][__main__][INFO] - DEBUG: cfg.teacher.model_type: bigrec
+[2025-11-29 16:32:14,804][__main__][INFO] - DEBUG: cfg.teacher.compute_item_embeddings: True
+[2025-11-29 16:32:14,804][__main__][INFO] - DEBUG: cfg.teacher.val_check_interval: 0.001
+[2025-11-29 16:32:14,804][__main__][INFO] - DEBUG: cfg.train.val_check_interval: 0.001
+[2025-11-29 16:32:14,804][__main__][INFO] - compute_item_embeddings is True. Computing embeddings...
+[2025-11-29 16:32:14,804][src.exp.compute_item_embeddings][INFO] - Loading items from data/ml-100k/movies.csv...
+[2025-11-29 16:32:14,821][src.exp.compute_item_embeddings][INFO] - Loading base model: meta-llama/Llama-2-7b-hf...
+/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py:942: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
+  warnings.warn(
+Error executing job with overrides: ['experiment=bigrec_movielens']
+Traceback (most recent call last):
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/utils/_http.py", line 402, in hf_raise_for_status
+    response.raise_for_status()
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://huggingface.co/meta-llama/Llama-2-7b-hf/resolve/main/config.json
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/transformers/utils/hub.py", line 398, in cached_file
+    resolved_file = hf_hub_download(
+                    ^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1007, in hf_hub_download
+    return _hf_hub_download_to_cache_dir(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1114, in _hf_hub_download_to_cache_dir
+    _raise_on_head_call_error(head_call_error, force_download, local_files_only)
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1655, in _raise_on_head_call_error
+    raise head_call_error
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1543, in _get_metadata_or_catch_error
+    metadata = get_hf_file_metadata(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1460, in get_hf_file_metadata
+    r = _request_wrapper(
+        ^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 283, in _request_wrapper
+    response = _request_wrapper(
+               ^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 307, in _request_wrapper
+    hf_raise_for_status(response)
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/huggingface_hub/utils/_http.py", line 419, in hf_raise_for_status
+    raise _format(GatedRepoError, message, response) from e
+huggingface_hub.errors.GatedRepoError: 401 Client Error. (Request ID: Root=1-692b200f-3065d5ca14dda82333b109f6;e5cf80a6-84be-42fc-bb0a-18dab3b56d40)
+
+Cannot access gated repo for url https://huggingface.co/meta-llama/Llama-2-7b-hf/resolve/main/config.json.
+Access to model meta-llama/Llama-2-7b-hf is restricted. You must have access to it and be authenticated to access it. Please log in.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/src/exp/run_bigrec.py", line 138, in main
+    run_experiment(cfg)
+  File "/workspace/src/exp/run_bigrec.py", line 43, in run_experiment
+    compute_embeddings(cfg)
+  File "/workspace/src/exp/compute_item_embeddings.py", line 28, in compute_embeddings
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/transformers/models/auto/tokenization_auto.py", line 819, in from_pretrained
+    config = AutoConfig.from_pretrained(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/transformers/models/auto/configuration_auto.py", line 928, in from_pretrained
+    config_dict, unused_kwargs = PretrainedConfig.get_config_dict(pretrained_model_name_or_path, **kwargs)
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/transformers/configuration_utils.py", line 631, in get_config_dict
+    config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/transformers/configuration_utils.py", line 686, in _get_config_dict
+    resolved_config_file = cached_file(
+                           ^^^^^^^^^^^^
+  File "/root/.cache/pypoetry/virtualenvs/anyo-ilora-dllm2rec-xS3fZVNL-py3.11/lib/python3.11/site-packages/transformers/utils/hub.py", line 416, in cached_file
+    raise EnvironmentError(
+OSError: You are trying to access a gated repo.
+Make sure to have access to it at https://huggingface.co/meta-llama/Llama-2-7b-hf.
+401 Client Error. (Request ID: Root=1-692b200f-3065d5ca14dda82333b109f6;e5cf80a6-84be-42fc-bb0a-18dab3b56d40)
+
+Cannot access gated repo for url https://huggingface.co/meta-llama/Llama-2-7b-hf/resolve/main/config.json.
+Access to model meta-llama/Llama-2-7b-hf is restricted. You must have access to it and be authenticated to access it. Please log in.
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
