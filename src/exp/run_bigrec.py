@@ -72,7 +72,7 @@ def run_experiment(cfg: DictConfig):
         learning_rate=cfg.teacher.learning_rate,
         max_source_length=cfg.teacher.max_source_length,
         max_target_length=cfg.teacher.max_target_length,
-        item_id_to_name=dm.item_id_to_name,
+        item_id_to_name=dm.mapped_id_to_title,
         metrics_k=cfg.teacher.metrics_k,
         num_beams=cfg.teacher.get("num_beams", 4),
         item_embeddings_path=cfg.teacher.get("item_embeddings_path")
