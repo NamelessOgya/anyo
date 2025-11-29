@@ -8,7 +8,7 @@ import json
 import os
 
 from src.teacher.bigrec_model import BigRecModel
-from src.data.datamodule import SASRecDataModule
+from src.student.datamodule import SASRecDataModule
 from src.data.collators import BigRecCollator
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ def main(cfg: DictConfig):
     # 1. Load Data
     dm = SASRecDataModule(conf=cfg.dataset)
     dm.setup()
-    item_id_to_name = dm.item_id_to_name
+    item_id_to_name = dm.mapped_id_to_title
     
     # 2. Load Model (Fine-tuned)
     # Assuming checkpoint path is provided or we load from default output dir

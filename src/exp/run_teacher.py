@@ -27,10 +27,7 @@ from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
-def main():
-    overrides = sys.argv[1:]
-    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
-
+def run_experiment(cfg):
     output_dir = Path(cfg.run.dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"!!! SCRIPT RUNNING. OUTPUT DIR: {output_dir} !!!")
@@ -87,7 +84,7 @@ def main():
         # Custom Collator for BIGRec
         collator = BigRecCollator(
             tokenizer=model.tokenizer,
-            item_id_to_name=dm.item_id_to_name,
+            item_id_to_name=dm.mapped_id_to_title,
             max_source_length=cfg.teacher.max_source_length,
             max_target_length=cfg.teacher.max_target_length,
             use_cot=cfg.teacher.get("use_cot", False)

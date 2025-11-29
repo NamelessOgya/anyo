@@ -27,11 +27,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 logger = logging.getLogger(__name__)
 
-def main():
-    # --- Centralized Hydra Initialization ---
-    overrides = sys.argv[1:]
-    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
-    
+def run_experiment(cfg):
     # Use cfg.run.dir
     output_dir = Path(cfg.run.dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -102,7 +98,7 @@ def main():
             teacher_cfg, # Use the specific config from the teacher run
             num_items=dm.num_items,
             max_seq_len=teacher_cfg.student.max_seq_len,
-            item_id_to_name=dm.item_id_to_name,
+            item_id_to_name=dm.mapped_id_to_title,
             padding_item_id=dm.padding_item_id,
             candidate_topk=teacher_cfg.distill.candidate_topk
         )
@@ -113,7 +109,7 @@ def main():
             learning_rate=teacher_cfg.train.learning_rate,
             weight_decay=teacher_cfg.train.weight_decay,
             metrics_k=teacher_cfg.eval.metrics_k,
-            item_id_to_name=dm.item_id_to_name,
+            item_id_to_name=dm.mapped_id_to_title,
             strict=False
         )
         teacher_model_instance = loaded_teacher_trainer.model
@@ -173,15 +169,109 @@ def main():
             selection_policy=AllSamplesPolicy(),
             gamma_position=cfg.distill.gamma_position,
             gamma_confidence=cfg.distill.gamma_confidence,
-            gamma_consistency=cfg.distill.gamma_consistency,
-            candidate_topk=cfg.distill.candidate_topk,
-            ed_weight=cfg.distill.ed_weight,
+            lambda_rank=cfg.distill.ranking_loss_weight,
+            num_candidates=cfg.distill.candidate_topk,
+            item_id_to_name=dm.mapped_id_to_title,
             alpha=cfg.distill.alpha,
             beta=cfg.distill.beta,
             propensity_scores=propensity_scores,
             lam=cfg.distill.lam,
             num_neg_samples=cfg.distill.num_neg_samples,
             teacher_output_dataloader=teacher_output_dataloader
+        )
+
+    else:
+        # dllm2rec (iLoRA)
+        logger.info(f"Loading iLoRA teacher model from {teacher_checkpoint_file_path}")
+        
+        # Load Teacher Config if not already loaded (though we tried earlier)
+        # If teacher_cfg is None, we might need to rely on current config or fail?
+        # iLoRATrainer.load_from_checkpoint handles loading.
+        
+        # We need to instantiate the model first?
+        # iLoRATrainer.load_from_checkpoint(..., ilora_model=instance)
+        # We need to create the instance.
+        
+        # If teacher_cfg is available, use it. Else use current cfg.teacher?
+        # But current cfg.teacher might be for BIGRec if we are switching?
+        # If distill_type is dllm2rec, we assume we want to distill FROM iLoRA.
+        
+        # Use teacher_cfg if available, else cfg
+        t_cfg = teacher_cfg if teacher_cfg else cfg
+        
+        teacher_model_instance = create_teacher_model(
+            t_cfg,
+            num_items=dm.num_items,
+            max_seq_len=t_cfg.student.max_seq_len,
+            item_id_to_name=dm.mapped_id_to_title,
+            padding_item_id=dm.padding_item_id,
+            candidate_topk=t_cfg.distill.candidate_topk
+        )
+        
+        loaded_teacher_trainer = iLoRATrainer.load_from_checkpoint(
+            checkpoint_path=teacher_checkpoint_file_path,
+            ilora_model=teacher_model_instance,
+            num_items=dm.num_items,
+            learning_rate=t_cfg.train.learning_rate,
+            weight_decay=t_cfg.train.weight_decay,
+            metrics_k=t_cfg.eval.metrics_k,
+            item_id_to_name=dm.mapped_id_to_title,
+            strict=False
+        )
+        teacher_model_instance = loaded_teacher_trainer.model
+        for param in teacher_model_instance.parameters():
+            param.requires_grad = False
+        teacher_model_instance.eval()
+        
+        # Propensity Scores
+        train_next_items = []
+        for batch in dm.train_dataloader():
+            train_next_items.extend(batch["next_item"].squeeze(-1).tolist())
+        ps_calculator = PropensityScoreCalculator(
+            item_num=dm.num_items + 1,
+            train_next_items=train_next_items,
+            power=cfg.distill.ps_power
+        )
+        propensity_scores = ps_calculator.get_ps()
+        
+        # Student
+        student_model_instance = SASRec(
+            num_items=dm.num_items,
+            hidden_size=cfg.student.hidden_size,
+            num_heads=cfg.student.num_heads,
+            num_layers=cfg.student.num_layers,
+            dropout_rate=cfg.student.dropout_rate,
+            max_seq_len=cfg.student.max_seq_len,
+            teacher_embedding_dim=teacher_model_instance.llm.config.hidden_size,
+            padding_item_id=dm.padding_item_id
+        )
+        
+        # DistillationTrainer
+        distill_trainer = DistillationTrainer(
+            student_model=student_model_instance,
+            teacher_model=teacher_model_instance,
+            datamodule=dm,
+            num_items=dm.num_items,
+            ranking_loss_weight=cfg.distill.ranking_loss_weight,
+            embedding_loss_weight=cfg.distill.embedding_loss_weight,
+            ce_loss_weight=cfg.distill.ce_loss_weight,
+            ranking_temperature=cfg.distill.ranking_temperature,
+            embedding_loss_type=cfg.distill.embedding_loss_type,
+            learning_rate=cfg.train.learning_rate,
+            weight_decay=cfg.train.weight_decay,
+            metrics_k=cfg.eval.metrics_k,
+            selection_policy=AllSamplesPolicy(),
+            gamma_position=cfg.distill.gamma_position,
+            gamma_confidence=cfg.distill.gamma_confidence,
+            lambda_rank=cfg.distill.ranking_loss_weight,
+            num_candidates=cfg.distill.candidate_topk,
+            item_id_to_name=dm.mapped_id_to_title,
+            alpha=cfg.distill.alpha,
+            beta=cfg.distill.beta,
+            propensity_scores=propensity_scores,
+            lam=cfg.distill.lam,
+            num_neg_samples=cfg.distill.num_neg_samples,
+            teacher_output_dataloader=None # On-the-fly generation
         )
 
     # 9. PyTorch Lightning Trainerのインスタンス化と学習の実行
@@ -221,6 +311,12 @@ def main():
         trainer.test(model=distill_trainer, datamodule=dm)
 
     logger.info(f"Distillation run finished. Results are in: {output_dir}")
+
+def main():
+    # --- Centralized Hydra Initialization ---
+    overrides = sys.argv[1:]
+    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
+    run_experiment(cfg)
 
 if __name__ == "__main__":
     main()

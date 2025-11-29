@@ -9,13 +9,12 @@ import os
 import logging
 
 from src.teacher.bigrec_model import BigRecModel
-from src.data.datamodule import SASRecDataModule
+from src.student.datamodule import SASRecDataModule
 from src.data.collators import BigRecCollator
 
 logger = logging.getLogger(__name__)
 
-@hydra.main(config_path="../../conf", config_name="config", version_base="1.2")
-def main(cfg: DictConfig):
+def run_experiment(cfg: DictConfig):
     pl.seed_everything(cfg.experiment.seed)
     
     # 1. DataModule
@@ -36,7 +35,7 @@ def main(cfg: DictConfig):
     # 3. Custom Collator
     collator = BigRecCollator(
         tokenizer=model.tokenizer,
-        item_id_to_name=dm.item_id_to_name,
+        item_id_to_name=dm.mapped_id_to_title,
         max_source_length=cfg.teacher.max_source_length,
         max_target_length=cfg.teacher.max_target_length,
         use_cot=cfg.teacher.get("use_cot", False)
@@ -87,6 +86,10 @@ def main(cfg: DictConfig):
     
     # 5. Fit
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+@hydra.main(config_path="../../conf", config_name="config", version_base="1.2")
+def main(cfg: DictConfig):
+    run_experiment(cfg)
 
 if __name__ == "__main__":
     main()
