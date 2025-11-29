@@ -65,52 +65,122 @@ def main():
     dm.prepare_data()
     dm.setup()
 
-    # 3. create_teacher_model を使用して iLoRAModel をインスタンス化
-    ilora_model_instance = create_teacher_model(
-        cfg,
-        llm_tokenizer=llm_tokenizer,
-        num_items=dm.num_items,
-        max_seq_len=cfg.student.max_seq_len,
-        item_id_to_name=dm.mapped_id_to_title,
-        padding_item_id=dm.padding_item_id,
-        candidate_topk=cfg.distill.candidate_topk
-    )
+    # 3. Determine Model Type and Instantiate
+    model_type = cfg.teacher.get("model_type", "ilora")
+    logger.info(f"Teacher Model Type: {model_type}")
 
-    # 4. iLoRATrainerのインスタンス化
-    trainer_model = iLoRATrainer(
-        ilora_model=ilora_model_instance,
-        num_items=dm.num_items,
-        learning_rate=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
-        metrics_k=cfg.eval.metrics_k,
-        item_id_to_name=dm.mapped_id_to_title,
-        distill_lambda=cfg.teacher.get("distill_lambda", 0.0),
-        distill_loss_type=cfg.teacher.get("distill_loss_type", "mse"),
-        distill_decay_type=cfg.teacher.get("distill_decay_type", "none"),
-        distill_min_lambda=cfg.teacher.get("distill_min_lambda", 0.0),
-        distill_decay_steps=cfg.teacher.get("distill_decay_steps", None)
-    )
+    if model_type == "bigrec":
+        from src.teacher.bigrec_model import BigRecModel
+        from src.data.collators import BigRecCollator
+        
+        # Instantiate BIGRec Model
+        model = BigRecModel(
+            model_name_or_path=cfg.teacher.llm_model_name,
+            lora_r=cfg.teacher.lora_r,
+            lora_alpha=cfg.teacher.lora_alpha,
+            lora_dropout=cfg.teacher.lora_dropout,
+            learning_rate=cfg.teacher.learning_rate,
+            max_source_length=cfg.teacher.max_source_length,
+            max_target_length=cfg.teacher.max_target_length
+        )
+        
+        # Custom Collator for BIGRec
+        collator = BigRecCollator(
+            tokenizer=model.tokenizer,
+            item_id_to_name=dm.item_id_to_name,
+            max_source_length=cfg.teacher.max_source_length,
+            max_target_length=cfg.teacher.max_target_length,
+            use_cot=cfg.teacher.get("use_cot", False)
+        )
+        
+        # Override DataLoaders with custom collator
+        # Note: SASRecDataModule uses default_collate or None by default.
+        # We need to recreate dataloaders or use a wrapper.
+        # Since dm.train_dataloader() creates new DL every time, we can't just set collate_fn on dm.
+        # But we can pass the collator to the Trainer if we were using a custom loop, but PL uses dm.
+        # SASRecDataModule doesn't easily support dynamic collator injection via init unless we change it.
+        # Workaround: Create DataLoaders manually here and pass to trainer.fit
+        
+        train_loader = DataLoader(
+            dm.train_dataset,
+            batch_size=cfg.teacher.batch_size,
+            shuffle=True,
+            num_workers=dm.conf.num_workers,
+            collate_fn=collator,
+            pin_memory=True
+        )
+        
+        val_loader = DataLoader(
+            dm.val_dataset,
+            batch_size=cfg.teacher.batch_size,
+            shuffle=False,
+            num_workers=dm.conf.num_workers,
+            collate_fn=collator,
+            pin_memory=True
+        )
+        
+        trainer_model = model # For fit
+        
+    else:
+        # iLoRA Logic
+        ilora_model_instance = create_teacher_model(
+            cfg,
+            llm_tokenizer=llm_tokenizer,
+            num_items=dm.num_items,
+            max_seq_len=cfg.student.max_seq_len,
+            item_id_to_name=dm.mapped_id_to_title,
+            padding_item_id=dm.padding_item_id,
+            candidate_topk=cfg.distill.candidate_topk
+        )
 
-    # 5. PyTorch Lightning Trainerのセットアップ
+        trainer_model = iLoRATrainer(
+            ilora_model=ilora_model_instance,
+            num_items=dm.num_items,
+            learning_rate=cfg.train.learning_rate,
+            weight_decay=cfg.train.weight_decay,
+            metrics_k=cfg.eval.metrics_k,
+            item_id_to_name=dm.mapped_id_to_title,
+            distill_lambda=cfg.teacher.get("distill_lambda", 0.0),
+            distill_loss_type=cfg.teacher.get("distill_loss_type", "mse"),
+            distill_decay_type=cfg.teacher.get("distill_decay_type", "none"),
+            distill_min_lambda=cfg.teacher.get("distill_min_lambda", 0.0),
+            distill_decay_steps=cfg.teacher.get("distill_decay_steps", None)
+        )
+
+    # 5. PyTorch Lightning Trainer Setup
     tb_logger = TensorBoardLogger(save_dir=str(output_dir), name="tb_logs", version="")
+    
+    # Checkpoint filename differs slightly
+    if model_type == "bigrec":
+        filename = "bigrec-{epoch:02d}-{val_loss:.2f}"
+        monitor = "val_loss"
+        mode = "min"
+    else:
+        filename = "teacher-{epoch:02d}-{val_hr@10:.4f}"
+        monitor = "val_hr@10"
+        mode = "max"
+
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir / "checkpoints",
-        filename="teacher-{epoch:02d}-{val_hr@10:.4f}",
-        monitor="val_hr@10",
-        mode="max",
+        filename=filename,
+        monitor=monitor,
+        mode=mode,
         save_top_k=1,
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    # Use process_position=0 to attempt to fix multiple bars in Colab
     progress_bar = TQDMProgressBar(refresh_rate=50, process_position=0)
     
-    early_stopping = pl.callbacks.EarlyStopping(
-        monitor="val_hr@10",
-        mode="max",
-        patience=5, # 5 validation checks (2.5 epochs) without improvement
-        verbose=True
-    )
+    callbacks = [checkpoint_callback, lr_monitor, progress_bar]
+    
+    if model_type == "ilora":
+        early_stopping = pl.callbacks.EarlyStopping(
+            monitor="val_hr@10",
+            mode="max",
+            patience=5,
+            verbose=True
+        )
+        callbacks.append(early_stopping)
 
     trainer = pl.Trainer(
         default_root_dir=str(output_dir),
@@ -118,42 +188,41 @@ def main():
         accelerator=cfg.train.accelerator,
         devices=cfg.train.devices,
         logger=tb_logger,
-        callbacks=[checkpoint_callback, lr_monitor, progress_bar, early_stopping],
+        callbacks=callbacks,
         val_check_interval=cfg.train.val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps,
         precision=cfg.train.precision,
         accumulate_grad_batches=cfg.train.accumulate_grad_batches
     )
 
-    logger.info("Starting iLoRA teacher model training...")
+    logger.info(f"Starting {model_type} teacher model training...")
     training_start_time = time.perf_counter()
-    trainer.fit(trainer_model, datamodule=dm)
-    training_duration = time.perf_counter() - training_start_time
-    logger.info(f"iLoRA teacher model training finished. Duration for trainer.fit: {training_duration:.2f} seconds.")
-
-    # 6. 評価
-    logger.info("Starting iLoRA teacher model testing...")
-    best_model_path = checkpoint_callback.best_model_path
-    if best_model_path and Path(best_model_path).exists():
-        logger.info(f"Loading best model from: {best_model_path}")
-        # Manually load state_dict with strict=False because we removed frozen weights from checkpoint
-        checkpoint = torch.load(best_model_path, map_location=trainer_model.device)
-        # Handle both raw state_dict and PL checkpoint format
-        if "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
-        else:
-            state_dict = checkpoint
-            
-        missing_keys, unexpected_keys = trainer_model.load_state_dict(state_dict, strict=False)
-        logger.info(f"Model loaded. Missing keys (expected for frozen params): {len(missing_keys)}. Unexpected keys: {len(unexpected_keys)}")
-        
-        # Run test with the loaded model (ckpt_path=None to prevent reloading)
-        trainer.test(model=trainer_model, datamodule=dm, ckpt_path=None)
-    else:
-        logger.warning("No best model found. Testing with the last model.")
-        trainer.test(model=trainer_model, datamodule=dm)
     
-    logger.info(f"iLoRA teacher run finished. Results are in: {output_dir}")
+    if model_type == "bigrec":
+        trainer.fit(trainer_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    else:
+        trainer.fit(trainer_model, datamodule=dm)
+        
+    training_duration = time.perf_counter() - training_start_time
+    logger.info(f"{model_type} teacher model training finished. Duration: {training_duration:.2f} seconds.")
+
+    # 6. Evaluation (Only for iLoRA for now, BIGRec evaluation is separate inference)
+    if model_type == "ilora":
+        logger.info("Starting iLoRA teacher model testing...")
+        best_model_path = checkpoint_callback.best_model_path
+        if best_model_path and Path(best_model_path).exists():
+            logger.info(f"Loading best model from: {best_model_path}")
+            checkpoint = torch.load(best_model_path, map_location=trainer_model.device)
+            if "state_dict" in checkpoint:
+                state_dict = checkpoint["state_dict"]
+            else:
+                state_dict = checkpoint
+            trainer_model.load_state_dict(state_dict, strict=False)
+            trainer.test(model=trainer_model, datamodule=dm, ckpt_path=None)
+        else:
+            trainer.test(model=trainer_model, datamodule=dm)
+    
+    logger.info(f"Teacher run finished. Results are in: {output_dir}")
 
     upload_results(cfg, output_dir)
 
