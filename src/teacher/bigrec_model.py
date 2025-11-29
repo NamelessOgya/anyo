@@ -128,9 +128,12 @@ class BigRecModel(pl.LightningModule):
             # Generate predictions (Top-1 is enough for grounding based on reference)
             # But we can generate K beams and pick the best one?
             # Reference uses num_beams=4 and takes the first one.
+            # Generate predictions (Top-1 is enough for grounding based on reference)
+            # But we can generate K beams and pick the best one?
+            # Reference uses num_beams=4 and takes the first one.
             generated_ids = self.model.generate(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
+                input_ids=batch["prompt_input_ids"],
+                attention_mask=batch["prompt_attention_mask"],
                 max_new_tokens=self.hparams.max_target_length,
                 num_beams=self.num_beams,
                 num_return_sequences=1, # Only need top-1 for grounding as per reference
@@ -140,7 +143,7 @@ class BigRecModel(pl.LightningModule):
             )
             
             # Extract new tokens
-            input_len = batch["input_ids"].shape[1]
+            input_len = batch["prompt_input_ids"].shape[1]
             new_tokens = generated_ids[:, input_len:]
             
             # Decode to text
@@ -211,9 +214,12 @@ class BigRecModel(pl.LightningModule):
             # Fallback to Exact Match if embeddings not provided
             # Generate predictions
             # Use beam search to get top-K candidates
+            # Fallback to Exact Match if embeddings not provided
+            # Generate predictions
+            # Use beam search to get top-K candidates
             generated_ids = self.model.generate(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
+                input_ids=batch["prompt_input_ids"],
+                attention_mask=batch["prompt_attention_mask"],
                 max_new_tokens=self.hparams.max_target_length,
                 num_beams=self.num_beams,
                 num_return_sequences=self.num_beams,
@@ -224,14 +230,14 @@ class BigRecModel(pl.LightningModule):
             
             # generated_ids shape: (batch_size * num_return_sequences, seq_len)
             # Reshape to (batch_size, num_return_sequences, seq_len)
-            batch_size = batch["input_ids"].size(0)
+            batch_size = batch["prompt_input_ids"].size(0)
             generated_ids = generated_ids.view(batch_size, self.num_beams, -1)
             
             # Decode predictions
             decoded_preds = []
             for i in range(batch_size):
                 # Extract new tokens
-                input_len = batch["input_ids"].shape[1]
+                input_len = batch["prompt_input_ids"].shape[1]
                 new_tokens = generated_ids[i, :, input_len:]
                 preds = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
                 decoded_preds.append([p.strip() for p in preds])
