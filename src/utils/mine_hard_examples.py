@@ -21,10 +21,10 @@ def main(cfg: DictConfig):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.train.batch_size, # Use student batch size for inference
-        max_seq_len=cfg.model.student.max_seq_len,
+        max_seq_len=cfg.student.max_seq_len,
         num_workers=cfg.train.num_workers,
         limit_data_rows=cfg.dataset.limit_data_rows,
-        num_candidates=cfg.model.student.num_candidates,
+        num_candidates=cfg.student.num_candidates,
     )
     dm.prepare_data()
     dm.setup()
@@ -46,11 +46,11 @@ def main(cfg: DictConfig):
     # Instantiate model to get architecture
     rec_model = SASRec(
         num_items=dm.num_items,
-        hidden_size=cfg.model.student.hidden_size,
-        num_heads=cfg.model.student.num_heads,
-        num_layers=cfg.model.student.num_layers,
-        dropout_rate=cfg.model.student.dropout_rate,
-        max_seq_len=cfg.model.student.max_seq_len,
+        hidden_size=cfg.student.hidden_size,
+        num_heads=cfg.student.num_heads,
+        num_layers=cfg.student.num_layers,
+        dropout_rate=cfg.student.dropout_rate,
+        max_seq_len=cfg.student.max_seq_len,
     )
     
     # Load Trainer/Model from checkpoint

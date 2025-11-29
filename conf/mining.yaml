@@ -1,6 +1,6 @@
 defaults:
   - config
-  - /train: student
+  - override /train: student
   - _self_
 
 # Active Learning Configuration
@@ -17,3 +17,6 @@ active_learning:
   
   # Output path for the selected indices
   hard_indices_output_path: hard_sample_indices.pt
+
+# Path to the student model checkpoint (required)
+student_checkpoint_path: null

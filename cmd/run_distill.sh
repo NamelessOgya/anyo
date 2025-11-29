@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-docker exec ilora-dev-container bash -c "PYTHONPATH=/workspace poetry run python -m src.exp.run_distill $@"
+docker exec ilora-dllm2rec-dev bash -c "PYTHONPATH=/workspace poetry run python -m src.exp.run_distill $@"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-CONTAINER_NAME="ilora-dev-container"
+CONTAINER_NAME="ilora-dllm2rec-dev"
 IMAGE_NAME="ilora-dllm2rec:latest"
 HOST_PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
 
