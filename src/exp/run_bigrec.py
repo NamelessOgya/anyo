@@ -22,10 +22,13 @@ def run_experiment(cfg: DictConfig):
 
     # Validate Config
     if cfg.teacher.get("model_type") != "bigrec":
-        logger.warning(f"WARNING: cfg.teacher.model_type is '{cfg.teacher.get('model_type')}', but this script is for BigRec.")
-        logger.warning("You are likely loading the wrong config (e.g., 'ilora').")
-        logger.warning("Please run with 'experiment=bigrec_movielens' or 'teacher=bigrec'.")
-        # We can force continue, but defaults might be wrong.
+        error_msg = (
+            f"cfg.teacher.model_type is '{cfg.teacher.get('model_type')}', but this script is for BigRec.\n"
+            "You are likely loading the wrong config (e.g., 'ilora').\n"
+            "Please run with 'experiment=bigrec_movielens'."
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
     # Check and compute item embeddings if needed
     if cfg.teacher.get("compute_item_embeddings", False):
