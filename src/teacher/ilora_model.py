@@ -235,47 +235,8 @@ class iLoRAModel(nn.Module):
         modified_input_embeds[replace_mask] = item_buffer[b_idx_p, rank_idx_p].to(modified_input_embeds.dtype)
 
         # --- [CansEmb] の置換ロジック ---
-        # プロンプト内の [CansEmb] トークンを、候補アイテムの埋め込みに置き換えます
-        
-        cans_token_id = self.tokenizer.additional_special_tokens_ids[
-            self.tokenizer.additional_special_tokens.index("[CansEmb]")
-        ]
-        
-        # バッチ内に [CansEmb] が存在する場合のみ処理
-        if (input_ids == cans_token_id).any():
-            if "cans" in batch:
-                # 候補アイテムをエンコード: (batch_size, num_candidates, hidden_size)
-                cans_item_embeds = self.encode_items(batch["cans"])
-                
-                cans_emb_mask = (input_ids == cans_token_id)
-                
-                max_cans_len = cans_item_embeds.shape[1]
-                if "len_cans" in batch:
-                    cans_len_mask = torch.arange(max_cans_len, device=input_ids.device)[None, :] < batch["len_cans"][:, None]
-                else:
-                    cans_len_mask = torch.ones(batch_size, max_cans_len, device=input_ids.device, dtype=torch.bool)
-                    
-                # プレースホルダーのランク計算
-                # 候補アイテムは「先頭から」順に埋めていくため、通常の累積和を使用
-                cp_cumsum = cans_emb_mask.cumsum(dim=1)
-                cp_rank = cp_cumsum - 1 # 0-based rank from start
-                
-                # 候補アイテムの有効数
-                if "len_cans" in batch:
-                    num_valid_cans = batch["len_cans"].unsqueeze(1)
-                else:
-                    num_valid_cans = torch.tensor(max_cans_len, device=input_ids.device).unsqueeze(0).expand(batch_size, 1)
-                    
-                # 置換マスク: [CansEmb]の場所 かつ ランクが有効な候補数未満
-                c_replace_mask = cans_emb_mask & (cp_rank < num_valid_cans)
-                
-                b_idx_c = batch_indices.expand_as(c_replace_mask)[c_replace_mask]
-                rank_idx_c = cp_rank[c_replace_mask]
-                rank_idx_c = rank_idx_c.clamp(0, max_cans_len - 1)
-                
-                modified_input_embeds[c_replace_mask] = cans_item_embeds[b_idx_c, rank_idx_c].to(modified_input_embeds.dtype)
-            else:
-                logger.warning("バッチに 'cans' キーが含まれていないため、[CansEmb] の置換をスキップします。")
+        # 候補アイテムの埋め込み置換ロジックは削除されました。
+        # Dense Retrievalアプローチでは、プロンプトに候補を含める必要がないためです。
 
         outputs = self.llm(
             inputs_embeds=modified_input_embeds,

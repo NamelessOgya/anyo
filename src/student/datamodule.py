@@ -117,15 +117,16 @@ class TeacherTrainCollater:
     バッチ内の各サンプルに対して、iLoRA形式のプロンプトを作成し、
     トークナイズとパディングを行います。
     """
-    def __init__(self, tokenizer: AutoTokenizer, max_seq_len: int, padding_item_id: int):
+    def __init__(self, tokenizer: AutoTokenizer, max_seq_len: int, padding_item_id: int, id_to_name: Dict[int, str]):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.padding_item_id = padding_item_id
+        self.id_to_name = id_to_name
         
         # iLoRAのプロンプトテンプレート
-        # [HistoryHere] は視聴履歴の映画タイトルリストに置換されます
-        # [CansHere] は候補映画タイトルリスト（正解 + 負例）に置換されます
-        self.prompt_template = "This user has watched [HistoryHere] in the previous. Please predict the next movie this user will watch. Choose the answer from the following 20 movie titles: [CansHere]. Answer:"
+        # [HistoryEmb] はユーザーの履歴アイテム埋め込みに置換されます
+        # [CansHere] は削除されました（Dense Retrievalのため）
+        self.prompt_template = "This user has watched [HistoryEmb] in the previous. Please predict the next movie this user will watch."
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         
@@ -133,6 +134,7 @@ class TeacherTrainCollater:
         padded_seqs: List[List[int]] = []
         len_seqs: List[int] = []
         prompts: List[str] = []
+        full_texts: List[str] = [] # For labels generation
         next_items: List[int] = []
         
         for sample in batch:
@@ -153,22 +155,60 @@ class TeacherTrainCollater:
             
             # --- Prompt Construction ---
             # Use pre-computed strings from dataset
-            history_str = sample["history_str"]
-            candidates_str = sample["candidates_str"]
+            # history_str = sample["history_str"] # Unused for embedding-based prompt
+            # candidates_str = sample["candidates_str"] # Unused
             
             # 3. Fill Template
-            prompt = self.prompt_template.replace("[HistoryHere]", history_str).replace("[CansHere]", candidates_str)
+            # No text replacement needed for [HistoryEmb] as it is a special token
+            prompt = self.prompt_template
             prompts.append(prompt)
+            
+            # Construct full text for Causal LM training (Prompt + Target)
+            target_name = self.id_to_name.get(next_item, "")
+            full_text = prompt + " " + target_name
+            full_texts.append(full_text)
 
-        # --- 2. Tokenize Prompts ---
-        # プロンプトのトークナイズ
-        tokenized_inputs = self.tokenizer(
+        # --- 2. Tokenize Prompts and Full Texts ---
+        # Tokenize prompts only (to know where to mask labels)
+        tokenized_prompts = self.tokenizer(
             prompts,
+            return_tensors="pt",
+            padding="longest", # Use longest to minimize padding in this intermediate step
+            truncation=True,
+            max_length=512,
+            add_special_tokens=True
+        )
+        
+        # Tokenize full texts (Input IDs for training)
+        tokenized_inputs = self.tokenizer(
+            full_texts,
             return_tensors="pt",
             padding="max_length",
             truncation=True,
-            max_length=512, # Increased for text prompts
+            max_length=512, # Adjust if needed
+            add_special_tokens=True
         )
+        
+        input_ids = tokenized_inputs["input_ids"]
+        attention_mask = tokenized_inputs["attention_mask"]
+        labels = input_ids.clone()
+        
+        # Mask the prompt part in labels
+        # We assume the tokenizer produces consistent tokenization for the prefix
+        # This is a simplification; for exact masking, we iterate
+        for i, prompt_ids in enumerate(tokenized_prompts["input_ids"]):
+            # Find the length of the prompt (excluding padding if any)
+            # Note: tokenized_prompts might have padding if batch processing
+            # We use the attention mask of the prompt to find valid length
+            prompt_len = tokenized_prompts["attention_mask"][i].sum().item()
+            
+            # Mask labels up to prompt_len
+            # Ensure we don't go out of bounds if full_text was truncated differently
+            mask_len = min(prompt_len, labels.shape[1])
+            labels[i, :mask_len] = -100
+            
+            # Also mask padding tokens in the full text
+            labels[i][input_ids[i] == self.tokenizer.pad_token_id] = -100
 
         # --- 3. Collate other fields and convert to tensor ---
         # next_items = [sample["next_item_id"] for sample in batch] # Already collected in the loop
@@ -183,8 +223,9 @@ class TeacherTrainCollater:
             "next_item": torch.LongTensor(next_items),
             "cans": torch.LongTensor(candidates_batch), # (batch_size, num_candidates)
             "len_cans": torch.LongTensor(len_cans),
-            "input_ids": tokenized_inputs["input_ids"],
-            "attention_mask": tokenized_inputs["attention_mask"],
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels, # Added labels
             "prompts": prompts # Useful for debugging/logging
         }
 
@@ -402,6 +443,7 @@ class SASRecDataModule(pl.LightningDataModule):
                 tokenizer=self.tokenizer,
                 max_seq_len=self.max_seq_len,
                 padding_item_id=self.padding_item_id,
+                id_to_name=self.mapped_id_to_title, # Pass the mapping
             )
         else:
             self.collater = StudentCollater(

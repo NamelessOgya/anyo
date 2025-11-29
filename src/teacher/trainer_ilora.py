@@ -157,25 +157,71 @@ class iLoRATrainer(pl.LightningModule):
         
         # Ranking Loss (Cross Entropy)
         # outputsはLLMの生出力 (Batch, Seq, Hidden)
-        # ヘッダロジックを使用してロジットを計算
+        # Ranking Loss (Cross Entropy)
+        # outputsはLLMの生出力 (Batch, Seq, Hidden)
         last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (B, H)
         
-        if self.model.use_item_embeddings_head:
-             # Embedding Head: アイテム埋め込みとの内積
-             all_items_indices = torch.arange(self.model.rec_model.item_embeddings.num_embeddings, device=self.model.device)
-             all_item_embs_rec = self.model.rec_model.item_embeddings(all_items_indices)
-             all_item_embs_llm = self.model.projector(all_item_embs_rec.to(self.model.projector.model[0].weight.dtype))
-             ranking_scores = last_hidden_state @ all_item_embs_llm.T
-        else:
-             # Linear Head: 線形層による予測
-             ranking_scores = self.model.item_prediction_head(last_hidden_state)
-
         # 正解アイテムのID (1-based)
         target_items = batch["next_item"] # (batch_size,)
-        
-        # Cross Entropy Lossの計算
-        # ranking_scoresは0-based index (0 -> Item 1) なので、target_itemsから1を引く
-        loss = F.cross_entropy(ranking_scores, target_items - 1)
+
+        if self.model.use_item_embeddings_head:
+             # Sampled Softmax Logic
+             num_samples = 2048
+             num_total_items = self.model.rec_model.item_embeddings.num_embeddings
+             
+             # 1. 正解アイテムをユニークにする
+             unique_targets = torch.unique(target_items)
+             
+             # 2. 負例をサンプリング (パディング(0)を除く 1 ~ num_total_items-1)
+             # 簡易的なランダムサンプリング
+             num_negatives = num_samples - len(unique_targets)
+             if num_negatives > 0:
+                 negative_samples = torch.randint(1, num_total_items, (num_negatives,), device=self.device)
+                 sampled_indices = torch.cat([unique_targets, negative_samples])
+             else:
+                 sampled_indices = unique_targets
+                 
+             sampled_indices = torch.unique(sampled_indices) # 重複排除
+             
+             # 3. Embedding計算 (サンプリングされたアイテムのみ)
+             sampled_item_embs_rec = self.model.rec_model.item_embeddings(sampled_indices)
+             sampled_item_embs_llm = self.model.projector(sampled_item_embs_rec.to(self.model.projector.model[0].weight.dtype))
+             
+             # 4. ロジット計算 (B, Num_Sampled)
+             logits = last_hidden_state @ sampled_item_embs_llm.T
+             
+             # 5. ターゲットの再マッピング
+             # target_items が sampled_indices のどこにあるかを探す
+             # searchsortedを使うためにソートが必要だが、ここでは簡易的にbroadcastで比較
+             # (B, 1) == (Num_Sampled,) -> (B, Num_Sampled) -> nonzero
+             # メモリ効率のため、各ターゲットについてインデックスを取得
+             
+             # map_indices: target_itemsの値をsampled_indices内のインデックスに変換
+             # sampled_indicesは小さいので、辞書や検索で対応可能
+             # GPU上での効率的な実装:
+             # target_items (B)
+             # sampled_indices (S)
+             # index_mapping tableを作成するのはSが大きいと大変だが、S=2048ならOK
+             
+             # ターゲットIDをインデックスに変換
+             # sampled_indices を値 -> インデックス のマップにするのは難しい (GPU tensor)
+             # しかし、target_itemsは必ずsampled_indicesに含まれている
+             
+             # 方法: target_items (B, 1) と sampled_indices (1, S) を比較
+             # mask = (target_items.unsqueeze(1) == sampled_indices.unsqueeze(0)) # (B, S)
+             # new_targets = mask.nonzero()[:, 1] # (B,)
+             
+             # これでOK
+             mask = (target_items.unsqueeze(1) == sampled_indices.unsqueeze(0))
+             new_targets = torch.argmax(mask.float(), dim=1) # 最初にマッチしたインデックス
+             
+             loss = F.cross_entropy(logits, new_targets)
+             
+        else:
+             # Linear Head: 線形層による予測 (全アイテム計算)
+             ranking_scores = self.model.item_prediction_head(last_hidden_state)
+             # ranking_scoresは0-based index (0 -> Item 1) なので、target_itemsから1を引く
+             loss = F.cross_entropy(ranking_scores, target_items - 1)
 
         # Reverse Distillation Loss (Embedding Imitation)
         current_lambda = self._get_current_lambda()
@@ -343,14 +389,14 @@ if __name__ == "__main__":
     from omegaconf import OmegaConf
     from pytorch_lightning import Trainer
     from pytorch_lightning.callbacks import LearningRateMonitor
-    from transformers import AutoModelForCausalLM, AutoTokenizer # LLMとTokenizerをロードするために追加
+    from transformers import AutoModel, AutoTokenizer # LLMとTokenizerをロードするために追加
     from src.teacher.mlp_projector import MLPProjector # Added import for MLPProjector
 
     # iLoRAModelのダミー設定
     ilora_cfg = OmegaConf.create({
         "llm_model_name": "facebook/opt-125m",
         "num_lora_experts": 3,
-        "lora_r": 8,
+        "lora_r": 6,
         "lora_alpha": 16,
         "lora_dropout": 0.05,
         "hidden_size": 64,
@@ -358,7 +404,7 @@ if __name__ == "__main__":
     })
 
     # LLMとTokenizerをロード
-    llm = AutoModelForCausalLM.from_pretrained(ilora_cfg.llm_model_name)
+    llm = AutoModel.from_pretrained(ilora_cfg.llm_model_name)
     tokenizer = AutoTokenizer.from_pretrained(ilora_cfg.llm_model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -367,12 +413,13 @@ if __name__ == "__main__":
 
     # ダミーデータモジュール
     dm = SASRecDataModule(
-        batch_size=4, 
-        max_seq_len=50, 
+        dataset_name="movielens",
+        data_dir="data/ml-1m",
+        batch_size=4,
+        max_seq_len=50,
         num_workers=0,
-        llm_model_name=ilora_cfg.llm_model_name,
-        tokenizer=tokenizer,
-        max_gen_length=64
+        limit_data_rows=100,
+        tokenizer=tokenizer
     )
     dm.prepare_data()
     dm.setup()
@@ -381,9 +428,18 @@ if __name__ == "__main__":
     class DummyRecModel(nn.Module):
         def __init__(self, hidden_size_rec, num_items_rec):
             super().__init__()
+            self.hidden_size = hidden_size_rec
             self.item_embeddings = nn.Embedding(num_items_rec + 1, hidden_size_rec)
             self.cacu_x = lambda x: self.item_embeddings(x)
-            self.cacul_h = lambda x, y: torch.randn(x.shape[0], hidden_size_rec)
+            self.cacul_h = lambda x, y: torch.randn(x.shape[0], hidden_size_rec).to(x.device)
+        
+        def get_full_sequence_representations(self, item_seq, item_seq_len):
+            batch_size, seq_len = item_seq.shape
+            return torch.randn(batch_size, seq_len, self.hidden_size).to(item_seq.device)
+
+        def _get_last_item_representation(self, item_seq, item_seq_len):
+            batch_size = item_seq.shape[0]
+            return torch.randn(batch_size, self.hidden_size).to(item_seq.device)
     
     dummy_rec_model = DummyRecModel(ilora_cfg.hidden_size, dm.num_items).to(llm.device)
     dummy_projector = MLPProjector(
@@ -402,14 +458,14 @@ if __name__ == "__main__":
         lora_alpha=ilora_cfg.lora_alpha,
         lora_dropout=ilora_cfg.lora_dropout,
         num_items=dm.num_items,
-        max_seq_len=dm.max_seq_len,
         hidden_size=ilora_cfg.hidden_size,
         dropout_rate=ilora_cfg.dropout_rate,
-        item_id_to_name=dm.item_id_to_name,
+        item_id_to_name=dm.mapped_id_to_title,
         padding_item_id=tokenizer.pad_token_id,
         rec_model=dummy_rec_model,
         projector=dummy_projector,
-        candidate_topk=10
+        candidate_topk=10,
+        llm_dtype=llm.dtype
     )
 
     # iLoRATrainerのインスタンス化
@@ -418,7 +474,8 @@ if __name__ == "__main__":
         num_items=dm.num_items,
         learning_rate=1e-4,
         weight_decay=0.01,
-        metrics_k=10
+        metrics_k=10,
+        item_id_to_name=dm.mapped_id_to_title
     )
 
     # PyTorch Lightning Trainer
@@ -428,7 +485,6 @@ if __name__ == "__main__":
         accelerator="cpu", # テスト用にCPUを使用
         devices=1,
         logger=False, # テスト時はロガーを無効化
-        callbacks=[lr_monitor],
         enable_checkpointing=False,
     )
 
