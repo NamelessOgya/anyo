@@ -1,7 +1,5 @@
-# @package _global_
 defaults:
   - teacher
   - _self_
 
-train:
-  val_check_interval: 0.001
+val_check_interval: 0.001
