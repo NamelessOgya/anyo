@@ -114,10 +114,14 @@ class BigRecCollator:
         # Mask padding in full sequence
         labels[attention_mask == 0] = -100
             
+        # Collect next_item_ids for evaluation
+        next_item_ids = [item["next_item_id"] for item in batch]
+        
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
             "prompt_input_ids": prompt_input_ids,
-            "prompt_attention_mask": prompt_attention_mask
+            "prompt_attention_mask": prompt_attention_mask,
+            "next_item": torch.tensor(next_item_ids)
         }
