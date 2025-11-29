@@ -1,12 +1,13 @@
 import torch
 
 class BigRecCollator:
-    def __init__(self, tokenizer, item_id_to_name, max_source_length=512, max_target_length=64, use_cot=False):
+    def __init__(self, tokenizer, item_id_to_name, max_source_length=512, max_target_length=64, use_cot=False, max_history_items=20):
         self.tokenizer = tokenizer
         self.item_id_to_name = item_id_to_name
         self.max_source_length = max_source_length
         self.max_target_length = max_target_length
         self.use_cot = use_cot
+        self.max_history_items = max_history_items
 
     def __call__(self, batch):
         # batch is a list of dicts from SASRecDataset
@@ -19,6 +20,10 @@ class BigRecCollator:
         for item in batch:
             # 1. Format Input (History)
             seq = item["seq_ids"]
+            # Truncate history to keep prompt length manageable
+            if len(seq) > self.max_history_items:
+                seq = seq[-self.max_history_items:]
+            
             seq_len = len(seq)
             # Filter padding (0) and get names
             # Note: seq_ids from SASRecDataset might be a list or tensor. 

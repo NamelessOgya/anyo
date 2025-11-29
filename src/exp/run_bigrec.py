@@ -38,7 +38,8 @@ def run_experiment(cfg: DictConfig):
         item_id_to_name=dm.mapped_id_to_title,
         max_source_length=cfg.teacher.max_source_length,
         max_target_length=cfg.teacher.max_target_length,
-        use_cot=cfg.teacher.get("use_cot", False)
+        use_cot=cfg.teacher.get("use_cot", False),
+        max_history_items=cfg.teacher.get("max_history_items", 20)
     )
     
     # Wrap dataloaders with custom collator
@@ -77,11 +78,15 @@ def run_experiment(cfg: DictConfig):
     
     trainer = pl.Trainer(
         max_epochs=cfg.train.max_epochs,
-        accelerator="auto",
-        devices="auto",
+        accelerator=cfg.train.accelerator,
+        devices=cfg.train.devices,
         logger=logger_tb,
         callbacks=[checkpoint_callback],
-        gradient_clip_val=1.0
+        gradient_clip_val=1.0,
+        precision=cfg.train.precision,
+        accumulate_grad_batches=cfg.train.accumulate_grad_batches,
+        val_check_interval=cfg.train.val_check_interval,
+        log_every_n_steps=cfg.train.log_every_n_steps
     )
     
     # 5. Fit
