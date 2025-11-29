@@ -30,6 +30,7 @@ class BigRecModel(pl.LightningModule):
         
         # Load Tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        self.tokenizer.padding_side = "left" # Required for generation
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id

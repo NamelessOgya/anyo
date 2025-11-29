@@ -100,16 +100,30 @@ class BigRecCollator:
         prompt_attention_mask = tokenized_prompts.attention_mask
         
         # We need lengths for masking labels in the full sequence
-        # But tokenized_prompts is now padded, so we can't just use len(ids).
-        # We need to use attention_mask sum.
+        # But tokenized_prompts is now padded (LEFT padding), so we can't just use len(ids).
+        # We need to use attention_mask sum to get real prompt length.
         prompt_lengths = prompt_attention_mask.sum(dim=1)
         
-        for i, length in enumerate(prompt_lengths):
+        # Calculate number of padding tokens in the FULL sequence (LEFT padding)
+        # attention_mask is 0 for pads, 1 for real tokens.
+        # With left padding, pads are at the beginning.
+        # num_pads = total_len - real_len = (attention_mask == 0).sum(dim=1)
+        num_pads = (attention_mask == 0).sum(dim=1)
+        
+        for i, prompt_len in enumerate(prompt_lengths):
             # Mask prompt in labels
-            # Note: full_sequences might have different tokenization than prompt alone due to spacing/merging?
-            # Usually okay if we use the same tokenizer.
-            # But safer to use the logic: labels[:length] = -100
-            labels[i, :int(length.item())] = -100
+            # With left padding: [PAD, ..., PAD, PromptTokens, ResponseTokens]
+            # We want to mask PromptTokens.
+            # Start index of PromptTokens is num_pads[i]
+            # End index is num_pads[i] + prompt_len
+            
+            start_idx = int(num_pads[i].item())
+            end_idx = start_idx + int(prompt_len.item())
+            
+            # Ensure we don't go out of bounds (though prompt should be subset of full)
+            end_idx = min(end_idx, labels.shape[1])
+            
+            labels[i, start_idx:end_idx] = -100
             
         # Mask padding in full sequence
         labels[attention_mask == 0] = -100
