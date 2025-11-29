@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from omegaconf import DictConfig
+import torch
 
 # Import the run_experiment functions
 # Note: We need to make sure imports in the scripts don't trigger side effects (like hydra.main execution)
@@ -9,6 +10,7 @@ from omegaconf import DictConfig
 from src.exp.run_teacher import run_experiment as run_teacher_exp
 from src.exp.run_bigrec import run_experiment as run_bigrec_exp
 from src.exp.run_distill import run_experiment as run_distill_exp
+from src.student.datamodule import SASRecDataModule
 
 @pytest.fixture
 def mock_cfg():
@@ -96,8 +98,13 @@ def mock_cfg():
 @patch("src.exp.run_teacher.get_git_info")
 def test_run_teacher_bigrec(mock_git, mock_dl, mock_subprocess, mock_omegaconf, mock_seed, mock_log, mock_tok, mock_trainer, mock_collator, mock_model, mock_dm, mock_cfg):
     # Setup mocks
-    dm_instance = MagicMock()
+    dm_instance = MagicMock(spec=SASRecDataModule)
     dm_instance.mapped_id_to_title = {1: "Item1"}
+    dm_instance.train_dataset = MagicMock()
+    dm_instance.val_dataset = MagicMock()
+    dm_instance.test_dataset = MagicMock()
+    dm_instance.num_items = 100
+    dm_instance.padding_item_id = 0
     # We don't delete item_id_to_name because MagicMock creates it on access.
     # Instead, we verify that the value passed to collator is indeed mapped_id_to_title.
     
@@ -121,8 +128,13 @@ def test_run_teacher_bigrec(mock_git, mock_dl, mock_subprocess, mock_omegaconf, 
 @patch("src.exp.run_bigrec.DataLoader")
 @patch("src.exp.run_bigrec.pl.Trainer")
 def test_run_bigrec(mock_trainer, mock_dl, mock_collator, mock_model, mock_dm, mock_cfg):
-    dm_instance = MagicMock()
+    dm_instance = MagicMock(spec=SASRecDataModule)
     dm_instance.mapped_id_to_title = {1: "Item1"}
+    dm_instance.train_dataset = MagicMock()
+    dm_instance.val_dataset = MagicMock()
+    dm_instance.test_dataset = MagicMock()
+    dm_instance.num_items = 100
+    dm_instance.padding_item_id = 0
     mock_dm.return_value = dm_instance
     
     run_bigrec_exp(mock_cfg)
@@ -144,10 +156,15 @@ def test_run_bigrec(mock_trainer, mock_dl, mock_collator, mock_model, mock_dm, m
 @patch("src.exp.run_distill.OmegaConf.to_yaml", return_value="dummy")
 @patch("src.exp.run_distill.get_git_info")
 def test_run_distill_dllm2rec(mock_git, mock_omegaconf, mock_seed, mock_log, mock_sasrec, mock_dl, mock_tod, mock_psc, mock_trainer, mock_dt, mock_ilora, mock_create_teacher, mock_dm, mock_cfg):
-    dm_instance = MagicMock()
+    dm_instance = MagicMock(spec=SASRecDataModule)
     dm_instance.mapped_id_to_title = {1: "Item1"}
     dm_instance.num_items = 10
     dm_instance.padding_item_id = 0
+    dm_instance.train_dataset = MagicMock()
+    dm_instance.val_dataset = MagicMock()
+    dm_instance.test_dataset = MagicMock()
+    # Fix shape to be (Batch, 1) so squeeze(-1) results in a list, not a scalar
+    dm_instance.train_dataloader = MagicMock(return_value=[{"next_item": torch.tensor([[1]])}])
     mock_dm.return_value = dm_instance
     
     # Mock config for dllm2rec

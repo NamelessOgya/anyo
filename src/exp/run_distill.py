@@ -313,6 +313,10 @@ def run_experiment(cfg):
     logger.info(f"Distillation run finished. Results are in: {output_dir}")
 
 def main():
+    if "--help" in sys.argv:
+        print("Usage: python run_distill.py [overrides]")
+        sys.exit(0)
+
     # --- Centralized Hydra Initialization ---
     overrides = sys.argv[1:]
     cfg = load_hydra_config(config_path="../../conf", overrides=overrides)

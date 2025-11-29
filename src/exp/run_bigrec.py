@@ -50,7 +50,7 @@ def run_experiment(cfg: DictConfig):
         dm.train_dataset,
         batch_size=cfg.teacher.batch_size,
         shuffle=True,
-        num_workers=dm.conf.num_workers,
+        num_workers=cfg.train.num_workers,
         collate_fn=collator,
         pin_memory=True
     )
@@ -59,7 +59,7 @@ def run_experiment(cfg: DictConfig):
         dm.val_dataset,
         batch_size=cfg.teacher.batch_size,
         shuffle=False,
-        num_workers=dm.conf.num_workers,
+        num_workers=cfg.train.num_workers,
         collate_fn=collator,
         pin_memory=True
     )

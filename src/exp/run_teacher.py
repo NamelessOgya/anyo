@@ -102,7 +102,7 @@ def run_experiment(cfg):
             dm.train_dataset,
             batch_size=cfg.teacher.batch_size,
             shuffle=True,
-            num_workers=dm.conf.num_workers,
+            num_workers=cfg.train.num_workers,
             collate_fn=collator,
             pin_memory=True
         )
@@ -111,7 +111,7 @@ def run_experiment(cfg):
             dm.val_dataset,
             batch_size=cfg.teacher.batch_size,
             shuffle=False,
-            num_workers=dm.conf.num_workers,
+            num_workers=cfg.train.num_workers,
             collate_fn=collator,
             pin_memory=True
         )
@@ -247,6 +247,10 @@ def upload_results(cfg, output_dir):
             logger.error(f"Failed to upload results: {e}")
 
 def main():
+    if "--help" in sys.argv:
+        print("Usage: python run_teacher.py [overrides]")
+        sys.exit(0)
+
     # --- Centralized Hydra Initialization ---
     overrides = sys.argv[1:]
     cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
