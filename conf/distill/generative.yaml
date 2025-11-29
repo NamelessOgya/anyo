@@ -1,0 +1,8 @@
+type: generative
+ranking_loss_weight: 1.0
+embedding_loss_weight: 1.0
+ranking_temperature: 1.0
+embedding_loss_type: mse
+teacher_checkpoint_path: null # Path to RankLLM checkpoint if needed, or use HuggingFace model directly
+teacher_model_name: "castorini/rank_zephyr_7b_v1_full" # Default RankLLM model
+candidate_topk: 20

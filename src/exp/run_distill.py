@@ -61,116 +61,160 @@ def main():
     dm.prepare_data()
     dm.setup()
 
-    # 3. 教師モデルのチェックポイントと出力パスを決定
-    teacher_checkpoint_file_path = Path(cfg.distill.teacher_checkpoint_path)
-    teacher_outputs_batches_dir_path = Path(cfg.distill.teacher_outputs_batches_dir)
+    # Check distillation type
+    distill_type = cfg.distill.get("type", "dllm2rec")
+    logger.info(f"Distillation type: {distill_type}")
 
-    if not teacher_checkpoint_file_path.exists():
-        raise FileNotFoundError(f"Teacher checkpoint file not found at: {teacher_checkpoint_file_path}")
-    if not teacher_outputs_batches_dir_path.exists():
-        raise FileNotFoundError(f"Teacher outputs batches directory not found at: {teacher_outputs_batches_dir_path}")
+    if distill_type == "generative":
+        from src.teacher.generative_ranker import GenerativeRanker
+        from src.student.generative_distillation_trainer import GenerativeDistillationTrainer
+        from transformers import AutoTokenizer
 
-    logger.info(f"Using teacher checkpoint: {teacher_checkpoint_file_path}")
-    logger.info(f"Using teacher outputs from: {teacher_outputs_batches_dir_path}")
+        # 7. 生徒モデル (SASRec) をインスタンス化
+        # Generative mode might need specific student config, but reusing existing for now
+        student_model_instance = SASRec(
+            num_items=dm.num_items,
+            hidden_size=cfg.student.hidden_size,
+            num_heads=cfg.student.num_heads,
+            num_layers=cfg.student.num_layers,
+            dropout_rate=cfg.student.dropout_rate,
+            max_seq_len=cfg.student.max_seq_len,
+            teacher_embedding_dim=4096, # Hardcoded for now, should be from teacher config
+            padding_item_id=dm.padding_item_id
+        )
 
-    # 教師モデルのconfigを、チェックポイントのあるディレクトリからロード
-    # checkpoint_path/checkpoints/teacher-epoch=XX-val_loss=YY.ckpt
-    # teacher_run_dir should be checkpoint_path's parent's parent
-    teacher_run_dir = teacher_checkpoint_file_path.parents[1] 
-    teacher_cfg_path = teacher_run_dir / "config.yaml"
-    if not teacher_cfg_path.exists():
-        raise FileNotFoundError(f"Config file not found in teacher run directory: {teacher_cfg_path}. Cannot proceed without teacher's config.")
-    
-    teacher_cfg = OmegaConf.load(teacher_cfg_path)
-    logger.info(f"Loaded specific config from teacher run directory: {teacher_cfg_path}")
+        # Instantiate Generative Teacher
+        logger.info(f"Loading Generative Teacher: {cfg.distill.teacher_model_name}")
+        tokenizer = AutoTokenizer.from_pretrained(cfg.distill.teacher_model_name)
+        teacher_model_instance = GenerativeRanker(
+            model_name_or_path=cfg.distill.teacher_model_name,
+            tokenizer=tokenizer,
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
 
-    # 4. 教師モデルのインスタンス化と学習済み重みのロード (using the teacher's specific config)
-    logger.info(f"Loading pre-trained teacher model from {teacher_checkpoint_file_path}")
-    teacher_model_instance = create_teacher_model(
-        teacher_cfg, # Use the specific config from the teacher run
-        num_items=dm.num_items,
-        max_seq_len=teacher_cfg.student.max_seq_len,
-        item_id_to_name=dm.item_id_to_name,
-        padding_item_id=dm.padding_item_id,
-        candidate_topk=teacher_cfg.distill.candidate_topk
-    )
-    loaded_teacher_trainer = iLoRATrainer.load_from_checkpoint(
-        checkpoint_path=teacher_checkpoint_file_path,
-        ilora_model=teacher_model_instance,
-        num_items=dm.num_items,
-        learning_rate=teacher_cfg.train.learning_rate,
-        weight_decay=teacher_cfg.train.weight_decay,
-        metrics_k=teacher_cfg.eval.metrics_k,
-        item_id_to_name=dm.item_id_to_name,
-        strict=False
-    )
-    teacher_model_instance = loaded_teacher_trainer.model
-    for param in teacher_model_instance.parameters():
-        param.requires_grad = False
-    teacher_model_instance.eval()
+        # Instantiate Generative Trainer
+        distill_trainer = GenerativeDistillationTrainer(
+            student_model=student_model_instance,
+            teacher_model=teacher_model_instance,
+            learning_rate=cfg.train.learning_rate,
+            lambda_emb=cfg.distill.embedding_loss_weight,
+            lambda_rank=cfg.distill.ranking_loss_weight,
+            num_candidates=cfg.distill.candidate_topk,
+            item_id_to_name=dm.item_id_to_name
+        )
 
-    # 5. Load pre-generated teacher outputs
-    logger.info(f"Loading pre-generated teacher outputs from {teacher_outputs_batches_dir_path}")
-    teacher_output_dataset = TeacherOutputDataset(teacher_outputs_batches_dir_path)
-    teacher_output_dataloader = DataLoader(
-        teacher_output_dataset,
-        batch_size=1, # Each file is already a batch
-        shuffle=False,
-        num_workers=0,
-        collate_fn=teacher_output_collate_fn
-    )
-    
-    # 6. 傾向スコア (Propensity Scores) の計算
-    train_next_items = []
-    for batch in dm.train_dataloader():
-        train_next_items.extend(batch["next_item"].squeeze(-1).tolist())
-    ps_calculator = PropensityScoreCalculator(
-        item_num=dm.num_items + 1,
-        train_next_items=train_next_items,
-        power=cfg.distill.ps_power
-    )
-    propensity_scores = ps_calculator.get_ps()
-    logger.info(f"Propensity scores calculated. Shape: {propensity_scores.shape}")
+    else:
+        # --- EXISTING LOGIC (dllm2rec) ---
+        # 3. 教師モデルのチェックポイントと出力パスを決定
+        teacher_checkpoint_file_path = Path(cfg.distill.teacher_checkpoint_path)
+        teacher_outputs_batches_dir_path = Path(cfg.distill.teacher_outputs_batches_dir)
 
-    # 7. 生徒モデル (SASRec) をインスタンス化
-    student_model_instance = SASRec(
-        num_items=dm.num_items,
-        hidden_size=cfg.student.hidden_size,
-        num_heads=cfg.student.num_heads,
-        num_layers=cfg.student.num_layers,
-        dropout_rate=cfg.student.dropout_rate,
-        max_seq_len=cfg.student.max_seq_len,
-        teacher_embedding_dim=teacher_model_instance.llm.config.hidden_size,
-        padding_item_id=dm.padding_item_id
-    )
+        if not teacher_checkpoint_file_path.exists():
+            raise FileNotFoundError(f"Teacher checkpoint file not found at: {teacher_checkpoint_file_path}")
+        if not teacher_outputs_batches_dir_path.exists():
+            raise FileNotFoundError(f"Teacher outputs batches directory not found at: {teacher_outputs_batches_dir_path}")
 
-    # 8. DistillationTrainerのインスタンス化
-    distill_trainer = DistillationTrainer(
-        student_model=student_model_instance,
-        teacher_model=teacher_model_instance,
-        datamodule=dm,
-        num_items=dm.num_items,
-        ranking_loss_weight=cfg.distill.ranking_loss_weight,
-        embedding_loss_weight=cfg.distill.embedding_loss_weight,
-        ce_loss_weight=cfg.distill.ce_loss_weight,
-        ranking_temperature=cfg.distill.ranking_temperature,
-        embedding_loss_type=cfg.distill.embedding_loss_type,
-        learning_rate=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
-        metrics_k=cfg.eval.metrics_k,
-        selection_policy=AllSamplesPolicy(),
-        gamma_position=cfg.distill.gamma_position,
-        gamma_confidence=cfg.distill.gamma_confidence,
-        gamma_consistency=cfg.distill.gamma_consistency,
-        candidate_topk=cfg.distill.candidate_topk,
-        ed_weight=cfg.distill.ed_weight,
-        alpha=cfg.distill.alpha,
-        beta=cfg.distill.beta,
-        propensity_scores=propensity_scores,
-        lam=cfg.distill.lam,
-        num_neg_samples=cfg.distill.num_neg_samples,
-        teacher_output_dataloader=teacher_output_dataloader
-    )
+        logger.info(f"Using teacher checkpoint: {teacher_checkpoint_file_path}")
+        logger.info(f"Using teacher outputs from: {teacher_outputs_batches_dir_path}")
+
+        # 教師モデルのconfigを、チェックポイントのあるディレクトリからロード
+        # checkpoint_path/checkpoints/teacher-epoch=XX-val_loss=YY.ckpt
+        # teacher_run_dir should be checkpoint_path's parent's parent
+        teacher_run_dir = teacher_checkpoint_file_path.parents[1] 
+        teacher_cfg_path = teacher_run_dir / "config.yaml"
+        if not teacher_cfg_path.exists():
+            raise FileNotFoundError(f"Config file not found in teacher run directory: {teacher_cfg_path}. Cannot proceed without teacher's config.")
+        
+        teacher_cfg = OmegaConf.load(teacher_cfg_path)
+        logger.info(f"Loaded specific config from teacher run directory: {teacher_cfg_path}")
+
+        # 4. 教師モデルのインスタンス化と学習済み重みのロード (using the teacher's specific config)
+        logger.info(f"Loading pre-trained teacher model from {teacher_checkpoint_file_path}")
+        teacher_model_instance = create_teacher_model(
+            teacher_cfg, # Use the specific config from the teacher run
+            num_items=dm.num_items,
+            max_seq_len=teacher_cfg.student.max_seq_len,
+            item_id_to_name=dm.item_id_to_name,
+            padding_item_id=dm.padding_item_id,
+            candidate_topk=teacher_cfg.distill.candidate_topk
+        )
+        loaded_teacher_trainer = iLoRATrainer.load_from_checkpoint(
+            checkpoint_path=teacher_checkpoint_file_path,
+            ilora_model=teacher_model_instance,
+            num_items=dm.num_items,
+            learning_rate=teacher_cfg.train.learning_rate,
+            weight_decay=teacher_cfg.train.weight_decay,
+            metrics_k=teacher_cfg.eval.metrics_k,
+            item_id_to_name=dm.item_id_to_name,
+            strict=False
+        )
+        teacher_model_instance = loaded_teacher_trainer.model
+        for param in teacher_model_instance.parameters():
+            param.requires_grad = False
+        teacher_model_instance.eval()
+
+        # 5. Load pre-generated teacher outputs
+        logger.info(f"Loading pre-generated teacher outputs from {teacher_outputs_batches_dir_path}")
+        teacher_output_dataset = TeacherOutputDataset(teacher_outputs_batches_dir_path)
+        teacher_output_dataloader = DataLoader(
+            teacher_output_dataset,
+            batch_size=1, # Each file is already a batch
+            shuffle=False,
+            num_workers=0,
+            collate_fn=teacher_output_collate_fn
+        )
+        
+        # 6. 傾向スコア (Propensity Scores) の計算
+        train_next_items = []
+        for batch in dm.train_dataloader():
+            train_next_items.extend(batch["next_item"].squeeze(-1).tolist())
+        ps_calculator = PropensityScoreCalculator(
+            item_num=dm.num_items + 1,
+            train_next_items=train_next_items,
+            power=cfg.distill.ps_power
+        )
+        propensity_scores = ps_calculator.get_ps()
+        logger.info(f"Propensity scores calculated. Shape: {propensity_scores.shape}")
+
+        # 7. 生徒モデル (SASRec) をインスタンス化
+        student_model_instance = SASRec(
+            num_items=dm.num_items,
+            hidden_size=cfg.student.hidden_size,
+            num_heads=cfg.student.num_heads,
+            num_layers=cfg.student.num_layers,
+            dropout_rate=cfg.student.dropout_rate,
+            max_seq_len=cfg.student.max_seq_len,
+            teacher_embedding_dim=teacher_model_instance.llm.config.hidden_size,
+            padding_item_id=dm.padding_item_id
+        )
+
+        # 8. DistillationTrainerのインスタンス化
+        distill_trainer = DistillationTrainer(
+            student_model=student_model_instance,
+            teacher_model=teacher_model_instance,
+            datamodule=dm,
+            num_items=dm.num_items,
+            ranking_loss_weight=cfg.distill.ranking_loss_weight,
+            embedding_loss_weight=cfg.distill.embedding_loss_weight,
+            ce_loss_weight=cfg.distill.ce_loss_weight,
+            ranking_temperature=cfg.distill.ranking_temperature,
+            embedding_loss_type=cfg.distill.embedding_loss_type,
+            learning_rate=cfg.train.learning_rate,
+            weight_decay=cfg.train.weight_decay,
+            metrics_k=cfg.eval.metrics_k,
+            selection_policy=AllSamplesPolicy(),
+            gamma_position=cfg.distill.gamma_position,
+            gamma_confidence=cfg.distill.gamma_confidence,
+            gamma_consistency=cfg.distill.gamma_consistency,
+            candidate_topk=cfg.distill.candidate_topk,
+            ed_weight=cfg.distill.ed_weight,
+            alpha=cfg.distill.alpha,
+            beta=cfg.distill.beta,
+            propensity_scores=propensity_scores,
+            lam=cfg.distill.lam,
+            num_neg_samples=cfg.distill.num_neg_samples,
+            teacher_output_dataloader=teacher_output_dataloader
+        )
 
     # 9. PyTorch Lightning Trainerのインスタンス化と学習の実行
     tb_logger = TensorBoardLogger(save_dir=str(output_dir), name="tb_logs", version="")

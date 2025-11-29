@@ -1,0 +1,13 @@
+# BIGRec Configuration
+llm_model_name: "Qwen/Qwen2.5-0.5B-Instruct" # Or any other CausalLM
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+learning_rate: 3e-4
+max_source_length: 512
+max_target_length: 64
+use_cot: false
+
+# Dataset
+limit_data_rows: null # Set to integer for debugging
+batch_size: 4
