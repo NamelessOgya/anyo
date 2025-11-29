@@ -35,8 +35,16 @@ class BigRecModel(pl.LightningModule):
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
             
         # Load Model
+        # Determine dtype (bf16 if supported, else fp16)
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            torch_dtype = torch.bfloat16
+            print("Using bfloat16 precision.")
+        else:
+            torch_dtype = torch.float16
+            print("Using float16 precision.")
+
         # Enable Flash Attention 2 if available for speedup
-        model_kwargs = {"torch_dtype": torch.float16}
+        model_kwargs = {"torch_dtype": torch_dtype}
         try:
             import flash_attn
             model_kwargs["attn_implementation"] = "flash_attention_2"
@@ -61,10 +69,10 @@ class BigRecModel(pl.LightningModule):
         )
         self.model = get_peft_model(self.model, peft_config)
         
-        # Ensure LoRA layers are in float16 if using Flash Attention 2
+        # Ensure LoRA layers match the base model dtype if using Flash Attention 2
         # LoRA layers are often float32 by default, which causes dtype mismatch in FA2
         if model_kwargs.get("attn_implementation") == "flash_attention_2":
-            self.model = self.model.to(torch.float16)
+            self.model = self.model.to(torch_dtype)
             
         self.model.print_trainable_parameters()
         
