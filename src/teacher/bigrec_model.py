@@ -264,7 +264,29 @@ class BigRecModel(pl.LightningModule):
             self.log(f"{prefix}_ndcg@{self.metrics_k}", val_ndcg, prog_bar=True)
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(filter(lambda p: p.requires_grad, self.parameters()), lr=self.hparams.learning_rate)
+        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.parameters()), lr=self.hparams.learning_rate)
+        
+        # Use Linear Decay with Warmup
+        from transformers import get_linear_schedule_with_warmup
+        
+        # Estimate total steps
+        total_steps = self.trainer.estimated_stepping_batches
+        warmup_steps = int(total_steps * 0.03) # 3% warmup
+        
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps
+        )
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1
+            }
+        }
 
     def generate(self, input_ids, attention_mask, max_new_tokens=None):
         if max_new_tokens is None:
