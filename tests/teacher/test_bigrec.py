@@ -34,9 +34,8 @@ def test_bigrec_collator(mock_tokenizer):
     
     batch = [
         {
-            "item_seq": torch.tensor([1, 2, 0, 0]),
-            "item_seq_len": torch.tensor(2),
-            "next_item": torch.tensor([3])
+            "seq_ids": [1, 2, 0, 0],
+            "next_item_id": 3
         }
     ]
     
@@ -111,9 +110,8 @@ def test_collator_cot(mock_tokenizer):
     
     batch = [
         {
-            "item_seq": torch.tensor([1, 2]),
-            "item_seq_len": torch.tensor(2),
-            "next_item": torch.tensor(3),
+            "seq_ids": [1, 2],
+            "next_item_id": 3,
             "reasoning": "User likes A and B."
         }
     ]
@@ -132,7 +130,7 @@ def test_collator_inference_mode(mock_tokenizer):
     # Verify that prompt_input_ids are returned even without CoT (for standard inference)
     item_id_to_name = {1: "Movie A"}
     collator = BigRecCollator(mock_tokenizer, item_id_to_name, use_cot=False)
-    batch = [{"item_seq": torch.tensor([1]), "item_seq_len": torch.tensor(1), "next_item": torch.tensor(1)}]
+    batch = [{"seq_ids": [1], "next_item_id": 1}]
     output = collator(batch)
     assert "prompt_input_ids" in output
 

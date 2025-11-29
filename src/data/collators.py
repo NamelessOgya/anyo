@@ -10,7 +10,7 @@ class BigRecCollator:
 
     def __call__(self, batch):
         # batch is a list of dicts from SASRecDataset
-        # keys: item_seq, item_seq_len, next_item, (optional) reasoning
+        # keys: seq_ids, next_item_id, ...
         
         instructions = []
         inputs = []
@@ -18,14 +18,18 @@ class BigRecCollator:
         
         for item in batch:
             # 1. Format Input (History)
-            seq = item["item_seq"]
-            seq_len = item["item_seq_len"]
+            seq = item["seq_ids"]
+            seq_len = len(seq)
             # Filter padding (0) and get names
-            hist_names = [self.item_id_to_name.get(idx.item(), f"Item_{idx.item()}") for idx in seq[:seq_len] if idx.item() > 0]
+            # Note: seq_ids from SASRecDataset might be a list or tensor. 
+            # If it's from __getitem__, it's likely a list or numpy array if not collated yet.
+            # Looking at SASRecDataset, it returns seq_ids as list (from df['seq']).
+            # So we can iterate directly.
+            hist_names = [self.item_id_to_name.get(idx, f"Item_{idx}") for idx in seq if idx > 0]
             input_text = ", ".join(hist_names)
             
             # 2. Format Output (Target)
-            target_id = item["next_item"].item()
+            target_id = item["next_item_id"]
             target_text = self.item_id_to_name.get(target_id, f"Item_{target_id}")
             
             # Reasoning (Dummy or from batch)
@@ -100,7 +104,7 @@ class BigRecCollator:
             # Note: full_sequences might have different tokenization than prompt alone due to spacing/merging?
             # Usually okay if we use the same tokenizer.
             # But safer to use the logic: labels[:length] = -100
-            labels[i, :length] = -100
+            labels[i, :int(length.item())] = -100
             
         # Mask padding in full sequence
         labels[attention_mask == 0] = -100
