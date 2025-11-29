@@ -246,5 +246,11 @@ def upload_results(cfg, output_dir):
         except Exception as e:
             logger.error(f"Failed to upload results: {e}")
 
+def main():
+    # --- Centralized Hydra Initialization ---
+    overrides = sys.argv[1:]
+    cfg = load_hydra_config(config_path="../../conf", overrides=overrides)
+    run_experiment(cfg)
+
 if __name__ == "__main__":
     main()

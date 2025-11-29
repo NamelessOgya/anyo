@@ -91,9 +91,10 @@ def mock_cfg():
 @patch("src.exp.run_teacher.setup_logging")
 @patch("src.exp.run_teacher.set_seed")
 @patch("src.exp.run_teacher.OmegaConf.to_yaml", return_value="dummy")
+@patch("src.exp.run_teacher.subprocess.run")
 @patch("src.exp.run_teacher.DataLoader")
 @patch("src.exp.run_teacher.get_git_info")
-def test_run_teacher_bigrec(mock_git, mock_dl, mock_omegaconf, mock_seed, mock_log, mock_tok, mock_trainer, mock_collator, mock_model, mock_dm, mock_cfg):
+def test_run_teacher_bigrec(mock_git, mock_dl, mock_subprocess, mock_omegaconf, mock_seed, mock_log, mock_tok, mock_trainer, mock_collator, mock_model, mock_dm, mock_cfg):
     # Setup mocks
     dm_instance = MagicMock()
     dm_instance.mapped_id_to_title = {1: "Item1"}
