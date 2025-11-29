@@ -72,8 +72,9 @@ def main(cfg: DictConfig):
     model.to(device)
     
     # 3. Select Strategy
-    strategy_name = cfg.get("active_learning_strategy", "loss") # Default to loss
-    mining_ratio = cfg.get("mining_ratio", 0.5)
+    # Use active_learning config group
+    strategy_name = cfg.active_learning.strategy_name
+    mining_ratio = cfg.active_learning.mining_ratio
     
     logger.info(f"Using Active Learning Strategy: {strategy_name} with ratio {mining_ratio}")
     
@@ -94,7 +95,8 @@ def main(cfg: DictConfig):
     hard_indices = strategy.select_indices(mining_loader)
     
     # 5. Save Indices
-    output_path = Path(cfg.get("hard_indices_output_path", "hard_sample_indices.pt"))
+    # 5. Save Indices
+    output_path = Path(cfg.active_learning.hard_indices_output_path)
     torch.save(torch.tensor(hard_indices), output_path)
     logger.info(f"Saved {len(hard_indices)} indices to {output_path}")
 

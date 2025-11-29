@@ -140,7 +140,31 @@ poetry run python -m src.exp.run_student_baseline train=student
 - 学習ログ、TensorBoardログ、チェックポイント（ベストモデル、最終モデル）が `result/result_{timestamp}/` ディレクトリに保存されます。
 - テストセットに対する評価結果が `result/result_{timestamp}/test_metrics.txt` に保存されます。
 
-### 3.2. 教師モデル (iLoRA) の学習
+### 3.2. Active Learning (データの選別)
+
+学習済みの生徒モデルを使用して、教師モデルの学習に使用する「難易度の高い」または「有益な」データのサブセットを選別します。
+
+**コマンド:**
+```bash
+# poetry run を使用する場合
+# 例: poetry run python -m src.utils.mine_hard_examples student_checkpoint_path=path/to/ckpt
+poetry run python -m src.utils.mine_hard_examples
+
+# または、cmd/ ディレクトリのスクリプトを使用する場合
+./cmd/run_mining.sh student_checkpoint_path=result/path/to/student.ckpt
+```
+
+**主なオプション:**
+*   `student_checkpoint_path`: 使用する生徒モデルのチェックポイントパス (必須)
+*   `active_learning_strategy`: 選別戦略 (`entropy`, `least_confidence`, `margin`, `loss`, `gradient_norm`, `coreset`, `kmeans`, `badge`, `entropy_diversity`, `random`)
+*   `mining_ratio`: 選別するデータの割合 (例: `0.5` で50%を選別)
+*   `hard_indices_output_path`: インデックスの保存先 (デフォルト: `hard_sample_indices.pt`)
+
+**出力:**
+*   選別されたインデックスファイル (`.pt`) が保存されます。
+*   このファイルを Teacher 学習時の `subset_indices_path` に指定します。
+
+### 3.3. 教師モデル (iLoRA) の学習
 
 `iLoRA` モデルを学習・評価します。
 
@@ -166,7 +190,7 @@ poetry run python -m src.exp.run_teacher train=teacher
 - 学習ログ、TensorBoardログ、チェックポイントが `result/result_{timestamp}/` ディレクトリに保存されます。
 - テストセットに対する評価結果がコンソールに出力されます。
 
-#### 3.2.1. Teacherモデルの高度な設定 (2025-11-27 追加)
+#### 3.3.1. Teacherモデルの高度な設定 (2025-11-27 追加)
 
 以下のパラメータを `conf/teacher/ilora.yaml` またはコマンドライン引数で設定することで、学習挙動を詳細に制御できます。
 
@@ -207,7 +231,7 @@ poetry run python -m src.exp.run_teacher \
     teacher.distill_decay_steps=100
 ```
 
-### 3.3. 知識蒸留
+### 3.4. 知識蒸留
 
 学習済みの教師モデルを用いて、生徒モデルに知識を蒸留します。
 
@@ -226,7 +250,7 @@ poetry run python -m src.exp.run_distill train=distill
 - 蒸留学習のログ、TensorBoardログ、チェックポイントが `result/result_{timestamp}/` ディレクトリに保存されます。
 - 蒸留後の生徒モデルの評価結果が `result/result_{timestamp}/test_metrics.txt` に保存されます。
 
-### 3.4. 全モデルの評価
+### 3.5. 全モデルの評価
 
 複数の学習済みモデル（ベースライン、蒸留済み、教師）をまとめて評価します。
 

@@ -1,6 +1,7 @@
 defaults:
   - _self_
   - experiment: ilora_movielens
+  - active_learning: default
 
 # Basic experiment settings
 seed: 42

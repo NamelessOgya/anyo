@@ -1,0 +1,18 @@
+defaults:
+  - config
+  - _self_
+
+# Active Learning Configuration
+# You can override these values to change the sampling strategy and ratio.
+
+active_learning:
+  # Available strategies: 
+  # entropy, least_confidence, margin, loss, gradient_norm, 
+  # coreset, kmeans, badge, entropy_diversity, random
+  strategy_name: entropy
+  
+  # Ratio of samples to keep (0.0 - 1.0)
+  mining_ratio: 0.5
+  
+  # Output path for the selected indices
+  hard_indices_output_path: hard_sample_indices.pt
