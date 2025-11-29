@@ -7,15 +7,32 @@ import torch
 from torch.utils.data import DataLoader
 import os
 import logging
+import sys
+from pathlib import Path
 
 from src.teacher.bigrec_model import BigRecModel
 from src.student.datamodule import SASRecDataModule
 from src.data.collators import BigRecCollator
+from src.exp.compute_item_embeddings import compute_embeddings
 
 logger = logging.getLogger(__name__)
 
 def run_experiment(cfg: DictConfig):
     pl.seed_everything(cfg.experiment.seed)
+
+    # Check and compute item embeddings if needed
+    if cfg.teacher.get("compute_item_embeddings", False):
+        logger.info("compute_item_embeddings is True. Computing embeddings...")
+        compute_embeddings(cfg)
+    
+    # Log usage of embeddings if path is set
+    item_embeddings_path = cfg.teacher.get("item_embeddings_path")
+    if item_embeddings_path:
+        path_obj = Path(item_embeddings_path)
+        if path_obj.exists():
+            logger.info(f"Using existing item embeddings at {path_obj}")
+        else:
+            logger.warning(f"Item embeddings path set to {path_obj} but file not found. Validation will fallback to exact match.")
     
     # 1. DataModule
     dm = SASRecDataModule(conf=cfg.dataset)
@@ -29,7 +46,11 @@ def run_experiment(cfg: DictConfig):
         lora_dropout=cfg.teacher.lora_dropout,
         learning_rate=cfg.teacher.learning_rate,
         max_source_length=cfg.teacher.max_source_length,
-        max_target_length=cfg.teacher.max_target_length
+        max_target_length=cfg.teacher.max_target_length,
+        item_id_to_name=dm.item_id_to_name,
+        metrics_k=cfg.teacher.metrics_k,
+        num_beams=cfg.teacher.get("num_beams", 4),
+        item_embeddings_path=cfg.teacher.get("item_embeddings_path")
     )
     
     # 3. Custom Collator
@@ -85,7 +106,7 @@ def run_experiment(cfg: DictConfig):
         gradient_clip_val=1.0,
         precision=cfg.train.precision,
         accumulate_grad_batches=cfg.train.accumulate_grad_batches,
-        val_check_interval=cfg.train.val_check_interval,
+        val_check_interval=cfg.teacher.get("val_check_interval", cfg.train.val_check_interval),
         log_every_n_steps=cfg.train.log_every_n_steps
     )
     

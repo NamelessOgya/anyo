@@ -9,6 +9,13 @@ max_source_length: 512
 max_target_length: 64
 use_cot: false
 max_history_items: 20 # Truncate history to last 20 items to speed up training
+metrics_k: ${eval.metrics_k}
+num_beams: 4
+item_embeddings_path: "data/ml-100k/item_embeddings.pt"
+compute_item_embeddings: true
+val_check_interval: 0.001
+
+
 
 # Dataset
 limit_data_rows: null # Set to integer for debugging
