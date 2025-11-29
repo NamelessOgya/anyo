@@ -34,7 +34,19 @@ docker build -t ilora-dllm2rec:latest .
  docker exec ilora-dev-container bash -c "poetry lock && poetry install"
  ```
  
- ### 1.3. 長時間学習の実行 (tmux の利用)
+ ### 1.3. Hugging Face 認証
+ 
+ 教師モデル (iLoRA) の学習には LLM (Qwen/OPT等) が必要です。
+ 以下のスクリプトを実行して Hugging Face の認証を行ってください。
+ (モデルのダウンロードは学習実行時に自動的に行われます)
+ 
+ ```bash
+ ./cmd/authenticate_hf.sh
+ ```
+ * 実行中に Hugging Face のアクセストークンの入力が求められます。
+ * トークンは [Hugging Face Settings](https://huggingface.co/settings/tokens) から取得できます。
+ 
+ ### 1.4. 長時間学習の実行 (tmux の利用)
  
  学習プロセスを接続切断後も継続させるために、`tmux` の利用を推奨します。
  
@@ -52,7 +64,7 @@ docker build -t ilora-dllm2rec:latest .
      tmux attach -t train
      ```
  
- ### 1.4. 設定ファイルの確認
+ ### 1.5. 設定ファイルの確認
 
 すべての実験は、`conf/` ディレクトリ以下の設定ファイルに基づいて実行されます。
 メインの設定ファイルは `conf/config.yaml` であり、ここから各モジュールの設定が読み込まれます。
@@ -68,7 +80,7 @@ docker build -t ilora-dllm2rec:latest .
 poetry run python -m src.exp.run_student_baseline train=student train.batch_size=64
 ```
 
-### 1.5. データセットの準備
+ ### 1.6. データセットの準備
 
 本プロジェクトでは MovieLens 1M データセットを使用します。
 以下のスクリプトを実行することで、データセットのダウンロードと展開が自動的に行われます。
@@ -140,6 +152,7 @@ poetry run python -m src.exp.run_student_baseline train=student
 *   **事前に学習済みのSASRecモデルのチェックポイントパスを指定する必要があります。** これは `conf/teacher/ilora.yaml` の `rec_model_checkpoint_path` で設定するか、コマンドライン引数で上書きします。
 
 **コマンド:**
+(長時間学習になるため、[1.3. 長時間学習の実行 (tmux の利用)](#13-長時間学習の実行-tmux-の利用) の手順に従って `tmux` 内で実行することを推奨します)
 ```bash
 # poetry run を使用する場合
 # 例: poetry run python -m src.exp.run_teacher train=teacher teacher.rec_model_checkpoint_path=/path/to/your/sasrec_checkpoint.ckpt
@@ -199,6 +212,7 @@ poetry run python -m src.exp.run_teacher \
 学習済みの教師モデルを用いて、生徒モデルに知識を蒸留します。
 
 **コマンド:**
+(長時間学習になるため、[1.3. 長時間学習の実行 (tmux の利用)](#13-長時間学習の実行-tmux-の利用) の手順に従って `tmux` 内で実行することを推奨します)
 ```bash
 # poetry run を使用する場合
 poetry run python -m src.exp.run_distill train=distill
