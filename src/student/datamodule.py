@@ -183,7 +183,7 @@ class TeacherTrainCollater:
         tokenized_inputs = self.tokenizer(
             full_texts,
             return_tensors="pt",
-            padding="max_length",
+            padding="longest",
             truncation=True,
             max_length=512, # Adjust if needed
             add_special_tokens=True
