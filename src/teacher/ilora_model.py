@@ -162,8 +162,10 @@ class iLoRAModel(nn.Module):
         input_embeds = self.llm.get_input_embeddings()(input_ids)
 
         # SASRecから完全なシーケンス表現と最後のアイテム表現を1回のパスで取得
-        full_sequence_rec_embs = self.rec_model.get_full_sequence_representations(item_seq, item_seq_len)
-        last_item_rec_representation = self.rec_model._get_last_item_representation(item_seq, item_seq_len)
+        # メモリ節約のため、ここでの勾配計算を切ります (detach)
+        # アイテム埋め込みの学習は、Ranking Lossのターゲットとして使用される箇所で行われます
+        full_sequence_rec_embs = self.rec_model.get_full_sequence_representations(item_seq, item_seq_len).detach()
+        last_item_rec_representation = self.rec_model._get_last_item_representation(item_seq, item_seq_len).detach()
 
         # ゲート重みの計算
         user_embeds = self.encode_users(last_item_rec_representation)
