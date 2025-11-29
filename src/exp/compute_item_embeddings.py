@@ -76,6 +76,7 @@ def compute_embeddings(cfg: DictConfig):
         
         batch_embeddings = last_hidden_state[:, -1, :] # (B, Dim)
         
+        for j, item_id in enumerate(batch_ids):
             all_embeddings[item_id] = batch_embeddings[j].cpu()
             
     # 4. Save

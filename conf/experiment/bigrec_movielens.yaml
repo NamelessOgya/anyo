@@ -10,3 +10,6 @@ defaults:
 
 # Override defaults here if needed
 seed: 42
+
+train:
+  val_check_interval: 0.001

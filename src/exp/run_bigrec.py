@@ -104,6 +104,9 @@ def run_experiment(cfg: DictConfig):
         mode="min"
     )
     
+    val_check_interval = cfg.teacher.get("val_check_interval", cfg.train.val_check_interval)
+    logger.info(f"Using val_check_interval: {val_check_interval}")
+
     trainer = pl.Trainer(
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.accelerator,
@@ -113,7 +116,7 @@ def run_experiment(cfg: DictConfig):
         gradient_clip_val=1.0,
         precision=cfg.train.precision,
         accumulate_grad_batches=cfg.train.accumulate_grad_batches,
-        val_check_interval=cfg.teacher.get("val_check_interval", cfg.train.val_check_interval),
+        val_check_interval=val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps
     )
     
