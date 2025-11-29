@@ -29,7 +29,7 @@ class BigRecModel(pl.LightningModule):
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=torch.float16,
-            device_map="auto" # Let PL handle device placement if possible, or use "auto" for multi-gpu
+            # device_map="auto" # Removed to allow PL to handle device placement in DDP
         )
         
         # Configure LoRA
