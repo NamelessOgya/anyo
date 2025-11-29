@@ -159,7 +159,7 @@ class iLoRATrainer(pl.LightningModule):
         # outputsはLLMの生出力 (Batch, Seq, Hidden)
         # Ranking Loss (Cross Entropy)
         # outputsはLLMの生出力 (Batch, Seq, Hidden)
-        last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (B, H)
+        last_hidden_state = outputs.last_hidden_state[:, -1, :] # (B, H)
         
         # 正解アイテムのID (1-based)
         target_items = batch["next_item"] # (batch_size,)

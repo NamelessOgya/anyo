@@ -5,7 +5,7 @@ from src.teacher.mlp_projector import MLPProjector
 import torch
 import torch.nn as nn
 from typing import Dict
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer
 from src.student.models import SASRec
 import logging
 
@@ -51,7 +51,7 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
              llm_load_kwargs["torch_dtype"] = torch.bfloat16
 
         print("DEBUG: from_pretrainedを使用してLLMのロードを試みています...")
-        llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
+        llm = AutoModel.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
         logger.info(f"LLMのロードに成功しました: {llm.config._name_or_path}")
 
         # 内部でのトークナイザー作成と特殊トークン処理は削除されました。

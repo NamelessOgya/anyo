@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer
 
 from src.teacher.moe_lora_model import MoeLoraModel
 from src.teacher.mlp_projector import MLPProjector
@@ -25,7 +25,7 @@ class iLoRAModel(nn.Module):
     """
     def __init__(
         self,
-        llm: AutoModelForCausalLM,
+        llm: AutoModel,
         tokenizer: AutoTokenizer,
         num_items: int,
         num_lora_experts: int,
@@ -241,7 +241,6 @@ class iLoRAModel(nn.Module):
         outputs = self.llm(
             inputs_embeds=modified_input_embeds,
             attention_mask=attention_mask,
-            output_hidden_states=True,
             use_cache=False,
         )
         return outputs
@@ -274,7 +273,7 @@ class iLoRAModel(nn.Module):
         
         # LLMの出力: (Batch, Seq, Hidden)
         # 最後のトークンの隠れ状態を取得
-        last_hidden_state = outputs.hidden_states[-1][:, -1, :] # (Batch, LLM_Hidden)
+        last_hidden_state = outputs.last_hidden_state[:, -1, :] # (Batch, LLM_Hidden)
         
         # ランキングスコア（ロジット）の計算
         if self.use_item_embeddings_head:
