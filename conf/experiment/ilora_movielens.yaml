@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - /dataset: movielens
+  - /dataset: ml-100k
   - /train: teacher
   - /teacher: ilora
   - /student: sasrec

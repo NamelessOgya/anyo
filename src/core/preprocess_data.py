@@ -41,28 +41,76 @@ def process_and_split(df: pd.DataFrame, min_seq_len: int = 3):
             
     return train_df, val_df, test_df
 
-def preprocess_data(data_dir: str, min_seq_len: int = 3):
+def process_metadata(data_dir: Path, dataset_type: str) -> pd.DataFrame:
     """
-    Reads the MovieLens 1M dataset, splits it into training, validation, and test sets
-    based on user history, and saves them as CSV files.
+    Reads metadata (movies/items) and standardizes it to a DataFrame with columns:
+    ['item_id', 'title', 'genres']
+    """
+    if dataset_type == 'ml-100k':
+        metadata_path = data_dir / "u.item"
+        logging.info(f"Reading ML-100k metadata from {metadata_path}...")
+        # ML-100k: item_id | title | release date | ... | genres (one-hot)
+        # We only extract ID and Title for now, and maybe genres if needed.
+        # For simplicity and consistency with ML-1M, let's just get ID and Title.
+        # Genres in ML-100k are one-hot encoded at the end, which is different from ML-1M's pipe-separated string.
+        # We will leave genres empty or try to reconstruct if critical. For now, ID and Title are most important.
+        df = pd.read_csv(
+            metadata_path,
+            sep="|",
+            header=None,
+            usecols=[0, 1],
+            names=["item_id", "title"],
+            engine="python",
+            encoding="latin-1",
+        )
+        df['genres'] = "" # Placeholder
+        
+    elif dataset_type == 'ml-1m':
+        metadata_path = data_dir / "movies.dat"
+        logging.info(f"Reading ML-1M metadata from {metadata_path}...")
+        # ML-1M: item_id :: title :: genres
+        df = pd.read_csv(
+            metadata_path,
+            sep="::",
+            header=None,
+            names=["item_id", "title", "genres"],
+            engine="python",
+            encoding="latin-1",
+        )
+    else:
+        raise ValueError(f"Unknown dataset_type: {dataset_type}")
+        
+    return df
+
+def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3):
+    """
+    Reads the MovieLens dataset, splits it into training, validation, and test sets
+    based on user history, and saves them as CSV files. Also standardizes metadata.
 
     Args:
-        data_dir (str): The directory containing the 'ratings.dat' file.
+        data_dir (str): The directory containing the raw data files.
+        dataset_type (str): 'ml-1m' or 'ml-100k'.
         min_seq_len (int): The minimum number of interactions a user must have to be included.
     """
-    # Check for ML-100k u.data first, then ML-1M ratings.dat
     output_dir = Path(data_dir)
-    ml100k_path = output_dir / "u.data"
-    ml1m_path = output_dir / "ratings.dat"
     
-    if ml100k_path.exists():
-        logging.info(f"Reading ML-100k data from {ml100k_path}...")
-        df = pd.read_csv(ml100k_path, sep='\t', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
-    elif ml1m_path.exists():
-        logging.info(f"Reading ML-1M data from {ml1m_path}...")
-        df = pd.read_csv(ml1m_path, sep='::', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
+    # 1. Process Metadata
+    movies_df = process_metadata(output_dir, dataset_type)
+    movies_csv_path = output_dir / "movies.csv"
+    logging.info(f"Saving standardized metadata to {movies_csv_path}...")
+    movies_df.to_csv(movies_csv_path, index=False)
+
+    # 2. Process Interactions
+    if dataset_type == 'ml-100k':
+        data_path = output_dir / "u.data"
+        logging.info(f"Reading ML-100k interactions from {data_path}...")
+        df = pd.read_csv(data_path, sep='\t', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
+    elif dataset_type == 'ml-1m':
+        data_path = output_dir / "ratings.dat"
+        logging.info(f"Reading ML-1M interactions from {data_path}...")
+        df = pd.read_csv(data_path, sep='::', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
     else:
-        raise FileNotFoundError(f"Neither u.data nor ratings.dat found in {data_dir}")
+        raise ValueError(f"Unknown dataset_type: {dataset_type}")
 
     train_df, val_df, test_df = process_and_split(df, min_seq_len)
 
@@ -82,8 +130,10 @@ def preprocess_data(data_dir: str, min_seq_len: int = 3):
     logging.info("Data preprocessing and splitting complete.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Preprocess and split MovieLens 1M data.")
-    parser.add_argument("--data_dir", type=str, default="data/ml-1m", help="Directory containing the ratings.dat file.")
+    parser = argparse.ArgumentParser(description="Preprocess and split MovieLens data.")
+    parser.add_argument("--data_dir", type=str, required=True, help="Directory containing the raw data files.")
+    parser.add_argument("--dataset_type", type=str, required=True, choices=['ml-1m', 'ml-100k'], help="Type of dataset.")
+    parser.add_argument("--min_seq_len", type=int, default=3, help="Minimum sequence length.")
     args = parser.parse_args()
     
-    preprocess_data(args.data_dir)
+    preprocess_data(args.data_dir, args.dataset_type, args.min_seq_len)

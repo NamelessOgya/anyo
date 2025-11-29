@@ -329,14 +329,13 @@ class SASRecDataModule(pl.LightningDataModule):
         nrows_val_test = self.limit_data_rows if self.limit_data_rows and self.limit_data_rows > 0 else None
 
         # Load movie titles
-        movies_df = pd.read_csv(
-            self.data_dir / "movies.dat",
-            sep="::",
-            header=None,
-            names=["item_id", "title", "genres"],
-            engine="python",
-            encoding="latin-1",
-        )
+        # Load movie titles from standardized movies.csv
+        movies_path = self.data_dir / "movies.csv"
+        if not movies_path.exists():
+            raise FileNotFoundError(f"movies.csv not found in {self.data_dir}. Please run preprocess_data.py first.")
+            
+        movies_df = pd.read_csv(movies_path)
+        # Ensure item_id is int (it should be, but just in case)
         original_item_id_to_title = movies_df.set_index("item_id")["title"].to_dict()
 
         # Load pre-split dataframes with nrows
