@@ -10,6 +10,9 @@ import logging
 import sys
 from pathlib import Path
 
+# Disable Tokenizers Parallelism to avoid deadlocks with DataLoader forking
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from src.teacher.bigrec_model import BigRecModel
 from src.student.datamodule import SASRecDataModule
 from src.data.collators import BigRecCollator
