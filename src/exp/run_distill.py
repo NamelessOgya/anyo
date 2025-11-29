@@ -61,72 +61,40 @@ def main():
     dm.prepare_data()
     dm.setup()
 
-    # Check distillation type
-    distill_type = cfg.distill.get("type", "dllm2rec")
-    logger.info(f"Distillation type: {distill_type}")
+    # 3. Determine Distillation Type and Load Teacher Config
+    teacher_checkpoint_file_path = Path(cfg.distill.teacher_checkpoint_path) if cfg.distill.teacher_checkpoint_path else None
+    distill_type = cfg.distill.get("type", "dllm2rec") # Default fallback
+    teacher_cfg = None
+
+    if teacher_checkpoint_file_path and teacher_checkpoint_file_path.exists():
+        logger.info(f"Found teacher checkpoint at: {teacher_checkpoint_file_path}")
+        # Try to load config from checkpoint directory
+        # checkpoint_path/checkpoints/teacher-epoch=XX.ckpt -> parent -> parent -> config.yaml
+        teacher_run_dir = teacher_checkpoint_file_path.parents[1]
+        teacher_cfg_path = teacher_run_dir / "config.yaml"
+        
+        if teacher_cfg_path.exists():
+            teacher_cfg = OmegaConf.load(teacher_cfg_path)
+            logger.info(f"Loaded teacher config from: {teacher_cfg_path}")
+            
+            # Infer type from teacher config
+            if "model_type" in teacher_cfg.teacher:
+                model_type = teacher_cfg.teacher.model_type
+                if model_type == "bigrec":
+                    distill_type = "generative"
+                elif model_type == "ilora":
+                    distill_type = "dllm2rec"
+                logger.info(f"Inferred distillation type '{distill_type}' from teacher model_type '{model_type}'")
+            else:
+                logger.warning("Teacher config does not have 'model_type'. Using 'distill.type' from current config.")
+        else:
+            logger.warning(f"Teacher config not found at {teacher_cfg_path}. Using 'distill.type' from current config.")
+    else:
+        logger.info("No teacher checkpoint provided or found. Using 'distill.type' from current config.")
+
+    logger.info(f"Final Distillation Type: {distill_type}")
 
     if distill_type == "generative":
-        from src.teacher.generative_ranker import GenerativeRanker
-        from src.student.generative_distillation_trainer import GenerativeDistillationTrainer
-        from transformers import AutoTokenizer
-
-        # 7. 生徒モデル (SASRec) をインスタンス化
-        # Generative mode might need specific student config, but reusing existing for now
-        student_model_instance = SASRec(
-            num_items=dm.num_items,
-            hidden_size=cfg.student.hidden_size,
-            num_heads=cfg.student.num_heads,
-            num_layers=cfg.student.num_layers,
-            dropout_rate=cfg.student.dropout_rate,
-            max_seq_len=cfg.student.max_seq_len,
-            teacher_embedding_dim=4096, # Hardcoded for now, should be from teacher config
-            padding_item_id=dm.padding_item_id
-        )
-
-        # Instantiate Generative Teacher
-        logger.info(f"Loading Generative Teacher: {cfg.distill.teacher_model_name}")
-        tokenizer = AutoTokenizer.from_pretrained(cfg.distill.teacher_model_name)
-        teacher_model_instance = GenerativeRanker(
-            model_name_or_path=cfg.distill.teacher_model_name,
-            tokenizer=tokenizer,
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-
-        # Instantiate Generative Trainer
-        distill_trainer = GenerativeDistillationTrainer(
-            student_model=student_model_instance,
-            teacher_model=teacher_model_instance,
-            learning_rate=cfg.train.learning_rate,
-            lambda_emb=cfg.distill.embedding_loss_weight,
-            lambda_rank=cfg.distill.ranking_loss_weight,
-            num_candidates=cfg.distill.candidate_topk,
-            item_id_to_name=dm.item_id_to_name
-        )
-
-    else:
-        # --- EXISTING LOGIC (dllm2rec) ---
-        # 3. 教師モデルのチェックポイントと出力パスを決定
-        teacher_checkpoint_file_path = Path(cfg.distill.teacher_checkpoint_path)
-        teacher_outputs_batches_dir_path = Path(cfg.distill.teacher_outputs_batches_dir)
-
-        if not teacher_checkpoint_file_path.exists():
-            raise FileNotFoundError(f"Teacher checkpoint file not found at: {teacher_checkpoint_file_path}")
-        if not teacher_outputs_batches_dir_path.exists():
-            raise FileNotFoundError(f"Teacher outputs batches directory not found at: {teacher_outputs_batches_dir_path}")
-
-        logger.info(f"Using teacher checkpoint: {teacher_checkpoint_file_path}")
-        logger.info(f"Using teacher outputs from: {teacher_outputs_batches_dir_path}")
-
-        # 教師モデルのconfigを、チェックポイントのあるディレクトリからロード
-        # checkpoint_path/checkpoints/teacher-epoch=XX-val_loss=YY.ckpt
-        # teacher_run_dir should be checkpoint_path's parent's parent
-        teacher_run_dir = teacher_checkpoint_file_path.parents[1] 
-        teacher_cfg_path = teacher_run_dir / "config.yaml"
-        if not teacher_cfg_path.exists():
-            raise FileNotFoundError(f"Config file not found in teacher run directory: {teacher_cfg_path}. Cannot proceed without teacher's config.")
-        
-        teacher_cfg = OmegaConf.load(teacher_cfg_path)
-        logger.info(f"Loaded specific config from teacher run directory: {teacher_cfg_path}")
 
         # 4. 教師モデルのインスタンス化と学習済み重みのロード (using the teacher's specific config)
         logger.info(f"Loading pre-trained teacher model from {teacher_checkpoint_file_path}")
