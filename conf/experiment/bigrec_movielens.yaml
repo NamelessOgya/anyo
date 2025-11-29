@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - /dataset: ml-100k
+  - /train: teacher
+  - /teacher: bigrec
+  - /student: sasrec
+  - /distill: dllm2rec
+  - /eval: default
+  - _self_
+
+# Override defaults here if needed
+seed: 42

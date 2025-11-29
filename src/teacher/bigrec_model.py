@@ -60,6 +60,12 @@ class BigRecModel(pl.LightningModule):
             target_modules=["q_proj", "v_proj"] # Common for Llama/Qwen. Adjust if needed.
         )
         self.model = get_peft_model(self.model, peft_config)
+        
+        # Ensure LoRA layers are in float16 if using Flash Attention 2
+        # LoRA layers are often float32 by default, which causes dtype mismatch in FA2
+        if model_kwargs.get("attn_implementation") == "flash_attention_2":
+            self.model = self.model.to(torch.float16)
+            
         self.model.print_trainable_parameters()
         
         # Load Item Embeddings if provided

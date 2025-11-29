@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 def run_experiment(cfg: DictConfig):
     pl.seed_everything(cfg.experiment.seed)
 
+    # Validate Config
+    if cfg.teacher.get("model_type") != "bigrec":
+        logger.warning(f"WARNING: cfg.teacher.model_type is '{cfg.teacher.get('model_type')}', but this script is for BigRec.")
+        logger.warning("You are likely loading the wrong config (e.g., 'ilora').")
+        logger.warning("Please run with 'experiment=bigrec_movielens' or 'teacher=bigrec'.")
+        # We can force continue, but defaults might be wrong.
+
     # Check and compute item embeddings if needed
     if cfg.teacher.get("compute_item_embeddings", False):
         logger.info("compute_item_embeddings is True. Computing embeddings...")
