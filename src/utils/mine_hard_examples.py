@@ -20,11 +20,11 @@ def main(cfg: DictConfig):
     dm = SASRecDataModule(
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
-        batch_size=cfg.train.student.batch_size, # Use student batch size for inference
+        batch_size=cfg.train.batch_size, # Use student batch size for inference
         max_seq_len=cfg.model.student.max_seq_len,
         num_workers=cfg.train.num_workers,
         limit_data_rows=cfg.dataset.limit_data_rows,
-        num_candidates=cfg.train.student.num_candidates,
+        num_candidates=cfg.model.student.num_candidates,
     )
     dm.prepare_data()
     dm.setup()
@@ -60,9 +60,9 @@ def main(cfg: DictConfig):
         checkpoint_path,
         rec_model=rec_model,
         num_items=dm.num_items,
-        learning_rate=cfg.train.student.learning_rate,
-        weight_decay=cfg.train.student.weight_decay,
-        metrics_k=cfg.train.student.metrics_k,
+        learning_rate=cfg.train.learning_rate,
+        weight_decay=cfg.train.weight_decay,
+        metrics_k=cfg.eval.metrics_k,
         strict=False # Allow missing keys if any
     )
     
@@ -85,7 +85,7 @@ def main(cfg: DictConfig):
     # We need a dataloader without shuffle
     mining_loader = torch.utils.data.DataLoader(
         dm.train_dataset,
-        batch_size=cfg.train.student.batch_size * 2,
+        batch_size=cfg.train.batch_size * 2,
         shuffle=False, # IMPORTANT: No shuffle to keep index order
         num_workers=cfg.train.num_workers,
         collate_fn=dm.collater,
