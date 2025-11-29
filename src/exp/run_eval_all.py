@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.core.paths import get_project_root
 from src.core.seed import set_seed
-from src.core.logging import setup_logging
+from src.core.logger import setup_logging
 from src.core.git_info import get_git_info
 
 from src.student.datamodule import SASRecDataModule

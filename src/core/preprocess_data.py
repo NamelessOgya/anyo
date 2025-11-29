@@ -6,21 +6,7 @@ import logging
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def preprocess_data(data_dir: str, min_seq_len: int = 3):
-    """
-    Reads the MovieLens 1M dataset, splits it into training, validation, and test sets
-    based on user history, and saves them as CSV files.
-
-    Args:
-        data_dir (str): The directory containing the 'ratings.dat' file.
-        min_seq_len (int): The minimum number of interactions a user must have to be included.
-    """
-    data_path = Path(data_dir) / "ratings.dat"
-    output_dir = Path(data_dir)
-    
-    logging.info(f"Reading data from {data_path}...")
-    df = pd.read_csv(data_path, sep='::', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
-
+def process_and_split(df: pd.DataFrame, min_seq_len: int = 3):
     logging.info("Sorting data by user and timestamp...")
     df = df.sort_values(by=['user_id', 'timestamp']).reset_index(drop=True)
 
@@ -40,8 +26,8 @@ def preprocess_data(data_dir: str, min_seq_len: int = 3):
         # Validation data: second to last item in the sequence
         val_data.append({'user_id': user_id, 'seq': seq[:-2], 'next_item': seq[-2]})
 
-        # Training data: from the second item up to the second to last
-        for i in range(1, len(seq) - 1):
+        # Training data: from the second item up to the third to last (excluding val and test targets)
+        for i in range(1, len(seq) - 2):
             train_data.append({'user_id': user_id, 'seq': seq[:i], 'next_item': seq[i]})
 
     train_df = pd.DataFrame(train_data)
@@ -50,7 +36,35 @@ def preprocess_data(data_dir: str, min_seq_len: int = 3):
 
     # Convert sequence lists to string for CSV storage
     for df_to_convert in [train_df, val_df, test_df]:
-        df_to_convert['seq'] = df_to_convert['seq'].apply(lambda x: ' '.join(map(str, x)))
+        if not df_to_convert.empty:
+            df_to_convert['seq'] = df_to_convert['seq'].apply(lambda x: ' '.join(map(str, x)))
+            
+    return train_df, val_df, test_df
+
+def preprocess_data(data_dir: str, min_seq_len: int = 3):
+    """
+    Reads the MovieLens 1M dataset, splits it into training, validation, and test sets
+    based on user history, and saves them as CSV files.
+
+    Args:
+        data_dir (str): The directory containing the 'ratings.dat' file.
+        min_seq_len (int): The minimum number of interactions a user must have to be included.
+    """
+    # Check for ML-100k u.data first, then ML-1M ratings.dat
+    output_dir = Path(data_dir)
+    ml100k_path = output_dir / "u.data"
+    ml1m_path = output_dir / "ratings.dat"
+    
+    if ml100k_path.exists():
+        logging.info(f"Reading ML-100k data from {ml100k_path}...")
+        df = pd.read_csv(ml100k_path, sep='\t', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
+    elif ml1m_path.exists():
+        logging.info(f"Reading ML-1M data from {ml1m_path}...")
+        df = pd.read_csv(ml1m_path, sep='::', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
+    else:
+        raise FileNotFoundError(f"Neither u.data nor ratings.dat found in {data_dir}")
+
+    train_df, val_df, test_df = process_and_split(df, min_seq_len)
 
     train_path = output_dir / "train.csv"
     val_path = output_dir / "val.csv"

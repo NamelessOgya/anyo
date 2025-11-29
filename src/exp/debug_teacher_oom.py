@@ -4,7 +4,7 @@ from omegaconf import OmegaConf
 
 from src.core.paths import get_project_root
 from src.core.seed import set_seed
-from src.core.logging import setup_logging
+from src.core.logger import setup_logging
 from src.student.datamodule import SASRecDataModule
 from src.teacher.factory import create_teacher_model
 from transformers import AutoModelForCausalLM, AutoTokenizer

@@ -1,6 +1,6 @@
 from src.core.config_utils import load_hydra_config
 from src.core.paths import get_project_root
-from src.core.logging import setup_logging
+from src.core.logger import setup_logging
 from src.core.seed import set_seed
 from src.core.git_info import get_git_info
 from omegaconf import OmegaConf
