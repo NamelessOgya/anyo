@@ -52,7 +52,15 @@ def run_experiment(cfg: DictConfig):
             logger.warning(f"Item embeddings path set to {path_obj} but file not found. Validation will fallback to exact match.")
     
     # 1. DataModule
-    dm = SASRecDataModule(conf=cfg.dataset)
+    dm = SASRecDataModule(
+        dataset_name=cfg.dataset.name,
+        data_dir=cfg.dataset.data_dir,
+        batch_size=cfg.teacher.batch_size,
+        max_seq_len=cfg.student.max_seq_len,
+        num_workers=cfg.train.num_workers,
+        limit_data_rows=cfg.dataset.limit_data_rows,
+        seed=cfg.seed
+    )
     dm.setup()
     
     # 2. Model
