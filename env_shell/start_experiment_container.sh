@@ -79,7 +79,7 @@ elif [ "${CONTAINER_STATUS}" = "exited" ] || [ "${CONTAINER_STATUS}" = "created"
 else
     echo "Creating and starting new container ${CONTAINER_NAME} on GPU ${GPU_ID}..."
     docker run -d \
-      --gpus "\"device=${GPU_ID}\"" \
+      --gpus "device=${GPU_ID}" \
       --memory=200g \
       --name "${CONTAINER_NAME}" \
       -v "${HOST_PROJECT_ROOT}:/workspace" \
