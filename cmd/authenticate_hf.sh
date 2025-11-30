@@ -6,6 +6,9 @@
 echo "Starting Hugging Face Authentication..."
 echo "You will be asked to enter your Hugging Face Access Token."
 
-docker exec -it ilora-dllm2rec-dev bash -c "poetry run python authenticate_hf.py"
+C=${C:-ilora-dllm2rec-dev}
+echo "Targeting Container: $C"
+
+docker exec -it "$C" bash -c "poetry run python authenticate_hf.py"
 
 echo "Done."
