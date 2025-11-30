@@ -8,6 +8,7 @@ from typing import Dict
 from transformers import AutoModel, AutoTokenizer
 from src.student.models import SASRec
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
