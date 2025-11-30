@@ -2,77 +2,45 @@ import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import get_peft_model, LoraConfig, TaskType
-from typing import List, Dict, Any
-import os
+from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_training
 
-class BigRecModel(pl.LightningModule):
-    def __init__(
-        self,
-        model_name_or_path: str,
-        lora_r: int = 8,
-        lora_alpha: int = 16,
-        lora_dropout: float = 0.05,
-        learning_rate: float = 3e-4,
-        max_source_length: int = 512,
-        max_target_length: int = 64,
-        item_id_to_name: Dict[int, str] = None,
-        metrics_k: int = 10,
-        num_beams: int = 4,
-        item_embeddings_path: str = None,
-        temperature: float = 0.0,
-        top_p: float = 0.9,
-        top_k: int = 40,
-        warmup_steps: int = 20,
-    ):
-        super().__init__()
-        self.save_hyperparameters()
-        self.item_id_to_name = item_id_to_name
-        self.metrics_k = metrics_k
-        self.num_beams = num_beams
-        self.item_embeddings_path = item_embeddings_path
-        
-        # Load Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-        self.tokenizer.padding_side = "left" # Required for generation
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
-            self.tokenizer.pad_token = self.tokenizer.decode(0)
-            
-        # Load Model
-        # Determine dtype (bf16 if supported, else fp16)
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
-            torch_dtype = torch.bfloat16
-            print("Using bfloat16 precision.")
-        else:
-            torch_dtype = torch.float16
-            print("Using float16 precision.")
-
-        # Enable Flash Attention 2 if available for speedup
-        model_kwargs = {"torch_dtype": torch_dtype}
-        try:
-            import flash_attn
-            model_kwargs["attn_implementation"] = "flash_attention_2"
-            print("Flash Attention 2 enabled.")
-        except ImportError:
-            print("Flash Attention 2 not found. Using default attention.")
+# ... (inside __init__)
 
         # Configure Quantization
         # User reported issues with 8-bit loading. Switching to 4-bit (nf4) as a more robust default for memory saving.
-        from transformers import BitsAndBytesConfig
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch_dtype,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4"
-        )
+        # CRITICAL: Check for GPU. bitsandbytes 4-bit quantization requires GPU.
+        quantization_config = None
+        if torch.cuda.is_available():
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch_dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            print("CUDA detected: Enabling 4-bit quantization (NF4).")
+        else:
+            print("No CUDA detected: Skipping quantization (CPU mode).")
+
+        # Load Model
+        # device_map="auto" is generally good for GPU, but on CPU we might want to let PL handle it or just use default.
+        # For 4-bit, device_map="auto" is required.
+        load_kwargs = {
+            "quantization_config": quantization_config,
+            **model_kwargs
+        }
+        if quantization_config is not None:
+             load_kwargs["device_map"] = "auto"
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
-            quantization_config=quantization_config,
-            **model_kwargs
-            # device_map="auto" # Removed to allow PL to handle device placement in DDP
+            **load_kwargs
         )
+        
+        # Prepare model for k-bit training (important for gradient checkpointing and stability)
+        # Only needed if quantized
+        if quantization_config is not None:
+            self.model = prepare_model_for_kbit_training(self.model)
         
         # Configure LoRA
         peft_config = LoraConfig(
