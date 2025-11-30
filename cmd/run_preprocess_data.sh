@@ -44,7 +44,7 @@ else
         C=${C:-ilora-dllm2rec-dev}
         echo "Poetry not found. Attempting to run inside Docker container '$C'..."
         if docker ps | grep -q "$C"; then
-            docker exec "$C" bash -c "PYTHONPATH=/workspace /opt/conda/bin/poetry run python -m src.data.preprocess_data --data_dir $DATA_DIR --dataset_type ml-100k"
+            docker exec "$C" bash -c "PYTHONPATH=/workspace /opt/conda/bin/poetry run python -m src.core.preprocess_data --data_dir $DATA_DIR --dataset_type ml-100k"
         else
             echo "Error: Poetry not found and Docker container '$C' is not running."
         exit 1
