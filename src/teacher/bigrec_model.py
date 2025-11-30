@@ -57,9 +57,19 @@ class BigRecModel(pl.LightningModule):
         except ImportError:
             print("Flash Attention 2 not found. Using default attention.")
 
+        # Configure Quantization
+        # User reported issues with 8-bit loading. Switching to 4-bit (nf4) as a more robust default for memory saving.
+        from transformers import BitsAndBytesConfig
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch_dtype,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4"
+        )
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
-            load_in_8bit=True, # Reference uses 8bit training
+            quantization_config=quantization_config,
             **model_kwargs
             # device_map="auto" # Removed to allow PL to handle device placement in DDP
         )

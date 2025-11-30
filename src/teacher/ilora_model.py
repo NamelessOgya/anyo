@@ -179,11 +179,11 @@ class iLoRAModel(nn.Module):
         # ランキングスコア（ロジット）の計算
         # LLMのアイテムEmbedding（拡張された語彙部分）との内積
         
-        # 全アイテムのEmbeddingを取得 (N, H)
+        # 全アイテムのEmbeddingを取得 (N+1, H)
         # weight: (Vocab, H)
-        # items start at original_vocab_size + 1 (1-based ID)
+        # items start at original_vocab_size (ID 0 = Padding)
         all_embeddings = self.llm.get_input_embeddings().weight
-        item_embeddings = all_embeddings[self.original_vocab_size + 1 : self.original_vocab_size + self.num_items + 1]
+        item_embeddings = all_embeddings[self.original_vocab_size : self.original_vocab_size + self.num_items + 1]
         
         # 内積 (B, H) @ (N, H).T -> (B, N)
         ranking_scores = last_hidden_state @ item_embeddings.T
