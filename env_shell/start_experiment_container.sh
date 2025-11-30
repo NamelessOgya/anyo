@@ -78,14 +78,9 @@ elif [ "${CONTAINER_STATUS}" = "exited" ] || [ "${CONTAINER_STATUS}" = "created"
     docker start "${CONTAINER_NAME}"
 else
     echo "Creating and starting new container ${CONTAINER_NAME} on GPU ${GPU_ID}..."
-    docker run -d \
-      --gpus "device=${GPU_ID}" \
-      --memory=200g \
-      --name "${CONTAINER_NAME}" \
-      -v "${HOST_PROJECT_ROOT}:/workspace" \
-      -w /workspace \
-      "${IMAGE_NAME}" \
-      tail -f /dev/null
+    CMD="docker run -d --gpus \"device=${GPU_ID}\" --memory=200g --name \"${CONTAINER_NAME}\" -v \"${HOST_PROJECT_ROOT}:/workspace\" -w /workspace \"${IMAGE_NAME}\" tail -f /dev/null"
+    echo "Executing: $CMD"
+    eval $CMD
       
     # New container created, might want to install by default? 
     # For now, only if --install is passed or explicit logic.
