@@ -68,12 +68,8 @@ def compute_embeddings(cfg: DictConfig):
         # Get last hidden state of the last token
         last_hidden_state = outputs.hidden_states[-1] # (B, Seq, Dim)
         
-        # Find the index of the last token
-        # Since we use left padding, and we want the embedding of the sequence.
-        # If left padded: [PAD, PAD, T1, T2, T3]. Last token is at -1.
-        # If right padded: [T1, T2, T3, PAD, PAD]. Last token is at len-1-pad_count.
-        # We set padding_side="left". So last token is indeed at -1.
-        
+        # With left padding (padding_side="left"), the last token is always at the end of the sequence.
+        # So we can just take the last hidden state.
         batch_embeddings = last_hidden_state[:, -1, :] # (B, Dim)
         
         for j, item_id in enumerate(batch_ids):
