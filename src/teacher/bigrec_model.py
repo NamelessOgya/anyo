@@ -58,42 +58,11 @@ class BigRecModel(pl.LightningModule):
         except ImportError:
             print("Flash Attention 2 not found. Using default attention.")
 
-        # Configure Quantization
-        # User reported issues with 8-bit loading. Switching to 4-bit (nf4) as a more robust default for memory saving.
-        # CRITICAL: Check for GPU. bitsandbytes 4-bit quantization requires GPU.
-        quantization_config = None
-        if torch.cuda.is_available():
-            from transformers import BitsAndBytesConfig
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch_dtype,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4"
-            )
-            print("CUDA detected: Enabling 4-bit quantization (NF4).")
-        else:
-            print("No CUDA detected: Skipping quantization (CPU mode).")
-
         # Load Model
-        # device_map="auto" is generally good for GPU, but on CPU we might want to let PL handle it or just use default.
-        # For 4-bit, device_map="auto" is required.
-        load_kwargs = {
-            "quantization_config": quantization_config,
-            **model_kwargs
-        }
-        # User reported device_map="auto" causes issues with PL.
-        # if quantization_config is not None:
-        #      load_kwargs["device_map"] = "auto"
-
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
-            **load_kwargs
+            **model_kwargs
         )
-        
-        # Prepare model for k-bit training (important for gradient checkpointing and stability)
-        # Only needed if quantized
-        if quantization_config is not None:
-            self.model = prepare_model_for_kbit_training(self.model)
         
         # Configure LoRA
         peft_config = LoraConfig(

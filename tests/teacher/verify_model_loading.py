@@ -18,33 +18,17 @@ def verify_loading():
         tokenizer.pad_token_id = 0
         tokenizer.pad_token = tokenizer.decode(0)
         
-    # 2. Quantization Config (Conditional)
-    print("Configuring Quantization...")
+    # 2. Quantization Config (Removed)
+    print("Quantization disabled by default.")
     torch_dtype = torch.float16 # Default
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         torch_dtype = torch.bfloat16
-        
-    quantization_config = None
-    if torch.cuda.is_available():
-        print("CUDA detected: Enabling 4-bit quantization (NF4).")
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch_dtype,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4"
-        )
-    else:
-        print("No CUDA detected: Skipping quantization (CPU mode).")
     
     # 3. Load Model
     print("Loading Model...")
     load_kwargs = {
-        "quantization_config": quantization_config,
         "torch_dtype": torch_dtype,
     }
-    # User reported device_map="auto" causes issues with PL.
-    # if quantization_config is not None:
-    #     load_kwargs["device_map"] = "auto"
         
     try:
         model = AutoModelForCausalLM.from_pretrained(
@@ -56,17 +40,8 @@ def verify_loading():
         print(f"FAILED to load model: {e}")
         return
 
-    # 4. Prepare for k-bit training (Conditional)
-    if quantization_config is not None:
-        print("Preparing model for k-bit training...")
-        try:
-            model = prepare_model_for_kbit_training(model)
-            print("Model prepared!")
-        except Exception as e:
-            print(f"FAILED to prepare model: {e}")
-            return
-    else:
-        print("Skipping prepare_model_for_kbit_training (CPU mode).")
+    # 4. Prepare for k-bit training (Removed)
+    print("Skipping prepare_model_for_kbit_training (Standard mode).")
 
     # 5. Apply LoRA
     print("Applying LoRA...")
