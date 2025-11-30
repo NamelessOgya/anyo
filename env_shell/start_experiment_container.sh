@@ -35,10 +35,6 @@ while [[ $# -gt 0 ]]; do
       INSTALL=true
       shift
       ;;
-    -*|--*)
-      echo "Unknown option $1"
-      exit 1
-      ;;
     *)
       POSITIONAL_ARGS+=("$1")
       shift
