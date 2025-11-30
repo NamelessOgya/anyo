@@ -1,2 +1,3 @@
 #!/usr/bin/env bash
-docker exec ilora-dllm2rec-dev bash -c "PYTHONPATH=/workspace /opt/conda/bin/poetry run python -m src.exp.run_teacher $@"
+CONTAINER_NAME=${CONTAINER_NAME:-ilora-dllm2rec-dev}
+docker exec "$CONTAINER_NAME" bash -c "PYTHONPATH=/workspace /opt/conda/bin/poetry run python -m src.exp.run_teacher $@"

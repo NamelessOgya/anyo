@@ -41,11 +41,12 @@ if command -v poetry &> /dev/null; then
     PYTHONPATH=. poetry run python src/core/preprocess_data.py --data_dir "$DATA_DIR" --dataset_type ml-100k
 else
     # Poetry not found, assume we are on host and try to run via Docker
-    echo "Poetry not found. Attempting to run inside Docker container 'ilora-dllm2rec-dev'..."
-    if docker ps | grep -q ilora-dllm2rec-dev; then
-        docker exec ilora-dllm2rec-dev bash -c "cd /workspace && PYTHONPATH=. poetry run python src/core/preprocess_data.py --data_dir $DATA_DIR --dataset_type ml-100k"
+    CONTAINER_NAME=${CONTAINER_NAME:-ilora-dllm2rec-dev}
+    echo "Poetry not found. Attempting to run inside Docker container '$CONTAINER_NAME'..."
+    if docker ps | grep -q "$CONTAINER_NAME"; then
+        docker exec "$CONTAINER_NAME" bash -c "PYTHONPATH=/workspace /opt/conda/bin/poetry run python -m src.data.preprocess_data --data_dir $DATA_DIR --dataset_type ml-100k"
     else
-        echo "Error: Poetry not found and Docker container 'ilora-dllm2rec-dev' is not running."
+        echo "Error: Poetry not found and Docker container '$CONTAINER_NAME' is not running."
         exit 1
     fi
 fi
