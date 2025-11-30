@@ -102,7 +102,8 @@ def run_experiment(cfg: DictConfig):
         shuffle=True,
         num_workers=cfg.train.num_workers,
         collate_fn=collator,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True if cfg.train.num_workers > 0 else False
     )
     
     val_loader = DataLoader(
@@ -111,7 +112,8 @@ def run_experiment(cfg: DictConfig):
         shuffle=False,
         num_workers=cfg.train.num_workers,
         collate_fn=collator,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True if cfg.train.num_workers > 0 else False
     )
 
     # 4. Trainer

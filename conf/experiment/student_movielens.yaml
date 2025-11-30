@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - /dataset: ml-100k
+  - /train: student
+  - /student: sasrec
+  - /eval: default
+  - _self_
+
+seed: 42
