@@ -4,7 +4,59 @@ import pytorch_lightning as pl
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_training
 
-# ... (inside __init__)
+from typing import List, Dict, Any
+import os
+
+class BigRecModel(pl.LightningModule):
+    def __init__(
+        self,
+        model_name_or_path: str,
+        lora_r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.05,
+        learning_rate: float = 3e-4,
+        max_source_length: int = 512,
+        max_target_length: int = 64,
+        item_id_to_name: Dict[int, str] = None,
+        metrics_k: int = 10,
+        num_beams: int = 4,
+        item_embeddings_path: str = None,
+        temperature: float = 0.0,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        warmup_steps: int = 20,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self.item_id_to_name = item_id_to_name
+        self.metrics_k = metrics_k
+        self.num_beams = num_beams
+        self.item_embeddings_path = item_embeddings_path
+        
+        # Load Tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        self.tokenizer.padding_side = "left" # Required for generation
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
+            self.tokenizer.pad_token = self.tokenizer.decode(0)
+            
+        # Load Model
+        # Determine dtype (bf16 if supported, else fp16)
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            torch_dtype = torch.bfloat16
+            print("Using bfloat16 precision.")
+        else:
+            torch_dtype = torch.float16
+            print("Using float16 precision.")
+
+        # Enable Flash Attention 2 if available for speedup
+        model_kwargs = {"torch_dtype": torch_dtype}
+        try:
+            import flash_attn
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+            print("Flash Attention 2 enabled.")
+        except ImportError:
+            print("Flash Attention 2 not found. Using default attention.")
 
         # Configure Quantization
         # User reported issues with 8-bit loading. Switching to 4-bit (nf4) as a more robust default for memory saving.
