@@ -19,6 +19,7 @@ subset_indices_path: null # Active Learning用のインデックスファイル�
 
 distill_lambda: 0.1 # Reverse Distillation Loss (Regularization) weight
 use_item_embeddings_head: True # True: Use Student Embeddings as Head, False: Use Random Linear Head
+freeze_item_embeddings: True # True: Freeze Student Embeddings (Recommended), False: Fine-tune them
 distill_loss_type: "mse" # Options: mse, cosine, l1, huber, contrastive
 distill_decay_type: "linear" # Options: none, linear, cosine, exponential
 distill_min_lambda: 0.0 # Minimum value for distill_lambda after decay

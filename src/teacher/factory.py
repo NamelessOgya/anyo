@@ -120,12 +120,19 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         for param in rec_model.parameters():
             param.requires_grad = False
 
-        # Embedding Headアプローチを使用する場合のみ、アイテム埋め込みを解凍（学習可能に）します
+        # Embedding Headアプローチを使用する場合のみ、アイテム埋め込みを解凍（学習可能に）するか決定します
         use_item_embeddings_head = cfg.teacher.get("use_item_embeddings_head", True)
+        freeze_item_embeddings = cfg.teacher.get("freeze_item_embeddings", True) # デフォルトで凍結 (True)
+
         if use_item_embeddings_head:
-            if hasattr(rec_model, "item_embeddings"):
-                rec_model.item_embeddings.weight.requires_grad = True
-                print("SASRecのアイテム埋め込みをリファインメントのために解凍しました (Embedding Head Mode)。")
+            if not freeze_item_embeddings:
+                if hasattr(rec_model, "item_embeddings"):
+                    rec_model.item_embeddings.weight.requires_grad = True
+                    print("SASRecのアイテム埋め込みをリファインメントのために解凍しました (Embedding Head Mode)。")
+                else:
+                    print("警告: 解凍するためのitem_embeddingsがrec_modelに見つかりませんでした。")
+            else:
+                print("SASRecのアイテム埋め込みは凍結されています (Embedding Head Mode, freeze_item_embeddings=True)。")
             else:
                 print("警告: 解凍するためのitem_embeddingsがrec_modelに見つかりませんでした。")
         else:

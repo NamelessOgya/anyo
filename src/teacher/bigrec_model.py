@@ -173,9 +173,9 @@ class BigRecModel(pl.LightningModule):
                 # Here we should check.
                 # If right padding, last token is at index (length - 1).
                 # Let's use attention_mask to find last real token.
-                last_token_idx = text_inputs.attention_mask.sum(1) - 1
-                last_hidden = text_outputs.hidden_states[-1]
-                pred_embeddings = last_hidden[torch.arange(len(generated_texts)), last_token_idx] # (B, Dim)
+                # With left padding (padding_side="left"), the last token is always at the end of the sequence.
+                # So we can just take the last hidden state.
+                pred_embeddings = last_hidden[:, -1, :] # (B, Dim)
                 
             # Compute distances
             # (B, Dim) vs (NumItems, Dim)
