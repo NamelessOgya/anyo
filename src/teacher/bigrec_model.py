@@ -175,6 +175,7 @@ class BigRecModel(pl.LightningModule):
                 # Let's use attention_mask to find last real token.
                 # With left padding (padding_side="left"), the last token is always at the end of the sequence.
                 # So we can just take the last hidden state.
+                last_hidden = text_outputs.hidden_states[-1]
                 pred_embeddings = last_hidden[:, -1, :] # (B, Dim)
                 
             # Compute distances
