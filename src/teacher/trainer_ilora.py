@@ -159,7 +159,9 @@ class iLoRATrainer(pl.LightningModule):
         # outputsはLLMの生出力 (Batch, Seq, Hidden)
         # Ranking Loss (Cross Entropy)
         # outputsはLLMの生出力 (Batch, Seq, Hidden)
-        last_hidden_state = outputs.last_hidden_state[:, -1, :] # (B, H)
+        # Right Paddingを前提としているため、attention_maskを使用して最後の有効なトークンを取得
+        last_token_indices = batch["attention_mask"].sum(1) - 1
+        last_hidden_state = outputs.last_hidden_state[torch.arange(outputs.last_hidden_state.shape[0], device=self.device), last_token_indices, :] # (B, H)
         
         # 正解アイテムのID (1-based)
         target_items = batch["next_item"] # (batch_size,)

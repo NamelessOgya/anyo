@@ -275,7 +275,9 @@ class iLoRAModel(nn.Module):
         
         # LLMの出力: (Batch, Seq, Hidden)
         # 最後のトークンの隠れ状態を取得
-        last_hidden_state = outputs.last_hidden_state[:, -1, :] # (Batch, LLM_Hidden)
+        # Right Paddingを前提としているため、attention_maskを使用して最後の有効なトークンを取得
+        last_token_indices = batch["attention_mask"].sum(1) - 1
+        last_hidden_state = outputs.last_hidden_state[torch.arange(outputs.last_hidden_state.shape[0], device=self.device), last_token_indices, :] # (Batch, LLM_Hidden)
         
         # ランキングスコア（ロジット）の計算
         if self.use_item_embeddings_head:
