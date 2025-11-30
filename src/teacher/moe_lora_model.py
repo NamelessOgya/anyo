@@ -189,8 +189,7 @@ class Linear(nn.Linear, MoeLoraLayer):
             return F.linear(x, self.weight, bias=self.bias)
         
         if not self.merged and self.r[self.active_adapter] > 0:
-            if self.active_adapter == "default" and torch.rand(1).item() < 0.001: # Reduce log spam
-                print(f"DEBUG: MoeLoraLayer forward. Grad enabled: {torch.is_grad_enabled()}")
+
             result = F.linear(x, self.weight, bias=self.bias)
             
             if not self.gate_weights:
