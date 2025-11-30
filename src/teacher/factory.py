@@ -133,8 +133,7 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
                     print("警告: 解凍するためのitem_embeddingsがrec_modelに見つかりませんでした。")
             else:
                 print("SASRecのアイテム埋め込みは凍結されています (Embedding Head Mode, freeze_item_embeddings=True)。")
-            else:
-                print("警告: 解凍するためのitem_embeddingsがrec_modelに見つかりませんでした。")
+
         else:
             print("SASRecのアイテム埋め込みは凍結されています (Linear Head Mode)。")
 
