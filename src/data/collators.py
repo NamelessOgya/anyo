@@ -58,75 +58,80 @@ class BigRecCollator:
             
             inputs.append(input_text)
 
-        # 3. Tokenize
-        prompts = []
-        for inst, inp in zip(instructions, inputs):
-            # BIGRec / Alpaca Prompt Format
-            prompt = (
+        # 3. Tokenize Parts Separately
+        # This avoids issues where token merging across Prompt-Target boundary changes lengths
+        
+        # Tokenize Prompts (Left Padding for batch processing if needed, but we do it manually or let tokenizer handle it)
+        # We want: [PAD, ..., PAD, Prompt, Target, EOS]
+        # And Labels: [-100, ..., -100, -100, Target, EOS]
+        
+        # We process sample by sample to ensure correctness, then pad
+        
+        input_ids_list = []
+        labels_list = []
+        prompt_input_ids_list = [] # For inference
+        
+        for inst, inp, out in zip(instructions, inputs, outputs):
+            # Prompt
+            prompt_text = (
                 "Below is an instruction that describes a task, paired with an input that provides further context. "
                 "Write a response that appropriately completes the request.\n\n"
                 f"### Instruction:\n{inst}\n\n"
                 f"### Input:\n{inp}\n\n"
                 "### Response:\n"
             )
-            prompts.append(prompt)
-        
-        # Re-doing tokenization for CausalLM standard
-        full_sequences = [p + o + self.tokenizer.eos_token for p, o in zip(prompts, outputs)]
-        
-        tokenized_full = self.tokenizer(
-            full_sequences,
-            max_length=self.max_source_length + self.max_target_length,
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        )
-        
-        input_ids = tokenized_full.input_ids
-        attention_mask = tokenized_full.attention_mask
-        labels = input_ids.clone()
-        
-        # Mask out the prompt part in labels
-        # We also want to return prompt_input_ids for inference
-        tokenized_prompts = self.tokenizer(
-            prompts,
-            max_length=self.max_source_length,
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        )
-        
-        prompt_input_ids = tokenized_prompts.input_ids
-        prompt_attention_mask = tokenized_prompts.attention_mask
-        
-        # We need lengths for masking labels in the full sequence
-        # But tokenized_prompts is now padded (LEFT padding), so we can't just use len(ids).
-        # We need to use attention_mask sum to get real prompt length.
-        prompt_lengths = prompt_attention_mask.sum(dim=1)
-        
-        # Calculate number of padding tokens in the FULL sequence (LEFT padding)
-        # attention_mask is 0 for pads, 1 for real tokens.
-        # With left padding, pads are at the beginning.
-        # num_pads = total_len - real_len = (attention_mask == 0).sum(dim=1)
-        num_pads = (attention_mask == 0).sum(dim=1)
-        
-        for i, prompt_len in enumerate(prompt_lengths):
-            # Mask prompt in labels
-            # With left padding: [PAD, ..., PAD, PromptTokens, ResponseTokens]
-            # We want to mask PromptTokens.
-            # Start index of PromptTokens is num_pads[i]
-            # End index is num_pads[i] + prompt_len
             
-            start_idx = int(num_pads[i].item())
-            end_idx = start_idx + int(prompt_len.item())
+            # Target
+            target_text = out + self.tokenizer.eos_token
             
-            # Ensure we don't go out of bounds (though prompt should be subset of full)
-            end_idx = min(end_idx, labels.shape[1])
+            # Tokenize
+            # Note: add_special_tokens=True adds BOS if defined
+            prompt_ids = self.tokenizer(prompt_text, add_special_tokens=True, truncation=True, max_length=self.max_source_length)["input_ids"]
+            target_ids = self.tokenizer(target_text, add_special_tokens=False, truncation=True, max_length=self.max_target_length)["input_ids"]
             
-            labels[i, start_idx:end_idx] = -100
+            # Concatenate
+            full_ids = prompt_ids + target_ids
             
-        # Mask padding in full sequence
-        labels[attention_mask == 0] = -100
+            # Create Labels
+            # Mask prompt
+            label_ids = [-100] * len(prompt_ids) + target_ids
+            
+            # Truncate if total length exceeds limit (though we truncated parts already)
+            # But prompt+target might exceed model max length?
+            # We assume max_source + max_target is within model limits.
+            
+            input_ids_list.append(torch.tensor(full_ids, dtype=torch.long))
+            labels_list.append(torch.tensor(label_ids, dtype=torch.long))
+            prompt_input_ids_list.append(torch.tensor(prompt_ids, dtype=torch.long))
+            
+        # Pad
+        # We use torch.nn.utils.rnn.pad_sequence
+        # But we need left padding for input_ids (for generation)?
+        # Actually, for training CausalLM, right padding is standard/fine if we mask pads.
+        # But for inference (generation), left padding is required.
+        # BigRecModel sets padding_side="left".
+        # So we should pad left.
+        
+        # Helper for left padding
+        def pad_left(tensors, padding_value):
+            max_len = max(len(t) for t in tensors)
+            padded = []
+            for t in tensors:
+                pad_len = max_len - len(t)
+                pad = torch.full((pad_len,), padding_value, dtype=t.dtype)
+                padded.append(torch.cat([pad, t]))
+            return torch.stack(padded)
+
+        input_ids = pad_left(input_ids_list, self.tokenizer.pad_token_id)
+        labels = pad_left(labels_list, -100)
+        
+        # Attention Mask
+        # 1 for real tokens, 0 for pads
+        attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
+        
+        # For prompt_input_ids (used in validation generation), we also need left padding
+        prompt_input_ids = pad_left(prompt_input_ids_list, self.tokenizer.pad_token_id)
+        prompt_attention_mask = (prompt_input_ids != self.tokenizer.pad_token_id).long()
             
         # Collect next_item_ids for evaluation
         next_item_ids = [item["next_item_id"] for item in batch]
