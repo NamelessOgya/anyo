@@ -25,3 +25,7 @@ distill_decay_type: "linear" # Options: none, linear, cosine, exponential
 distill_min_lambda: 0.0 # Minimum value for distill_lambda after decay
 distill_decay_steps: null # Number of steps to reach min_lambda. If null, use max_steps.
 batch_size: 32 # Reference: 32 (Matches train.teacher.yaml default)
+val_check_interval: 1.0 # Check validation every epoch
+learning_rate: 3e-4
+max_source_length: 512
+max_target_length: 64
