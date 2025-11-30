@@ -1,13 +1,14 @@
 import torch
 
 class BigRecCollator:
-    def __init__(self, tokenizer, item_id_to_name, max_source_length=512, max_target_length=64, use_cot=False, max_history_items=20):
+    def __init__(self, tokenizer, item_id_to_name, max_source_length=512, max_target_length=64, use_cot=False, max_history_items=20, train_on_inputs=False):
         self.tokenizer = tokenizer
         self.item_id_to_name = item_id_to_name
         self.max_source_length = max_source_length
         self.max_target_length = max_target_length
         self.use_cot = use_cot
         self.max_history_items = max_history_items
+        self.train_on_inputs = train_on_inputs
 
     def __call__(self, batch):
         # batch is a list of dicts from SASRecDataset
@@ -26,34 +27,33 @@ class BigRecCollator:
             
             seq_len = len(seq)
             # Filter padding (0) and get names
-            # Note: seq_ids from SASRecDataset might be a list or tensor. 
-            # If it's from __getitem__, it's likely a list or numpy array if not collated yet.
-            # Looking at SASRecDataset, it returns seq_ids as list (from df['seq']).
-            # So we can iterate directly.
-            hist_names = [self.item_id_to_name.get(idx, f"Item_{idx}") for idx in seq if idx > 0]
-            input_text = ", ".join(hist_names)
+            # Note: Reference wraps titles in quotes
+            hist_names = [f'"{self.item_id_to_name.get(idx, f"Item_{idx}")}"' for idx in seq if idx > 0]
+            
+            # Reference Input Format: "The user has watched the following movies before: "Title1", "Title2", ..."
+            # process.ipynb adds "\n " to the end of the input
+            history_str = ", ".join(hist_names)
+            input_text = f"The user has watched the following movies before: {history_str}\n "
             
             # 2. Format Output (Target)
             target_id = item["next_item_id"]
-            target_text = self.item_id_to_name.get(target_id, f"Item_{target_id}")
+            # Reference Target Format: "Title" (quoted)
+            target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
+            target_text = f'"{target_name}"'
             
             # Reasoning (Dummy or from batch)
             reasoning = item.get("reasoning", "")
             
             if self.use_cot:
-                instructions.append("Recommend the next item for the user based on the history and explain the reasoning.")
-                # If reasoning is provided, include it in the target output
-                # Format: "Reasoning: {reasoning}\nRecommendation: {target}"
-                # If no reasoning provided (e.g. during inference or if data missing), we might just expect model to generate it.
-                # For training, we need ground truth reasoning.
+                # Update instruction for CoT if needed, but for now matching reference non-CoT
+                instructions.append("Given a list of movies the user has watched before, please recommend a new movie that the user likes to the user and explain the reasoning.")
                 if reasoning:
                     outputs.append(f"Reasoning: {reasoning}\nRecommendation: {target_text}")
                 else:
-                    # Fallback or error? For now, let's assume we might want to train on just target if reasoning missing?
-                    # Or maybe we use a dummy reasoning for testing pipeline.
                     outputs.append(f"Reasoning: [Reasoning]\nRecommendation: {target_text}")
             else:
-                instructions.append("Recommend the next item for the user based on the history.")
+                # Reference Instruction
+                instructions.append("Given a list of movies the user has watched before, please recommend a new movie that the user likes to the user.")
                 outputs.append(target_text)
             
             inputs.append(input_text)
@@ -75,7 +75,7 @@ class BigRecCollator:
             # Prompt
             prompt_text = (
                 "Below is an instruction that describes a task, paired with an input that provides further context. "
-                "Write a response that appropriately completes the request.\n\n"
+                "Write a response that appropriately completes the request. \n\n"
                 f"### Instruction:\n{inst}\n\n"
                 f"### Input:\n{inp}\n\n"
                 "### Response:\n"
@@ -93,8 +93,12 @@ class BigRecCollator:
             full_ids = prompt_ids + target_ids
             
             # Create Labels
-            # Mask prompt
-            label_ids = [-100] * len(prompt_ids) + target_ids
+            if self.train_on_inputs:
+                # If training on inputs, labels are same as input_ids
+                label_ids = full_ids
+            else:
+                # Mask prompt
+                label_ids = [-100] * len(prompt_ids) + target_ids
             
             # Truncate if total length exceeds limit (though we truncated parts already)
             # But prompt+target might exceed model max length?

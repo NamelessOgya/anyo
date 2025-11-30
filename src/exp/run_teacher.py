@@ -40,7 +40,8 @@ def run_experiment(cfg):
 
     # Initialize tokenizer early
     llm_tokenizer = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name, use_fast=False)
-    llm_tokenizer.pad_token = llm_tokenizer.eos_token
+    llm_tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
+    llm_tokenizer.pad_token = llm_tokenizer.decode(0)
     llm_tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
     llm_tokenizer.padding_side = "right"
 
@@ -78,7 +79,11 @@ def run_experiment(cfg):
             lora_dropout=cfg.teacher.lora_dropout,
             learning_rate=cfg.teacher.learning_rate,
             max_source_length=cfg.teacher.max_source_length,
-            max_target_length=cfg.teacher.max_target_length
+            max_target_length=cfg.teacher.max_target_length,
+            temperature=cfg.teacher.get("temperature", 0.0),
+            top_p=cfg.teacher.get("top_p", 0.9),
+            top_k=cfg.teacher.get("top_k", 40),
+            warmup_steps=cfg.teacher.get("warmup_steps", 20)
         )
         
         # Custom Collator for BIGRec
@@ -87,7 +92,8 @@ def run_experiment(cfg):
             item_id_to_name=dm.mapped_id_to_title,
             max_source_length=cfg.teacher.max_source_length,
             max_target_length=cfg.teacher.max_target_length,
-            use_cot=cfg.teacher.get("use_cot", False)
+            use_cot=cfg.teacher.get("use_cot", False),
+            train_on_inputs=cfg.teacher.get("train_on_inputs", True) # Default to True to match reference
         )
         
         # Override DataLoaders with custom collator
@@ -180,18 +186,18 @@ def run_experiment(cfg):
         callbacks.append(early_stopping)
 
     trainer = pl.Trainer(
-        default_root_dir=str(output_dir),
-        max_epochs=cfg.train.max_epochs,
+        default_root_dir=os.getcwd(),
         accelerator=cfg.train.accelerator,
         devices=cfg.train.devices,
-        logger=tb_logger,
-        callbacks=callbacks,
-        val_check_interval=cfg.train.val_check_interval,
-        log_every_n_steps=cfg.train.log_every_n_steps,
+        max_epochs=cfg.teacher.get("num_epochs", cfg.train.max_epochs),
         precision=cfg.train.precision,
-        accumulate_grad_batches=cfg.train.accumulate_grad_batches
+        accumulate_grad_batches=cfg.teacher.get("accumulate_grad_batches", cfg.train.accumulate_grad_batches),
+        val_check_interval=cfg.teacher.val_check_interval,
+        log_every_n_steps=cfg.train.log_every_n_steps,
+        callbacks=[checkpoint_callback, lr_monitor],
+        logger=wandb_logger if cfg.wandb.enabled else None,
+        # strategy="ddp_find_unused_parameters_true" if cfg.train.devices > 1 else "auto"
     )
-
     logger.info(f"Starting {model_type} teacher model training...")
     training_start_time = time.perf_counter()
     

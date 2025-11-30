@@ -123,110 +123,101 @@ class TeacherTrainCollater:
         self.padding_item_id = padding_item_id
         self.id_to_name = id_to_name
         
-        # iLoRAのプロンプトテンプレート
-        # [HistoryEmb] はユーザーの履歴アイテム埋め込みに置換されます
-        # [CansHere] は削除されました（Dense Retrievalのため）
-        self.prompt_template = "This user has watched [HistoryEmb] in the previous. Please predict the next movie this user will watch."
+        # E4SRec用プロンプトパーツ
+        # "This user has watched <item_tokens> in the previous. Please predict the next movie this user will watch."
+        self.prefix_text = "This user has watched "
+        self.suffix_text = " in the previous. Please predict the next movie this user will watch. "
+        
+        # 事前にトークナイズしておく
+        self.prefix_ids = self.tokenizer(self.prefix_text, add_special_tokens=True, return_tensors="pt")["input_ids"][0]
+        self.suffix_ids = self.tokenizer(self.suffix_text, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+        
+        # アイテムIDのオフセット（元の語彙サイズ）
+        self.vocab_offset = len(self.tokenizer)
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         
-        # --- 1. Pad sequences and gather lengths ---
-        padded_seqs: List[List[int]] = []
-        len_seqs: List[int] = []
-        prompts: List[str] = []
-        full_texts: List[str] = [] # For labels generation
-        next_items: List[int] = []
+        input_ids_list = []
+        labels_list = []
+        attention_mask_list = []
+        
+        padded_seqs = [] # For legacy compatibility if needed
+        len_seqs = []
+        next_items = []
+        candidates_batch = []
         
         for sample in batch:
             seq = sample["seq_ids"]
             next_item = sample["next_item_id"]
-            next_items.append(next_item) # Collect next_item_id for the final batch
+            next_items.append(next_item)
+            candidates_batch.append(sample["candidates"])
             
             seq_len = len(seq)
-            current_seq_len = min(seq_len, self.max_seq_len)
-            len_seqs.append(current_seq_len)
+            len_seqs.append(min(seq_len, self.max_seq_len))
             
-            # Padding logic
+            # Legacy padding logic for 'seq' return
             if seq_len < self.max_seq_len:
                 padded_seq = [self.padding_item_id] * (self.max_seq_len - seq_len) + seq
             else:
                 padded_seq = seq[-self.max_seq_len:]
             padded_seqs.append(padded_seq)
-            
-            # --- Prompt Construction ---
-            # Use pre-computed strings from dataset
-            # history_str = sample["history_str"] # Unused for embedding-based prompt
-            # candidates_str = sample["candidates_str"] # Unused
-            
-            # 3. Fill Template
-            # No text replacement needed for [HistoryEmb] as it is a special token
-            prompt = self.prompt_template
-            prompts.append(prompt)
-            
-            # Construct full text for Causal LM training (Prompt + Target)
-            target_name = self.id_to_name.get(next_item, "")
-            full_text = prompt + " " + target_name
-            full_texts.append(full_text)
 
-        # --- 2. Tokenize Prompts and Full Texts ---
-        # Tokenize prompts only (to know where to mask labels)
-        tokenized_prompts = self.tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding="longest", # Use longest to minimize padding in this intermediate step
-            truncation=True,
-            max_length=512,
-            add_special_tokens=True
-        )
-        
-        # Tokenize full texts (Input IDs for training)
-        tokenized_inputs = self.tokenizer(
-            full_texts,
-            return_tensors="pt",
-            padding="longest",
-            truncation=True,
-            max_length=512, # Adjust if needed
-            add_special_tokens=True
-        )
-        
-        input_ids = tokenized_inputs["input_ids"]
-        attention_mask = tokenized_inputs["attention_mask"]
-        labels = input_ids.clone()
-        
-        # Mask the prompt part in labels
-        # We assume the tokenizer produces consistent tokenization for the prefix
-        # This is a simplification; for exact masking, we iterate
-        for i, prompt_ids in enumerate(tokenized_prompts["input_ids"]):
-            # Find the length of the prompt (excluding padding if any)
-            # Note: tokenized_prompts might have padding if batch processing
-            # We use the attention mask of the prompt to find valid length
-            prompt_len = tokenized_prompts["attention_mask"][i].sum().item()
+            # --- E4SRec Input Construction ---
+            # 1. Get valid item IDs (remove padding) and map to Token IDs
+            # seq contains raw item IDs (1..num_items). 0 is padding.
+            valid_items = [i for i in seq if i != self.padding_item_id]
+            # Truncate if necessary (though seq is usually already truncated by dataset logic? No, dataset returns full seq)
+            # Apply max_seq_len limit
+            if len(valid_items) > self.max_seq_len:
+                valid_items = valid_items[-self.max_seq_len:]
             
-            # Mask labels up to prompt_len
-            # Ensure we don't go out of bounds if full_text was truncated differently
-            mask_len = min(prompt_len, labels.shape[1])
-            labels[i, :mask_len] = -100
+            item_token_ids = torch.tensor([i + self.vocab_offset for i in valid_items], dtype=torch.long)
             
-            # Also mask padding tokens in the full text
-            labels[i][input_ids[i] == self.tokenizer.pad_token_id] = -100
-
-        # --- 3. Collate other fields and convert to tensor ---
-        # next_items = [sample["next_item_id"] for sample in batch] # Already collected in the loop
+            # 2. Target Token ID
+            # Target is also an item, so map it to Token ID
+            target_token_id = torch.tensor([next_item + self.vocab_offset], dtype=torch.long)
+            
+            # 3. Concatenate: Prefix + Items + Suffix + Target
+            # Note: prefix_ids might contain BOS.
+            
+            # Construct Input IDs (for model input)
+            # We want to predict the target, so input ends BEFORE target?
+            # No, for CausalLM training, we input [Prompt + Target] and mask labels.
+            
+            # Full sequence: [Prefix, Items, Suffix, Target]
+            full_ids = torch.cat([
+                self.prefix_ids,
+                item_token_ids,
+                self.suffix_ids,
+                target_token_id
+            ])
+            
+            input_ids_list.append(full_ids)
+            
+            # 4. Create Labels
+            # Mask everything except the Target
+            labels = torch.full_like(full_ids, -100)
+            labels[-1] = target_token_id # Only predict the last token (Target Item)
+            labels_list.append(labels)
+            
+        # --- Pad Batch ---
+        # Right padding for training
+        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids_list, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+        labels = torch.nn.utils.rnn.pad_sequence(labels_list, batch_first=True, padding_value=-100)
+        attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
         
-        candidates_batch = [sample["candidates"] for sample in batch]
         len_cans = [len(c) for c in candidates_batch]
 
-        # --- 4. Return the final batch dictionary ---
         return {
             "seq": torch.LongTensor(padded_seqs),
             "len_seq": torch.LongTensor(len_seqs),
             "next_item": torch.LongTensor(next_items),
-            "cans": torch.LongTensor(candidates_batch), # (batch_size, num_candidates)
+            "cans": torch.LongTensor(candidates_batch),
             "len_cans": torch.LongTensor(len_cans),
             "input_ids": input_ids,
             "attention_mask": attention_mask,
-            "labels": labels, # Added labels
-            "prompts": prompts # Useful for debugging/logging
+            "labels": labels,
+            # "prompts": prompts # Removed as we construct IDs directly
         }
 
 

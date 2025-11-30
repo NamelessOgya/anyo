@@ -20,6 +20,10 @@ class BigRecModel(pl.LightningModule):
         metrics_k: int = 10,
         num_beams: int = 4,
         item_embeddings_path: str = None,
+        temperature: float = 0.0,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        warmup_steps: int = 20,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -32,8 +36,8 @@ class BigRecModel(pl.LightningModule):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         self.tokenizer.padding_side = "left" # Required for generation
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+            self.tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
+            self.tokenizer.pad_token = self.tokenizer.decode(0)
             
         # Load Model
         # Determine dtype (bf16 if supported, else fp16)
@@ -55,6 +59,7 @@ class BigRecModel(pl.LightningModule):
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
+            load_in_8bit=True, # Reference uses 8bit training
             **model_kwargs
             # device_map="auto" # Removed to allow PL to handle device placement in DDP
         )
@@ -136,10 +141,14 @@ class BigRecModel(pl.LightningModule):
                 attention_mask=batch["prompt_attention_mask"],
                 max_new_tokens=self.hparams.max_target_length,
                 num_beams=self.num_beams,
-                num_return_sequences=1, # Only need top-1 for grounding as per reference
+                num_return_sequences=1,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
-                early_stopping=True
+                early_stopping=True,
+                temperature=self.hparams.get("temperature", 0.0), # Reference uses 0
+                top_p=self.hparams.get("top_p", 0.9), # Reference uses 0.9
+                top_k=self.hparams.get("top_k", 40), # Reference uses 40
+                do_sample=False if self.hparams.get("temperature", 0.0) == 0 else True
             )
             
             # Extract new tokens
@@ -148,6 +157,9 @@ class BigRecModel(pl.LightningModule):
             
             # Decode to text
             generated_texts = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
+            
+            # Strip quotes to match reference evaluation logic (Grounding uses unquoted embeddings)
+            generated_texts = [text.strip('"') for text in generated_texts]
             
             # Embed generated text using Base Model (disable LoRA)
             # We need to tokenize the generated text first
@@ -277,9 +289,12 @@ class BigRecModel(pl.LightningModule):
         # Use Linear Decay with Warmup
         from transformers import get_linear_schedule_with_warmup
         
+        # Use Linear Decay with Warmup
+        from transformers import get_linear_schedule_with_warmup
+        
         # Estimate total steps
         total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = int(total_steps * 0.03) # 3% warmup
+        warmup_steps = self.hparams.warmup_steps
         
         scheduler = get_linear_schedule_with_warmup(
             optimizer,

@@ -54,20 +54,16 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         llm = AutoModel.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
         logger.info(f"LLMのロードに成功しました: {llm.config._name_or_path}")
 
-        # 内部でのトークナイザー作成と特殊トークン処理は削除されました。
-        # llm.resize_token_embeddingsは渡されたllm_tokenizerを使用します。
-        llm.resize_token_embeddings(len(llm_tokenizer))
+        # LLMの語彙サイズを拡張 (アイテムID用)
+        original_vocab_size = len(llm_tokenizer)
+        # Item IDは1始まりでnum_itemsまであるため、+1しておく (ID 0はパディングだが、マッピングの都合上)
+        new_vocab_size = original_vocab_size + num_items + 1
+        print(f"LLMの語彙サイズを拡張します: {original_vocab_size} -> {new_vocab_size} (+{num_items + 1} items)")
+        llm.resize_token_embeddings(new_vocab_size)
 
-        if cfg.teacher.get("use_gradient_checkpointing", False):
-            print("LLMでGradient Checkpointingが有効化されました。")
-            # use_reentrant=False は新しいPyTorchバージョンで推奨されており、メモリを節約できます
-            # パラメータを凍結している場合、入力(Embeddings)に勾配を持たせないとCheckpointingが機能しないため、
-            # enable_input_require_grads() を呼び出す必要があります。
-            llm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-            llm.enable_input_require_grads()
-
+        # アイテムEmbeddingの初期化
         if cfg.teacher.get("rec_model_checkpoint_path"):
-            print(f"{cfg.teacher.rec_model_checkpoint_path} から事前学習済みSASRecモデルをロードしています")
+            print(f"{cfg.teacher.rec_model_checkpoint_path} から事前学習済みSASRecモデルをロードして初期化に使います")
             rec_model = SASRec(
                 num_items=num_items,
                 hidden_size=cfg.student.hidden_size,
@@ -85,21 +81,25 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
                 else:
                     new_state_dict[k] = v
             rec_model.load_state_dict(new_state_dict)
-            rec_model.eval()
-            rec_model.to(device)
+            
+            # SASRecのEmbeddingをLLMの拡張部分にコピー
+            # SASRecのEmbedding次元(hidden_size)とLLMの次元が違う場合、射影が必要か、
+            # あるいはパディングで埋めるか。通常は次元が違うので、ここではランダム初期化 + 射影学習の方が良いが、
+            # E4SRecの論文ではどうしているか？ -> 通常はLinear層で変換してから足すか、LoRAで吸収する。
+            # 今回はシンプルに、SASRecを使わずランダム初期化（LoRAに任せる）か、
+            # もし次元が同じならコピーする。
+            # Anyo設定: Student(SASRec)=64, LLM=2048 (Qwen1.5-1.8B) -> 次元が違う！
+            # コピーできないので、SASRecからの初期化は諦めてランダム初期化にします。
+            print("注意: SASRecとLLMの隠れ層次元が異なるため、SASRecからの重みコピーはスキップし、ランダム初期化を使用します。")
+            del rec_model
         else:
-            raise ValueError("iLoRAModelを使用する場合、teacher configでrec_model_checkpoint_pathを指定する必要があります。")
-        
-        projector = MLPProjector(
-            input_dim=cfg.student.hidden_size,
-            output_dim=llm.config.hidden_size,
-            hidden_size=cfg.teacher.hidden_size,
-            dropout_rate=cfg.teacher.dropout_rate
-        ).to(device, dtype=llm.dtype) # プロジェクターをLLMのdtypeにキャスト
+            print("SASRecチェックポイントが指定されていないため、アイテムEmbeddingはランダム初期化されます。")
+
+        # Projectorは不要なので削除
 
         model = iLoRAModel(
             llm=llm,
-            tokenizer=llm_tokenizer, # 受け取ったllm_tokenizerを渡す
+            tokenizer=llm_tokenizer,
             num_lora_experts=cfg.teacher.num_lora_experts,
             lora_r=cfg.teacher.lora_r,
             lora_alpha=cfg.teacher.lora_alpha,
@@ -107,37 +107,31 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             num_items=num_items,
             hidden_size=cfg.teacher.hidden_size,
             dropout_rate=cfg.teacher.dropout_rate,
-            rec_model=rec_model,
-            projector=projector,
             candidate_topk=candidate_topk,
             item_id_to_name=item_id_to_name,
             padding_item_id=padding_item_id,
-            llm_dtype=llm.dtype, # LLMのdtypeを渡す
-            use_item_embeddings_head=cfg.teacher.get("use_item_embeddings_head", True)
+            llm_dtype=llm.dtype,
+            original_vocab_size=original_vocab_size # アイテムIDのオフセット用
         )
 
-        # SASRecモデルのパラメータを凍結
-        for param in rec_model.parameters():
+        # パラメータ凍結設定
+        # 1. LLM全体を凍結
+        for param in llm.parameters():
             param.requires_grad = False
-
-        # Embedding Headアプローチを使用する場合のみ、アイテム埋め込みを解凍（学習可能に）するか決定します
-        use_item_embeddings_head = cfg.teacher.get("use_item_embeddings_head", True)
-        freeze_item_embeddings = cfg.teacher.get("freeze_item_embeddings", True) # デフォルトで凍結 (True)
-
-        if use_item_embeddings_head:
-            if not freeze_item_embeddings:
-                if hasattr(rec_model, "item_embeddings"):
-                    rec_model.item_embeddings.weight.requires_grad = True
-                    print("SASRecのアイテム埋め込みをリファインメントのために解凍しました (Embedding Head Mode)。")
-                else:
-                    print("警告: 解凍するためのitem_embeddingsがrec_modelに見つかりませんでした。")
-            else:
-                print("SASRecのアイテム埋め込みは凍結されています (Embedding Head Mode, freeze_item_embeddings=True)。")
-
-        else:
-            print("SASRecのアイテム埋め込みは凍結されています (Linear Head Mode)。")
-
-        print("SASRecモデルのパラメータは凍結されました（有効な場合のアイテム埋め込みを除く）。")
+            
+        # 2. アイテムEmbedding部分のみ解凍
+        # input_embeddingsレイヤーを取得
+        input_embeddings = llm.get_input_embeddings()
+        input_embeddings.weight.requires_grad = True
+        
+        # フックを登録して、元の語彙部分の勾配をゼロにする（学習させない）
+        def zero_grad_hook(grad):
+            # original_vocab_size以前の勾配を0にする
+            grad[:original_vocab_size] = 0
+            return grad
+            
+        input_embeddings.weight.register_hook(zero_grad_hook)
+        print("アイテムEmbedding部分のみ学習可能に設定しました（元の語彙は凍結）。")
 
         if cfg.teacher.get("use_torch_compile", False):
             print("torch.compileを使用して教師モデルをコンパイルしています...")

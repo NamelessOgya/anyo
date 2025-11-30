@@ -157,88 +157,51 @@ class iLoRATrainer(pl.LightningModule):
         
         # Ranking Loss (Cross Entropy)
         # outputsはLLMの生出力 (Batch, Seq, Hidden)
-        # Ranking Loss (Cross Entropy)
-        # outputsはLLMの生出力 (Batch, Seq, Hidden)
         # Right Paddingを前提としているため、attention_maskを使用して最後の有効なトークンを取得
         last_token_indices = batch["attention_mask"].sum(1) - 1
         last_hidden_state = outputs.last_hidden_state[torch.arange(outputs.last_hidden_state.shape[0], device=self.device), last_token_indices, :] # (B, H)
         
         # 正解アイテムのID (1-based)
         target_items = batch["next_item"] # (batch_size,)
-
-        if self.model.use_item_embeddings_head:
-             # Sampled Softmax Logic
-             num_samples = 2048
-             num_total_items = self.model.rec_model.item_embeddings.num_embeddings
-             
-             # 1. 正解アイテムをユニークにする
-             unique_targets = torch.unique(target_items)
-             
-             # 2. 負例をサンプリング (パディング(0)を除く 1 ~ num_total_items-1)
-             # 簡易的なランダムサンプリング
-             num_negatives = num_samples - len(unique_targets)
-             if num_negatives > 0:
-                 negative_samples = torch.randint(1, num_total_items, (num_negatives,), device=self.device)
-                 sampled_indices = torch.cat([unique_targets, negative_samples])
-             else:
-                 sampled_indices = unique_targets
-                 
-             sampled_indices = torch.unique(sampled_indices) # 重複排除
-             
-             # 3. Embedding計算 (サンプリングされたアイテムのみ)
-             sampled_item_embs_rec = self.model.rec_model.item_embeddings(sampled_indices)
-             sampled_item_embs_llm = self.model.projector(sampled_item_embs_rec.to(self.model.projector.model[0].weight.dtype))
-             
-             # 4. ロジット計算 (B, Num_Sampled)
-             logits = last_hidden_state @ sampled_item_embs_llm.T
-             
-             # 5. ターゲットの再マッピング
-             # target_items が sampled_indices のどこにあるかを探す
-             # searchsortedを使うためにソートが必要だが、ここでは簡易的にbroadcastで比較
-             # (B, 1) == (Num_Sampled,) -> (B, Num_Sampled) -> nonzero
-             # メモリ効率のため、各ターゲットについてインデックスを取得
-             
-             # map_indices: target_itemsの値をsampled_indices内のインデックスに変換
-             # sampled_indicesは小さいので、辞書や検索で対応可能
-             # GPU上での効率的な実装:
-             # target_items (B)
-             # sampled_indices (S)
-             # index_mapping tableを作成するのはSが大きいと大変だが、S=2048ならOK
-             
-             # ターゲットIDをインデックスに変換
-             # sampled_indices を値 -> インデックス のマップにするのは難しい (GPU tensor)
-             # しかし、target_itemsは必ずsampled_indicesに含まれている
-             
-             # 方法: target_items (B, 1) と sampled_indices (1, S) を比較
-             # mask = (target_items.unsqueeze(1) == sampled_indices.unsqueeze(0)) # (B, S)
-             # new_targets = mask.nonzero()[:, 1] # (B,)
-             
-             # これでOK
-             mask = (target_items.unsqueeze(1) == sampled_indices.unsqueeze(0))
-             new_targets = torch.argmax(mask.float(), dim=1) # 最初にマッチしたインデックス
-             
-             loss = F.cross_entropy(logits, new_targets)
-             
-        else:
-             # Linear Head: 線形層による予測 (全アイテム計算)
-             ranking_scores = self.model.item_prediction_head(last_hidden_state)
-             # ranking_scoresは0-based index (0 -> Item 1) なので、target_itemsから1を引く
-             loss = F.cross_entropy(ranking_scores, target_items - 1)
-
-        # Reverse Distillation Loss (Embedding Imitation)
-        current_lambda = self._get_current_lambda()
         
-        if current_lambda > 0 and hasattr(self.model, "student_item_embeddings"):
-            current_embeddings = self.model.rec_model.item_embeddings.weight
-            original_embeddings = self.model.student_item_embeddings
+        # E4SRec: Sampled Softmax Logic using LLM Embeddings
+        num_samples = 2048
+        
+        # アイテムIDの範囲 (Token ID)
+        vocab_offset = self.model.original_vocab_size
+        min_item_token_id = vocab_offset + 1
+        max_item_token_id = vocab_offset + self.model.num_items
+        
+        # ターゲットをToken IDに変換
+        target_token_ids = target_items + vocab_offset
+        
+        # 1. 正解アイテムをユニークにする
+        unique_targets = torch.unique(target_token_ids)
+        
+        # 2. 負例をサンプリング (Token ID範囲から)
+        num_negatives = num_samples - len(unique_targets)
+        if num_negatives > 0:
+            negative_samples = torch.randint(min_item_token_id, max_item_token_id + 1, (num_negatives,), device=self.device)
+            sampled_indices = torch.cat([unique_targets, negative_samples])
+        else:
+            sampled_indices = unique_targets
             
-            # Distillation Lossの計算
-            reg_loss = self._compute_distill_loss(current_embeddings, original_embeddings)
-            
-            loss += current_lambda * reg_loss
-            
-            self.log("train_reg_loss", reg_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-            self.log("distill_lambda", current_lambda, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        sampled_indices = torch.unique(sampled_indices) # 重複排除
+        
+        # 3. Embedding計算 (LLMのInput Embeddingsから)
+        sampled_item_embs = self.model.llm.get_input_embeddings()(sampled_indices)
+        
+        # 4. ロジット計算 (B, Num_Sampled)
+        logits = last_hidden_state @ sampled_item_embs.T
+        
+        # 5. ターゲットの再マッピング
+        mask = (target_token_ids.unsqueeze(1) == sampled_indices.unsqueeze(0))
+        new_targets = torch.argmax(mask.float(), dim=1)
+        
+        loss = F.cross_entropy(logits, new_targets)
+
+        # Reverse Distillation Loss (Embedding Imitation) is REMOVED for E4SRec
+        # as we don't have a student model (SASRec) to distill from/to in this architecture initially.
             
         # 損失と学習時間をログに記録
         self.log("train_loss_step", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
