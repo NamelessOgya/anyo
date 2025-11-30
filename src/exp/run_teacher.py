@@ -196,7 +196,7 @@ def run_experiment(cfg):
         val_check_interval=cfg.teacher.val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps,
         callbacks=[checkpoint_callback, lr_monitor],
-        logger=wandb_logger if cfg.wandb.enabled else None,
+        logger=tb_logger,
         # strategy="ddp_find_unused_parameters_true" if cfg.train.devices > 1 else "auto"
     )
     logger.info(f"Starting {model_type} teacher model training...")

@@ -42,8 +42,9 @@ def verify_loading():
         "quantization_config": quantization_config,
         "torch_dtype": torch_dtype,
     }
-    if quantization_config is not None:
-        load_kwargs["device_map"] = "auto"
+    # User reported device_map="auto" causes issues with PL.
+    # if quantization_config is not None:
+    #     load_kwargs["device_map"] = "auto"
         
     try:
         model = AutoModelForCausalLM.from_pretrained(

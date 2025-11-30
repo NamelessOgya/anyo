@@ -81,8 +81,9 @@ class BigRecModel(pl.LightningModule):
             "quantization_config": quantization_config,
             **model_kwargs
         }
-        if quantization_config is not None:
-             load_kwargs["device_map"] = "auto"
+        # User reported device_map="auto" causes issues with PL.
+        # if quantization_config is not None:
+        #      load_kwargs["device_map"] = "auto"
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
@@ -110,7 +111,8 @@ class BigRecModel(pl.LightningModule):
         if model_kwargs.get("attn_implementation") == "flash_attention_2":
             self.model = self.model.to(torch_dtype)
             
-        self.model.print_trainable_parameters()
+        # User reported this causes issues during quantization loading
+        # self.model.print_trainable_parameters()
         
         # Load Item Embeddings if provided
         self.item_embeddings = None
