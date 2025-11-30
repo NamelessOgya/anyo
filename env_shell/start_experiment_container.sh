@@ -8,18 +8,17 @@ set -e
 #   SUFFIX: Suffix for container name (default: empty)
 #
 # Options:
-#   --reset   : Force remove existing container and create a new one.
-#   --install : Run 'poetry install' inside the container after starting.
+#   --reset      : Force remove existing container and create a new one.
+#   --no-install : Skip 'poetry install' (Default: install is run).
 #
 # Examples:
-#   ./start.sh                      # GPU 0, Default name
-#   ./start.sh 1 "-gpu1"            # GPU 1, Name with suffix
-#   ./start.sh --reset              # Recreate default container
-#   ./start.sh --install 0          # GPU 0, run poetry install
-#   ./start.sh --reset --install 1 "-gpu1" # Recreate GPU 1 container and install deps
+#   ./start.sh                      # GPU 0, Default name, runs install
+#   ./start.sh 1 "-gpu1"            # GPU 1, Name with suffix, runs install
+#   ./start.sh --reset              # Recreate default container, runs install
+#   ./start.sh --no-install         # GPU 0, skips install
 
 RESET=false
-INSTALL=false
+INSTALL=true
 GPU_ID=0
 SUFFIX=""
 
@@ -31,7 +30,12 @@ while [[ $# -gt 0 ]]; do
       RESET=true
       shift
       ;;
+    --no-install)
+      INSTALL=false
+      shift
+      ;;
     --install)
+      # Kept for backward compatibility, though it's now default
       INSTALL=true
       shift
       ;;
@@ -81,13 +85,9 @@ else
     CMD="docker run -d --gpus \"device=${GPU_ID}\" --memory=200g --name \"${CONTAINER_NAME}\" -v \"${HOST_PROJECT_ROOT}:/workspace\" -w /workspace \"${IMAGE_NAME}\" tail -f /dev/null"
     echo "Executing: $CMD"
     eval $CMD
-      
-    # New container created, might want to install by default? 
-    # For now, only if --install is passed or explicit logic.
-    # But let's stick to flags.
 fi
 
-# 5. Install Dependencies if requested
+# 5. Install Dependencies (Default: True)
 if [ "$INSTALL" = true ]; then
     echo "Installing dependencies (poetry install)..."
     # Wait a bit if just started? Usually instant for 'tail -f /dev/null'
