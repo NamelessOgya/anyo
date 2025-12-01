@@ -91,7 +91,20 @@ class BigRecModel(pl.LightningModule):
         self.item_embeddings = None
         if self.item_embeddings_path and os.path.exists(self.item_embeddings_path):
             print(f"Loading item embeddings from {self.item_embeddings_path}...")
-            self.item_embeddings = torch.load(self.item_embeddings_path)
+            loaded_data = torch.load(self.item_embeddings_path)
+            if isinstance(loaded_data, dict):
+                # Convert dict to tensor
+                # Assume keys are 1-based item IDs
+                max_id = max(loaded_data.keys())
+                # Infer embedding dim
+                emb_dim = list(loaded_data.values())[0].shape[0]
+                # Create tensor (0 is padding)
+                self.item_embeddings = torch.zeros(max_id + 1, emb_dim)
+                for k, v in loaded_data.items():
+                    self.item_embeddings[k] = v
+            else:
+                self.item_embeddings = loaded_data
+            
             # Move to device later or keep on CPU if large? 
             # Ideally move to same device as model during validation.
             
@@ -149,6 +162,8 @@ class BigRecModel(pl.LightningModule):
                 
             except Exception as e:
                 print(f"Failed to load SASRec: {e}")
+                import traceback
+                traceback.print_exc()
                 self.sasrec = None
 
     def forward(self, input_ids, attention_mask, labels=None):
@@ -194,22 +209,22 @@ class BigRecModel(pl.LightningModule):
             # So they are in the same space!
             
             # Compute Similarity (Dot Product)
-            # item_embeddings: (NumItems, H)
+            # item_embeddings: (NumItems+1, H) (index 0 is padding)
             # llm_user_emb: (B, H)
             # We need to ensure item_embeddings is on correct device
             if self.item_embeddings.device != self.device:
                 self.item_embeddings = self.item_embeddings.to(self.device)
                 
-            llm_logits = torch.matmul(llm_user_emb, self.item_embeddings.t()) # (B, NumItems)
+            llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t()) # (B, NumItems+1)
+            llm_logits = llm_logits_full[:, 1:] # Remove padding index 0. (B, NumItems)
             
             # 2. Get SASRec Logits
             sasrec_ids = batch["sasrec_input_ids"] # (B, Seq)
             # Calculate lengths (non-zero)
             sasrec_lens = (sasrec_ids != 0).sum(dim=1)
             
-            # SASRec predict returns (B, NumItems+1)
-            sasrec_scores_full = self.sasrec.predict(sasrec_ids, sasrec_lens)
-            sasrec_logits = sasrec_scores_full[:, 1:] # Remove padding index 0. (B, NumItems)
+            # SASRec predict returns (B, NumItems) - already excludes padding
+            sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
             
             # 3. Combine
             alpha_sigmoid = torch.sigmoid(self.alpha)
@@ -254,12 +269,12 @@ class BigRecModel(pl.LightningModule):
             if self.item_embeddings.device != self.device:
                 self.item_embeddings = self.item_embeddings.to(self.device)
                 
-            llm_logits = torch.matmul(llm_user_emb, self.item_embeddings.t())
+            llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t())
+            llm_logits = llm_logits_full[:, 1:] # Remove padding index 0
             
             sasrec_ids = batch["sasrec_input_ids"]
             sasrec_lens = (sasrec_ids != 0).sum(dim=1)
-            sasrec_scores_full = self.sasrec.predict(sasrec_ids, sasrec_lens)
-            sasrec_logits = sasrec_scores_full[:, 1:]
+            sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
             
             alpha_sigmoid = torch.sigmoid(self.alpha)
             ensemble_logits = alpha_sigmoid * sasrec_logits + (1 - alpha_sigmoid) * llm_logits
