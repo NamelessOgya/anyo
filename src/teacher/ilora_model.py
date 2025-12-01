@@ -115,14 +115,9 @@ class iLoRAModel(nn.Module):
             # このサンプルのアイテムトークン位置
             item_indices = torch.nonzero(is_item_token[i]).squeeze(-1)
             
-            if len(item_indices) > 1:
-                # ターゲット（最後）を除外して履歴とする
-                history_indices = item_indices[:-1]
-            elif len(item_indices) == 1:
-                # 履歴がない（ターゲットのみ）場合はどうする？ -> ゼロベクトル or 特別なトークン
-                # ここではターゲットそのものを使う（Cold Start）か、ゼロにする
-                # ゼロベクトルにしておく
-                history_indices = torch.tensor([], device=self.device, dtype=torch.long)
+            if len(item_indices) > 0:
+                # すべてのアイテムトークンを履歴とする（ターゲットはinput_idsに含まれていないため）
+                history_indices = item_indices
             else:
                 history_indices = torch.tensor([], device=self.device, dtype=torch.long)
                 

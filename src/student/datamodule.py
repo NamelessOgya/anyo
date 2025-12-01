@@ -177,27 +177,22 @@ class TeacherTrainCollater:
             # Target is also an item, so map it to Token ID
             target_token_id = torch.tensor([next_item + self.vocab_offset], dtype=torch.long)
             
-            # 3. Concatenate: Prefix + Items + Suffix + Target
-            # Note: prefix_ids might contain BOS.
+            # 3. Concatenate: Prefix + Items + Suffix
+            # Target is NOT included in input_ids to prevent leakage.
+            # The model should predict the target given [Prefix, Items, Suffix].
             
-            # Construct Input IDs (for model input)
-            # We want to predict the target, so input ends BEFORE target?
-            # No, for CausalLM training, we input [Prompt + Target] and mask labels.
-            
-            # Full sequence: [Prefix, Items, Suffix, Target]
             full_ids = torch.cat([
                 self.prefix_ids,
                 item_token_ids,
-                self.suffix_ids,
-                target_token_id
+                self.suffix_ids
             ])
             
             input_ids_list.append(full_ids)
             
             # 4. Create Labels
-            # Mask everything except the Target
+            # We don't use standard CausalLM loss (we use sampled softmax in Trainer),
+            # but for consistency, we can set labels to -100.
             labels = torch.full_like(full_ids, -100)
-            labels[-1] = target_token_id # Only predict the last token (Target Item)
             labels_list.append(labels)
             
         # --- Pad Batch ---
