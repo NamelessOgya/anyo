@@ -96,9 +96,19 @@ def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3):
     
     # 1. Process Metadata
     movies_df = process_metadata(output_dir, dataset_type)
+    
+    # Filter out items with "unknown" title
+    logging.info("Filtering out items with 'unknown' title...")
+    initial_items = len(movies_df)
+    movies_df = movies_df[~movies_df['title'].str.contains("unknown", case=False, na=False)]
+    removed_items = initial_items - len(movies_df)
+    logging.info(f"Removed {removed_items} items.")
+    
     movies_csv_path = output_dir / "movies.csv"
     logging.info(f"Saving standardized metadata to {movies_csv_path}...")
     movies_df.to_csv(movies_csv_path, index=False)
+    
+    valid_item_ids = set(movies_df['item_id'].unique())
 
     # 2. Process Interactions
     if dataset_type == 'ml-100k':
@@ -111,6 +121,13 @@ def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3):
         df = pd.read_csv(data_path, sep='::', header=None, names=['user_id', 'item_id', 'rating', 'timestamp'], engine='python')
     else:
         raise ValueError(f"Unknown dataset_type: {dataset_type}")
+        
+    # Filter interactions to keep only valid items
+    logging.info("Filtering interactions to keep only valid items...")
+    initial_interactions = len(df)
+    df = df[df['item_id'].isin(valid_item_ids)]
+    removed_interactions = initial_interactions - len(df)
+    logging.info(f"Removed {removed_interactions} interactions.")
 
     train_df, val_df, test_df = process_and_split(df, min_seq_len)
 

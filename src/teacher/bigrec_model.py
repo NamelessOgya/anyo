@@ -156,9 +156,12 @@ class BigRecModel(pl.LightningModule):
                 self.sasrec.eval()
                 print("SASRec loaded and frozen.")
                 
-                # Initialize Alpha
-                self.alpha = nn.Parameter(torch.tensor(0.5)) # Start with 0.5
-                print("Ensemble Alpha initialized.")
+                # Initialize Gate (Dynamic Alpha)
+                # Input: SASRec hidden size -> Output: 1 (logit for sigmoid)
+                self.gate = nn.Linear(hidden_size, 1)
+                # Initialize bias to 0 (sigmoid(0) = 0.5) to start neutral
+                nn.init.zeros_(self.gate.bias)
+                print("Ensemble Gate initialized.")
                 
             except Exception as e:
                 print(f"Failed to load SASRec: {e}")
@@ -177,10 +180,6 @@ class BigRecModel(pl.LightningModule):
         # If SASRec is loaded, use Ensemble Loss
         if self.sasrec is not None and self.item_embeddings is not None:
             # 1. Get LLM Logits (via Embedding Similarity)
-            # We need the hidden state of the LAST token of the PROMPT (not generated text)
-            # batch["prompt_input_ids"] contains the prompt.
-            # We run forward pass on prompt.
-            
             prompt_ids = batch["prompt_input_ids"]
             prompt_mask = batch["prompt_attention_mask"]
             
@@ -191,55 +190,37 @@ class BigRecModel(pl.LightningModule):
             )
             # Last hidden state
             last_hidden = outputs.hidden_states[-1] # (B, Seq, H)
-            
-            # Get last token representation (considering padding)
-            # prompt_mask is 1 for tokens, 0 for pad.
-            # If left padded, last token is at index -1?
-            # Yes, if left padded, the last token is the last element.
-            # But wait, if right padded?
-            # Tokenizer padding_side is "left".
-            # So the last token is indeed at -1.
             llm_user_emb = last_hidden[:, -1, :] # (B, H)
             
-            # Project LLM embedding to Item Embedding space?
-            # Or assume they are in same space?
-            # BIGRec assumes LLM generates text.
-            # E4SRec assumes they are in same space via LoRA.
-            # Here, we are using `item_embeddings` which were computed from the SAME LLM.
-            # So they are in the same space!
-            
-            # Compute Similarity (Dot Product)
-            # item_embeddings: (NumItems+1, H) (index 0 is padding)
-            # llm_user_emb: (B, H)
-            # We need to ensure item_embeddings is on correct device
             if self.item_embeddings.device != self.device:
                 self.item_embeddings = self.item_embeddings.to(self.device)
                 
             llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t()) # (B, NumItems+1)
             llm_logits = llm_logits_full[:, 1:] # Remove padding index 0. (B, NumItems)
             
-            # 2. Get SASRec Logits
+            # 2. Get SASRec Logits and User Embedding
             sasrec_ids = batch["sasrec_input_ids"] # (B, Seq)
-            # Calculate lengths (non-zero)
             sasrec_lens = (sasrec_ids != 0).sum(dim=1)
             
-            # SASRec predict returns (B, NumItems) - already excludes padding
+            # SASRec predict returns (B, NumItems)
             sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
             
-            # 3. Combine
-            alpha_sigmoid = torch.sigmoid(self.alpha)
-            ensemble_logits = alpha_sigmoid * sasrec_logits + (1 - alpha_sigmoid) * llm_logits
+            # Get SASRec User Embedding for Gating
+            sasrec_user_emb = self.sasrec(sasrec_ids, sasrec_lens) # (B, Hidden)
+            
+            # 3. Compute Dynamic Alpha
+            alpha_logits = self.gate(sasrec_user_emb) # (B, 1)
+            alpha = torch.sigmoid(alpha_logits) # (B, 1)
+            
+            # Broadcast alpha: (B, 1) * (B, NumItems)
+            ensemble_logits = alpha * sasrec_logits + (1 - alpha) * llm_logits
             
             # 4. Compute Loss
-            target_ids = batch["next_item"] # (B,) 1-based IDs?
-            # item_embeddings are 1-based (index 0 is item 1).
-            # target_ids are 1-based.
-            # We need 0-based indices for CrossEntropy if logits are (B, NumItems).
-            # target_ids - 1
+            target_ids = batch["next_item"] # (B,) 1-based IDs
             loss = F.cross_entropy(ensemble_logits, target_ids - 1)
             
             self.log("train_loss", loss, prog_bar=True)
-            self.log("alpha", alpha_sigmoid, prog_bar=True)
+            self.log("alpha", alpha.mean(), prog_bar=True) # Log average alpha
             return loss
             
         else:
@@ -276,8 +257,12 @@ class BigRecModel(pl.LightningModule):
             sasrec_lens = (sasrec_ids != 0).sum(dim=1)
             sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
             
-            alpha_sigmoid = torch.sigmoid(self.alpha)
-            ensemble_logits = alpha_sigmoid * sasrec_logits + (1 - alpha_sigmoid) * llm_logits
+            # Dynamic Alpha
+            sasrec_user_emb = self.sasrec(sasrec_ids, sasrec_lens)
+            alpha_logits = self.gate(sasrec_user_emb)
+            alpha = torch.sigmoid(alpha_logits)
+            
+            ensemble_logits = alpha * sasrec_logits + (1 - alpha) * llm_logits
             
             # Metrics
             # Top-K
@@ -302,12 +287,13 @@ class BigRecModel(pl.LightningModule):
             
             self.log(f"val_hr@{self.metrics_k}", hits / batch_size, prog_bar=True)
             self.log(f"val_ndcg@{self.metrics_k}", ndcg / batch_size, prog_bar=True)
-            self.log("val_alpha", alpha_sigmoid, prog_bar=True)
+            self.log("val_alpha", alpha.mean(), prog_bar=True)
             
             # Debug Logging (First 3 samples of the batch)
             if batch_idx == 0:
                 print(f"\n[Epoch {self.current_epoch} Validation Debug]")
-                print(f"Alpha: {alpha_sigmoid.item():.4f}")
+                print(f"Alpha (Mean): {alpha.mean().item():.4f}")
+                
                 for i in range(min(3, batch_size)):
                     target_id = target_ids[i].item()
                     target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
@@ -316,6 +302,7 @@ class BigRecModel(pl.LightningModule):
                     pred_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in pred_indices]
                     
                     print(f"Sample {i}:")
+                    print(f"  Alpha : {alpha[i].item():.4f}")
                     print(f"  Target: {target_name}")
                     print(f"  Preds : {pred_names}")
             
