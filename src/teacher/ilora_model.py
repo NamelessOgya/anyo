@@ -337,6 +337,7 @@ class iLoRAModel(nn.Module):
         confidence, candidates = torch.topk(ranking_scores, k=self.candidate_topk, dim=-1)
         confidence = F.softmax(confidence, dim=-1)
 
+        return {
             "ranking_scores": ranking_scores,
             "embeddings": last_hidden_state,
             "candidates": candidates,
