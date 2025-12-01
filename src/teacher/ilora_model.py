@@ -89,6 +89,10 @@ class iLoRAModel(nn.Module):
             self.ensemble_gate = nn.Linear(self.sasrec_model.hidden_size, 1).to(self.device)
             nn.init.zeros_(self.ensemble_gate.bias) # 初期値はSigmoid(0)=0.5で中立に
             print("Ensemble Gate initialized.")
+            
+            # SASRec Projector (SASRec Hidden -> LLM Hidden) for Hybrid Input
+            self.sasrec_projector = nn.Linear(self.sasrec_model.hidden_size, self.llm.model.config.hidden_size).to(self.device)
+            print("SASRec Projector initialized for Hybrid Input.")
 
     def _get_llm_outputs(self, batch: Dict[str, Any]) -> torch.Tensor:
         """
@@ -148,6 +152,39 @@ class iLoRAModel(nn.Module):
         # MoeLoraModelインスタンスにgate_weightsを設定
         self.llm.gate_weights.clear()
         self.llm.gate_weights.append(gate_weights)
+        
+        # --- Hybrid Input Injection ---
+        if self.sasrec_model is not None and hasattr(self, 'sasrec_projector'):
+            # input_idsの中でアイテムトークンに対応する部分に、SASRecのEmbeddingを射影して加算する
+            
+            # 1. アイテムIDを取得 (TokenID - Offset)
+            # マスクされている部分（非アイテム）は無視
+            # is_item_tokenは既に計算済み
+            
+            # 2. SASRec Embeddingを取得
+            # SASRecのEmbedding行列: (NumItems+1, H_rec)
+            # TokenIDからItemIDへの変換: token_id - original_vocab_size
+            
+            # ベクトル化して処理
+            # input_ids全体に対して計算し、is_item_tokenでマスクして加算する
+            
+            # Token ID -> Item ID (1-based)
+            # 非アイテムトークンは負になるが、gatherでエラーになるのでclampする
+            item_ids = (input_ids - self.original_vocab_size).clamp(min=0)
+            
+            # SASRec Embeddings (B, Seq, H_rec)
+            sasrec_embs = self.sasrec_model.item_embeddings(item_ids)
+            
+            # Project (B, Seq, H_llm)
+            projected_sasrec_embs = self.sasrec_projector(sasrec_embs)
+            
+            # 加算 (In-placeだと勾配がおかしくなる可能性があるので新しいTensorを作る)
+            # is_item_tokenをブロードキャスト用に拡張 (B, Seq, 1)
+            mask = is_item_token.unsqueeze(-1).to(input_embeddings.dtype)
+            
+            # input_embeddings = input_embeddings + mask * projected_sasrec_embs
+            # 元のinput_embeddingsはSemantic Initされている
+            input_embeddings = input_embeddings + mask * projected_sasrec_embs.to(input_embeddings.dtype)
 
         # LLM実行
         # input_idsをそのまま渡す（埋め込みルックアップはLLM内部で行われる）

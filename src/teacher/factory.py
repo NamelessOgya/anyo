@@ -63,8 +63,49 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         llm.resize_token_embeddings(new_vocab_size)
 
         # アイテムEmbeddingの初期化
-        if cfg.teacher.get("rec_model_checkpoint_path"):
+        if cfg.teacher.get("initialize_item_embeddings_semantically", False):
+            print("アイテム名を使用してEmbeddingを意味的に初期化します...")
+            input_embeddings = llm.get_input_embeddings()
+            
+            # 勾配計算を一時的に無効化
+            with torch.no_grad():
+                # 進捗表示用
+                log_interval = 1000
+                count = 0
+                
+                for item_id, item_name in item_id_to_name.items():
+                    # item_idは1始まり。Embeddingのインデックスは offset + item_id
+                    # ID 0 (Padding) は何もしない（ランダムのままか、ゼロにするか）
+                    
+                    # 名前をトークナイズ
+                    # add_special_tokens=Falseにすることで、BOS/EOSを含めない純粋な単語のEmbeddingを取得
+                    tokenized = llm_tokenizer(item_name, return_tensors="pt", add_special_tokens=False).to(llm.device)
+                    input_ids = tokenized.input_ids
+                    
+                    if input_ids.size(1) > 0:
+                        # Embeddingを取得
+                        embs = input_embeddings(input_ids) # (1, Seq, Hidden)
+                        # 平均を計算
+                        mean_emb = embs.mean(dim=1).squeeze(0) # (Hidden,)
+                        
+                        # 新しいEmbedding行列にセット
+                        target_index = original_vocab_size + item_id
+                        input_embeddings.weight[target_index] = mean_emb
+                    
+                    count += 1
+                    if count % log_interval == 0:
+                        print(f"Initialized {count}/{num_items} items...")
+                        
+            print("意味的初期化が完了しました。")
+            
+        elif cfg.teacher.get("rec_model_checkpoint_path"):
+            # ... (Existing SASRec loading logic, but we know it fails for dimension mismatch usually)
             print(f"{cfg.teacher.rec_model_checkpoint_path} から事前学習済みSASRecモデルをロードして初期化に使います")
+            # ... (Keep existing logic or simplify if we assume Semantic Init is preferred)
+            # For now, keep existing logic as fallback block, but user likely uses Semantic Init.
+            # Actually, the previous code had a check for dimension mismatch and skipped copy.
+            # Let's keep the structure but prioritized Semantic Init.
+            
             rec_model = SASRec(
                 num_items=num_items,
                 hidden_size=cfg.student.hidden_size,
@@ -83,18 +124,10 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
                     new_state_dict[k] = v
             rec_model.load_state_dict(new_state_dict)
             
-            # SASRecのEmbeddingをLLMの拡張部分にコピー
-            # SASRecのEmbedding次元(hidden_size)とLLMの次元が違う場合、射影が必要か、
-            # あるいはパディングで埋めるか。通常は次元が違うので、ここではランダム初期化 + 射影学習の方が良いが、
-            # E4SRecの論文ではどうしているか？ -> 通常はLinear層で変換してから足すか、LoRAで吸収する。
-            # 今回はシンプルに、SASRecを使わずランダム初期化（LoRAに任せる）か、
-            # もし次元が同じならコピーする。
-            # Anyo設定: Student(SASRec)=64, LLM=2048 (Qwen1.5-1.8B) -> 次元が違う！
-            # コピーできないので、SASRecからの初期化は諦めてランダム初期化にします。
             print("注意: SASRecとLLMの隠れ層次元が異なるため、SASRecからの重みコピーはスキップし、ランダム初期化を使用します。")
             del rec_model
         else:
-            print("SASRecチェックポイントが指定されていないため、アイテムEmbeddingはランダム初期化されます。")
+            print("SASRecチェックポイントも意味的初期化も指定されていないため、アイテムEmbeddingはランダム初期化されます。")
 
         # Projectorは不要なので削除
 
