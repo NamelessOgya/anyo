@@ -128,10 +128,10 @@ def run_experiment(cfg: DictConfig):
     
     checkpoint_callback = ModelCheckpoint(
         dirpath="result/bigrec/checkpoints",
-        filename="bigrec-{epoch:02d}-{val_loss:.2f}",
+        filename=f"bigrec-{{epoch:02d}}-{{val_ndcg@{cfg.teacher.metrics_k}:.4f}}",
         save_top_k=1,
-        monitor="val_loss",
-        mode="min"
+        monitor=f"val_ndcg@{cfg.teacher.metrics_k}",
+        mode="max"
     )
     
     val_check_interval = cfg.teacher.get("val_check_interval", cfg.train.val_check_interval)

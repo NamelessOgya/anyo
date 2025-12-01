@@ -1,3 +1,5 @@
 name: ml-1m
 data_dir: data/ml-1m
 limit_data_rows: -1
+split_method: gts-random
+split_ratio: 0.8

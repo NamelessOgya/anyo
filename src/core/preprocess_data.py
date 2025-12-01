@@ -2,33 +2,105 @@ import pandas as pd
 from pathlib import Path
 import argparse
 import logging
+import numpy as np
+import yaml
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def process_and_split(df: pd.DataFrame, min_seq_len: int = 3):
-    logging.info("Sorting data by user and timestamp...")
+def process_and_split(df: pd.DataFrame, min_seq_len: int = 3, split_method: str = 'loo', split_ratio: float = 0.8):
+    logging.info(f"Sorting data by user and timestamp... (Method: {split_method})")
     df = df.sort_values(by=['user_id', 'timestamp']).reset_index(drop=True)
 
-    logging.info("Grouping by user to create item sequences...")
-    user_sequences = df.groupby('user_id')['item_id'].apply(list)
-
     train_data, val_data, test_data = [], [], []
-    logging.info(f"Splitting data for {len(user_sequences)} users...")
 
-    for user_id, seq in user_sequences.items():
-        if len(seq) < min_seq_len:
-            continue
+    if split_method == 'loo':
+        logging.info("Grouping by user to create item sequences (LOO)...")
+        user_sequences = df.groupby('user_id')['item_id'].apply(list)
+        logging.info(f"Splitting data for {len(user_sequences)} users...")
 
-        # Test data: last item in the sequence
-        test_data.append({'user_id': user_id, 'seq': seq[:-1], 'next_item': seq[-1]})
+        for user_id, seq in user_sequences.items():
+            if len(seq) < min_seq_len:
+                continue
+
+            # Test data: last item in the sequence
+            test_data.append({'user_id': user_id, 'seq': seq[:-1], 'next_item': seq[-1]})
+            
+            # Validation data: second to last item in the sequence
+            val_data.append({'user_id': user_id, 'seq': seq[:-2], 'next_item': seq[-2]})
+
+            # Training data: from the second item up to the third to last (excluding val and test targets)
+            for i in range(1, len(seq) - 2):
+                train_data.append({'user_id': user_id, 'seq': seq[:i], 'next_item': seq[i]})
+
+    elif split_method == 'gts-random':
+        logging.info(f"Applying Global Timestamp Split (Ratio: {split_ratio}) with Random Sampling...")
         
-        # Validation data: second to last item in the sequence
-        val_data.append({'user_id': user_id, 'seq': seq[:-2], 'next_item': seq[-2]})
+        # Global Split
+        df_sorted = df.sort_values('timestamp')
+        split_idx = int(len(df_sorted) * split_ratio)
+        split_time = df_sorted.iloc[split_idx]['timestamp']
+        logging.info(f"Split timestamp: {split_time}")
 
-        # Training data: from the second item up to the third to last (excluding val and test targets)
-        for i in range(1, len(seq) - 2):
-            train_data.append({'user_id': user_id, 'seq': seq[:i], 'next_item': seq[i]})
+        # Group by user
+        grouped = df_sorted.groupby('user_id')
+        logging.info(f"Processing {len(grouped)} users...")
+
+        for user_id, group in grouped:
+            # Ensure sorted by timestamp (it should be, but to be safe)
+            # group = group.sort_values('timestamp') 
+            # (Already sorted globally, but groupby preserves order usually? 
+            #  Safest to use the list we extract)
+            
+            seq = group['item_id'].tolist()
+            timestamps = group['timestamp'].tolist()
+            
+            if len(seq) < min_seq_len:
+                continue
+
+            # Identify indices
+            holdout_indices = [i for i, t in enumerate(timestamps) if t > split_time]
+            train_indices = [i for i, t in enumerate(timestamps) if t <= split_time]
+
+            # --- Test & Val Sampling ---
+            test_idx = None
+            val_idx = None
+
+            if holdout_indices:
+                # Sample Test
+                test_idx = np.random.choice(holdout_indices)
+                
+                # Sample Val
+                remaining_holdout = [i for i in holdout_indices if i != test_idx]
+                if remaining_holdout:
+                    val_idx = np.random.choice(remaining_holdout)
+            
+            # Build Test Sample
+            if test_idx is not None:
+                test_seq = seq[:test_idx]
+                test_item = seq[test_idx]
+                # Check min seq len for test? Usually we just need history.
+                # If history is empty, it's cold start.
+                test_data.append({'user_id': user_id, 'seq': test_seq, 'next_item': test_item})
+
+            # Build Val Sample
+            if val_idx is not None:
+                val_seq = seq[:val_idx]
+                val_item = seq[val_idx]
+                val_data.append({'user_id': user_id, 'seq': val_seq, 'next_item': val_item})
+
+            # --- Train Sampling ---
+            # Use sliding window on TRAIN part only
+            # i starts from 1 because we need at least 1 item history
+            for i in train_indices:
+                if i == 0: 
+                    continue
+                train_seq = seq[:i]
+                train_item = seq[i]
+                train_data.append({'user_id': user_id, 'seq': train_seq, 'next_item': train_item})
+
+    else:
+        raise ValueError(f"Unknown split_method: {split_method}")
 
     train_df = pd.DataFrame(train_data)
     val_df = pd.DataFrame(val_data)
@@ -82,7 +154,7 @@ def process_metadata(data_dir: Path, dataset_type: str) -> pd.DataFrame:
         
     return df
 
-def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3):
+def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3, split_method: str = 'loo', split_ratio: float = 0.8):
     """
     Reads the MovieLens dataset, splits it into training, validation, and test sets
     based on user history, and saves them as CSV files. Also standardizes metadata.
@@ -91,7 +163,32 @@ def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3):
         data_dir (str): The directory containing the raw data files.
         dataset_type (str): 'ml-1m' or 'ml-100k'.
         min_seq_len (int): The minimum number of interactions a user must have to be included.
+        split_method (str): 'loo' or 'gts-random'.
+        split_ratio (float): Split ratio for GTS.
     """
+    # Try to load config from yaml if available
+    # Assuming config is at ../../../conf/dataset/{dataset_type}.yaml relative to this file?
+    # Or just use the passed args. The args should be populated from yaml if the caller did so.
+    # But to support "controllable via yaml" without changing caller, we can look for the yaml here.
+    
+    script_dir = Path(__file__).parent
+    # Assuming src/core/preprocess_data.py -> conf/dataset is ../../conf/dataset
+    # Adjust path resolution as needed.
+    # src/core/ -> src/ -> root -> conf -> dataset
+    project_root = script_dir.parent.parent
+    config_path = project_root / "conf" / "dataset" / f"{dataset_type}.yaml"
+    
+    if config_path.exists():
+        logging.info(f"Loading config from {config_path}...")
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+            if 'split_method' in config:
+                split_method = config['split_method']
+                logging.info(f"Overriding split_method from config: {split_method}")
+            if 'split_ratio' in config:
+                split_ratio = float(config['split_ratio'])
+                logging.info(f"Overriding split_ratio from config: {split_ratio}")
+    
     output_dir = Path(data_dir)
     
     # 1. Process Metadata
@@ -129,7 +226,7 @@ def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3):
     removed_interactions = initial_interactions - len(df)
     logging.info(f"Removed {removed_interactions} interactions.")
 
-    train_df, val_df, test_df = process_and_split(df, min_seq_len)
+    train_df, val_df, test_df = process_and_split(df, min_seq_len, split_method, split_ratio)
 
     train_path = output_dir / "train.csv"
     val_path = output_dir / "val.csv"
@@ -151,6 +248,8 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, required=True, help="Directory containing the raw data files.")
     parser.add_argument("--dataset_type", type=str, required=True, choices=['ml-1m', 'ml-100k'], help="Type of dataset.")
     parser.add_argument("--min_seq_len", type=int, default=3, help="Minimum sequence length.")
+    parser.add_argument("--split_method", type=str, default='loo', choices=['loo', 'gts-random'], help="Splitting method.")
+    parser.add_argument("--split_ratio", type=float, default=0.8, help="Split ratio for GTS.")
     args = parser.parse_args()
     
-    preprocess_data(args.data_dir, args.dataset_type, args.min_seq_len)
+    preprocess_data(args.data_dir, args.dataset_type, args.min_seq_len, args.split_method, args.split_ratio)
