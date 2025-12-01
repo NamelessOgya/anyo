@@ -140,11 +140,19 @@ class BigRecCollator:
         # Collect next_item_ids for evaluation
         next_item_ids = [item["next_item_id"] for item in batch]
         
+        # Collect seq_ids for SASRec
+        # SASRec expects right-padded sequences usually, but let's check SASRec implementation.
+        # Assuming standard padding with 0.
+        seq_ids_list = [torch.tensor(item["seq_ids"], dtype=torch.long) for item in batch]
+        # Pad right for SASRec (standard)
+        sasrec_input_ids = torch.nn.utils.rnn.pad_sequence(seq_ids_list, batch_first=True, padding_value=0)
+        
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
             "prompt_input_ids": prompt_input_ids,
             "prompt_attention_mask": prompt_attention_mask,
-            "next_item": torch.tensor(next_item_ids)
+            "next_item": torch.tensor(next_item_ids),
+            "sasrec_input_ids": sasrec_input_ids
         }

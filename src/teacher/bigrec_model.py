@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_training
 
 from typing import List, Dict, Any
 import os
+from src.student.models import SASRec
 
 class BigRecModel(pl.LightningModule):
     def __init__(
@@ -25,6 +27,8 @@ class BigRecModel(pl.LightningModule):
         top_p: float = 0.9,
         top_k: int = 40,
         warmup_steps: int = 20,
+        student_model_path: str = None, # Path to SASRec checkpoint
+        load_in_8bit: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -90,6 +94,59 @@ class BigRecModel(pl.LightningModule):
             self.item_embeddings = torch.load(self.item_embeddings_path)
             # Move to device later or keep on CPU if large? 
             # Ideally move to same device as model during validation.
+            
+        # Load SASRec (Student) for Ensemble
+        self.sasrec = None
+        self.alpha = None
+        if student_model_path and os.path.exists(student_model_path):
+            print(f"Loading SASRec from {student_model_path}...")
+            # We need to load the checkpoint. 
+            # Since SASRec is usually wrapped in a LightningModule (StudentModel?), we need to be careful.
+            # Or if it's just the model state dict.
+            # Assuming it's a PL checkpoint.
+            try:
+                # We need to know the class structure of the checkpoint.
+                # If it's a standard PL checkpoint, we can load state_dict.
+                # But we need to instantiate SASRec first.
+                # We'll assume standard ML-100k params for now or try to infer?
+                # Hardcoding ML-100k params for simplicity as per config usually.
+                # num_items=1682, hidden_size=64, etc.
+                # Ideally, we should load config from the checkpoint or similar.
+                # For this task, let's assume standard params.
+                num_items = 1682 # ML-100k
+                hidden_size = 64
+                num_heads = 2
+                num_layers = 2
+                max_seq_len = 50
+                dropout_rate = 0.1
+                
+                self.sasrec = SASRec(num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
+                
+                checkpoint = torch.load(student_model_path, map_location="cpu")
+                # Checkpoint keys might be "state_dict" -> "model.xxx"
+                state_dict = checkpoint["state_dict"]
+                # Adjust keys if necessary (remove "model." prefix if wrapped)
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    if k.startswith("model."):
+                        new_state_dict[k[6:]] = v
+                    else:
+                        new_state_dict[k] = v
+                self.sasrec.load_state_dict(new_state_dict)
+                
+                # Freeze SASRec
+                for param in self.sasrec.parameters():
+                    param.requires_grad = False
+                self.sasrec.eval()
+                print("SASRec loaded and frozen.")
+                
+                # Initialize Alpha
+                self.alpha = nn.Parameter(torch.tensor(0.5)) # Start with 0.5
+                print("Ensemble Alpha initialized.")
+                
+            except Exception as e:
+                print(f"Failed to load SASRec: {e}")
+                self.sasrec = None
 
     def forward(self, input_ids, attention_mask, labels=None):
         return self.model(
@@ -99,18 +156,154 @@ class BigRecModel(pl.LightningModule):
         )
 
     def training_step(self, batch, batch_idx):
-        # batch should contain: input_ids, attention_mask, labels
-        outputs = self(
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
-            labels=batch["labels"]
-        )
-        loss = outputs.loss
-        self.log("train_loss", loss, prog_bar=True)
-        return loss
+        # If SASRec is loaded, use Ensemble Loss
+        if self.sasrec is not None and self.item_embeddings is not None:
+            # 1. Get LLM Logits (via Embedding Similarity)
+            # We need the hidden state of the LAST token of the PROMPT (not generated text)
+            # batch["prompt_input_ids"] contains the prompt.
+            # We run forward pass on prompt.
+            
+            prompt_ids = batch["prompt_input_ids"]
+            prompt_mask = batch["prompt_attention_mask"]
+            
+            outputs = self.model.model(
+                input_ids=prompt_ids,
+                attention_mask=prompt_mask,
+                output_hidden_states=True
+            )
+            # Last hidden state
+            last_hidden = outputs.hidden_states[-1] # (B, Seq, H)
+            
+            # Get last token representation (considering padding)
+            # prompt_mask is 1 for tokens, 0 for pad.
+            # If left padded, last token is at index -1?
+            # Yes, if left padded, the last token is the last element.
+            # But wait, if right padded?
+            # Tokenizer padding_side is "left".
+            # So the last token is indeed at -1.
+            llm_user_emb = last_hidden[:, -1, :] # (B, H)
+            
+            # Project LLM embedding to Item Embedding space?
+            # Or assume they are in same space?
+            # BIGRec assumes LLM generates text.
+            # E4SRec assumes they are in same space via LoRA.
+            # Here, we are using `item_embeddings` which were computed from the SAME LLM.
+            # So they are in the same space!
+            
+            # Compute Similarity (Dot Product)
+            # item_embeddings: (NumItems, H)
+            # llm_user_emb: (B, H)
+            # We need to ensure item_embeddings is on correct device
+            if self.item_embeddings.device != self.device:
+                self.item_embeddings = self.item_embeddings.to(self.device)
+                
+            llm_logits = torch.matmul(llm_user_emb, self.item_embeddings.t()) # (B, NumItems)
+            
+            # 2. Get SASRec Logits
+            sasrec_ids = batch["sasrec_input_ids"] # (B, Seq)
+            # Calculate lengths (non-zero)
+            sasrec_lens = (sasrec_ids != 0).sum(dim=1)
+            
+            # SASRec predict returns (B, NumItems+1)
+            sasrec_scores_full = self.sasrec.predict(sasrec_ids, sasrec_lens)
+            sasrec_logits = sasrec_scores_full[:, 1:] # Remove padding index 0. (B, NumItems)
+            
+            # 3. Combine
+            alpha_sigmoid = torch.sigmoid(self.alpha)
+            ensemble_logits = alpha_sigmoid * sasrec_logits + (1 - alpha_sigmoid) * llm_logits
+            
+            # 4. Compute Loss
+            target_ids = batch["next_item"] # (B,) 1-based IDs?
+            # item_embeddings are 1-based (index 0 is item 1).
+            # target_ids are 1-based.
+            # We need 0-based indices for CrossEntropy if logits are (B, NumItems).
+            # target_ids - 1
+            loss = F.cross_entropy(ensemble_logits, target_ids - 1)
+            
+            self.log("train_loss", loss, prog_bar=True)
+            self.log("alpha", alpha_sigmoid, prog_bar=True)
+            return loss
+            
+        else:
+            # Standard Causal LM Training (Text Generation)
+            outputs = self.model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                labels=batch["labels"]
+            )
+            loss = outputs.loss
+            self.log("train_loss", loss, prog_bar=True)
+            return loss
 
     def validation_step(self, batch, batch_idx):
-        self._evaluate_step(batch, batch_idx, prefix="val")
+        if self.sasrec is not None and self.item_embeddings is not None:
+             # Ensemble Validation
+            prompt_ids = batch["prompt_input_ids"]
+            prompt_mask = batch["prompt_attention_mask"]
+            
+            outputs = self.model.model(
+                input_ids=prompt_ids,
+                attention_mask=prompt_mask,
+                output_hidden_states=True
+            )
+            llm_user_emb = outputs.hidden_states[-1][:, -1, :]
+            
+            if self.item_embeddings.device != self.device:
+                self.item_embeddings = self.item_embeddings.to(self.device)
+                
+            llm_logits = torch.matmul(llm_user_emb, self.item_embeddings.t())
+            
+            sasrec_ids = batch["sasrec_input_ids"]
+            sasrec_lens = (sasrec_ids != 0).sum(dim=1)
+            sasrec_scores_full = self.sasrec.predict(sasrec_ids, sasrec_lens)
+            sasrec_logits = sasrec_scores_full[:, 1:]
+            
+            alpha_sigmoid = torch.sigmoid(self.alpha)
+            ensemble_logits = alpha_sigmoid * sasrec_logits + (1 - alpha_sigmoid) * llm_logits
+            
+            # Metrics
+            # Top-K
+            _, topk_indices = torch.topk(ensemble_logits, k=self.metrics_k, dim=-1) # (B, K)
+            # topk_indices are 0-based (corresponding to item 1..N)
+            # target_ids are 1-based
+            target_ids = batch["next_item"]
+            
+            hits = 0
+            ndcg = 0
+            batch_size = target_ids.size(0)
+            
+            for i in range(batch_size):
+                target = target_ids[i].item() # 1-based
+                preds = topk_indices[i].tolist() # 0-based
+                preds = [p + 1 for p in preds] # Convert to 1-based
+                
+                if target in preds:
+                    hits += 1
+                    rank = preds.index(target)
+                    ndcg += 1.0 / torch.log2(torch.tensor(rank + 2.0))
+            
+            self.log(f"val_hr@{self.metrics_k}", hits / batch_size, prog_bar=True)
+            self.log(f"val_ndcg@{self.metrics_k}", ndcg / batch_size, prog_bar=True)
+            self.log("val_alpha", alpha_sigmoid, prog_bar=True)
+            
+            # Debug Logging (First 3 samples of the batch)
+            if batch_idx == 0:
+                print(f"\n[Epoch {self.current_epoch} Validation Debug]")
+                print(f"Alpha: {alpha_sigmoid.item():.4f}")
+                for i in range(min(3, batch_size)):
+                    target_id = target_ids[i].item()
+                    target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
+                    
+                    pred_indices = topk_indices[i].tolist()[:3] # Top 3
+                    pred_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in pred_indices]
+                    
+                    print(f"Sample {i}:")
+                    print(f"  Target: {target_name}")
+                    print(f"  Preds : {pred_names}")
+            
+        else:
+            # Standard Generation Validation
+            self._evaluate_step(batch, batch_idx, prefix="val")
 
     def test_step(self, batch, batch_idx):
         self._evaluate_step(batch, batch_idx, prefix="test")
