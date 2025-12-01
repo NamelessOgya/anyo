@@ -2,6 +2,7 @@ from omegaconf import DictConfig
 from src.teacher.interfaces import TeacherModel
 from src.teacher.ilora_model import iLoRAModel
 from src.teacher.moe_bigrec_model import MoEBigRecModel
+from src.teacher.bigrec_model import BigRecModel
 from src.teacher.mlp_projector import MLPProjector
 import torch
 import torch.nn as nn

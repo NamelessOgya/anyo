@@ -326,133 +326,146 @@ class MoEBigRecModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         if self.sasrec is not None and self.item_embeddings is not None:
-             # Ensemble Validation
-            prompt_ids = batch["prompt_input_ids"]
-            prompt_mask = batch["prompt_attention_mask"]
-            
-            outputs = self.model.model(
-                input_ids=prompt_ids,
-                attention_mask=prompt_mask,
-                output_hidden_states=True
-            )
-            llm_user_emb = outputs.hidden_states[-1][:, -1, :]
-            
-            if self.item_embeddings.device != self.device:
-                self.item_embeddings = self.item_embeddings.to(self.device)
-                
-            llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t())
-            llm_logits = llm_logits_full[:, 1:] # Remove padding index 0
-            
-            sasrec_ids = batch["sasrec_input_ids"]
-            sasrec_lens = (sasrec_ids != 0).sum(dim=1)
-            sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
-            
-            # Dynamic Alpha
-            sasrec_user_emb = self.sasrec(sasrec_ids, sasrec_lens)
-            alpha_logits = self.gate(sasrec_user_emb)
-            alpha = torch.sigmoid(alpha_logits)
-            
-            # Normalize Logits (Z-score)
-            llm_mean = llm_logits.mean(dim=-1, keepdim=True)
-            llm_std = llm_logits.std(dim=-1, keepdim=True)
-            llm_logits_norm = (llm_logits - llm_mean) / (llm_std + 1e-8)
-            
-            sasrec_mean = sasrec_logits.mean(dim=-1, keepdim=True)
-            sasrec_std = sasrec_logits.std(dim=-1, keepdim=True)
-            sasrec_logits_norm = (sasrec_logits - sasrec_mean) / (sasrec_std + 1e-8)
-            
-            ensemble_logits = alpha * sasrec_logits_norm + (1 - alpha) * llm_logits_norm
-            
-            self.log("val_llm_mean", llm_mean.mean(), prog_bar=True)
-            self.log("val_llm_std", llm_std.mean(), prog_bar=True)
-            self.log("val_sasrec_mean", sasrec_mean.mean(), prog_bar=True)
-            self.log("val_sasrec_std", sasrec_std.mean(), prog_bar=True)
-            
-            # Metrics
-            # Top-K
-            _, topk_indices = torch.topk(ensemble_logits, k=self.metrics_k, dim=-1) # (B, K)
-            # topk_indices are 0-based (corresponding to item 1..N)
-            # target_ids are 1-based
-            target_ids = batch["next_item"]
-            
-            hits = 0
-            ndcg = 0
-            batch_size = target_ids.size(0)
-            
-            for i in range(batch_size):
-                target = target_ids[i].item() # 1-based
-                preds = topk_indices[i].tolist() # 0-based
-                preds = [p + 1 for p in preds] # Convert to 1-based
-                
-                if target in preds:
-                    hits += 1
-                    rank = preds.index(target)
-                    ndcg += 1.0 / torch.log2(torch.tensor(rank + 2.0))
-            
-            self.log(f"val_hr@{self.metrics_k}", hits / batch_size, prog_bar=True)
-            self.log(f"val_ndcg@{self.metrics_k}", ndcg / batch_size, prog_bar=True)
-            self.log("val_alpha", alpha.mean(), prog_bar=True)
-            
-            # Debug Logging (First 3 samples of the batch)
-            if batch_idx == 0:
-                print(f"\n[Epoch {self.current_epoch} Validation Debug]")
-                print(f"Alpha (Mean): {alpha.mean().item():.4f}")
-                
-                debug_batch_size = min(3, batch_size)
-                
-                # Get Top-3 for individual models
-                _, llm_topk = torch.topk(llm_logits[:debug_batch_size], k=3)
-                _, sasrec_topk = torch.topk(sasrec_logits[:debug_batch_size], k=3)
-                
-                # Generate Text for visualization
-                # We use the same prompt_ids.
-                # Note: This is slow, so only do it for debug batch.
-                with torch.no_grad():
-                    gen_outputs = self.model.generate(
-                        input_ids=prompt_ids[:debug_batch_size],
-                        attention_mask=prompt_mask[:debug_batch_size],
-                        max_new_tokens=32,
-                        num_beams=1, # Greedy for debug
-                        do_sample=False,
-                        pad_token_id=self.tokenizer.pad_token_id,
-                        eos_token_id=self.tokenizer.eos_token_id
-                    )
-                    # Decode
-                    # gen_outputs contains input + generated. We only want generated.
-                    input_len = prompt_ids[:debug_batch_size].shape[1]
-                    gen_text_tokens = gen_outputs[:, input_len:]
-                    gen_texts = self.tokenizer.batch_decode(gen_text_tokens, skip_special_tokens=True)
-                
-                for i in range(debug_batch_size):
-                    target_id = target_ids[i].item()
-                    target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
-                    
-                    # Ensemble Preds
-                    ens_indices = topk_indices[i].tolist()[:3]
-                    ens_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in ens_indices]
-                    
-                    # LLM Preds
-                    llm_indices = llm_topk[i].tolist()
-                    llm_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in llm_indices]
-                    
-                    # SASRec Preds
-                    sasrec_indices = sasrec_topk[i].tolist()
-                    sasrec_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in sasrec_indices]
-                    
-                    print(f"Sample {i}:")
-                    print(f"  Alpha : {alpha[i].item():.4f}")
-                    print(f"  Target: {target_name}")
-                    print(f"  GenTxt: {gen_texts[i].strip()}") # Show generated text
-                    print(f"  LLM   : {llm_names}")
-                    print(f"  SASRec: {sasrec_names}")
-                    print(f"  Ensem : {ens_names}")
-            
+            self._evaluate_ensemble(batch, batch_idx, prefix="val")
         else:
-            # Standard Generation Validation
             self._evaluate_step(batch, batch_idx, prefix="val")
 
     def test_step(self, batch, batch_idx):
-        self._evaluate_step(batch, batch_idx, prefix="test")
+        if self.sasrec is not None and self.item_embeddings is not None:
+            self._evaluate_ensemble(batch, batch_idx, prefix="test")
+        else:
+            self._evaluate_step(batch, batch_idx, prefix="test")
+
+    def _evaluate_ensemble(self, batch, batch_idx, prefix="val"):
+        # Ensemble Evaluation
+        prompt_ids = batch["prompt_input_ids"]
+        prompt_mask = batch["prompt_attention_mask"]
+        
+        outputs = self.model.model(
+            input_ids=prompt_ids,
+            attention_mask=prompt_mask,
+            output_hidden_states=True
+        )
+        llm_user_emb = outputs.hidden_states[-1][:, -1, :]
+        
+        if self.item_embeddings.device != self.device:
+            self.item_embeddings = self.item_embeddings.to(self.device)
+            
+        llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t())
+        llm_logits = llm_logits_full[:, 1:] # Remove padding index 0
+        
+        # Apply Popularity Bias Adjustment (BIGRec)
+        if self.popularity_scores is not None and self.popularity_lambda > 0:
+            if self.popularity_scores.device != self.device:
+                self.popularity_scores = self.popularity_scores.to(self.device)
+            
+            pop_scores = self.popularity_scores[1:]
+            pop_adjustment = self.popularity_lambda * torch.log(pop_scores + 1.0)
+            llm_logits = llm_logits + pop_adjustment
+
+        sasrec_ids = batch["sasrec_input_ids"]
+        sasrec_lens = (sasrec_ids != 0).sum(dim=1)
+        sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
+        
+        # Dynamic Alpha
+        sasrec_user_emb = self.sasrec(sasrec_ids, sasrec_lens)
+        alpha_logits = self.gate(sasrec_user_emb)
+        alpha = torch.sigmoid(alpha_logits)
+        
+        # Normalize Logits (Z-score)
+        llm_mean = llm_logits.mean(dim=-1, keepdim=True)
+        llm_std = llm_logits.std(dim=-1, keepdim=True)
+        llm_logits_norm = (llm_logits - llm_mean) / (llm_std + 1e-8)
+        
+        sasrec_mean = sasrec_logits.mean(dim=-1, keepdim=True)
+        sasrec_std = sasrec_logits.std(dim=-1, keepdim=True)
+        sasrec_logits_norm = (sasrec_logits - sasrec_mean) / (sasrec_std + 1e-8)
+        
+        ensemble_logits = alpha * sasrec_logits_norm + (1 - alpha) * llm_logits_norm
+        
+        self.log(f"{prefix}_llm_mean", llm_mean.mean(), prog_bar=True)
+        self.log(f"{prefix}_llm_std", llm_std.mean(), prog_bar=True)
+        self.log(f"{prefix}_sasrec_mean", sasrec_mean.mean(), prog_bar=True)
+        self.log(f"{prefix}_sasrec_std", sasrec_std.mean(), prog_bar=True)
+        
+        # Metrics
+        # Top-K
+        _, topk_indices = torch.topk(ensemble_logits, k=self.metrics_k, dim=-1) # (B, K)
+        # topk_indices are 0-based (corresponding to item 1..N)
+        # target_ids are 1-based
+        target_ids = batch["next_item"]
+        
+        hits = 0
+        ndcg = 0
+        batch_size = target_ids.size(0)
+        
+        for i in range(batch_size):
+            target = target_ids[i].item() # 1-based
+            preds = topk_indices[i].tolist() # 0-based
+            preds = [p + 1 for p in preds] # Convert to 1-based
+            
+            if target in preds:
+                hits += 1
+                rank = preds.index(target)
+                ndcg += 1.0 / torch.log2(torch.tensor(rank + 2.0))
+        
+        self.log(f"{prefix}_hr@{self.metrics_k}", hits / batch_size, prog_bar=True)
+        self.log(f"{prefix}_ndcg@{self.metrics_k}", ndcg / batch_size, prog_bar=True)
+        self.log(f"{prefix}_alpha", alpha.mean(), prog_bar=True)
+        
+        # Debug Logging (First 3 samples of the batch)
+        if batch_idx == 0:
+            print(f"\n[Epoch {self.current_epoch} {prefix.capitalize()} Debug]")
+            print(f"Alpha (Mean): {alpha.mean().item():.4f}")
+            
+            debug_batch_size = min(3, batch_size)
+            
+            # Get Top-3 for individual models
+            _, llm_topk = torch.topk(llm_logits[:debug_batch_size], k=3)
+            _, sasrec_topk = torch.topk(sasrec_logits[:debug_batch_size], k=3)
+            
+            # Generate Text for visualization
+            # We use the same prompt_ids.
+            # Note: This is slow, so only do it for debug batch.
+            with torch.no_grad():
+                gen_outputs = self.model.generate(
+                    input_ids=prompt_ids[:debug_batch_size],
+                    attention_mask=prompt_mask[:debug_batch_size],
+                    max_new_tokens=32,
+                    num_beams=1, # Greedy for debug
+                    do_sample=False,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+                # Decode
+                # gen_outputs contains input + generated. We only want generated.
+                input_len = prompt_ids[:debug_batch_size].shape[1]
+                gen_text_tokens = gen_outputs[:, input_len:]
+                gen_texts = self.tokenizer.batch_decode(gen_text_tokens, skip_special_tokens=True)
+            
+            for i in range(debug_batch_size):
+                target_id = target_ids[i].item()
+                target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
+                
+                # Ensemble Preds
+                ens_indices = topk_indices[i].tolist()[:3]
+                ens_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in ens_indices]
+                
+                # LLM Preds
+                llm_indices = llm_topk[i].tolist()
+                llm_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in llm_indices]
+                
+                # SASRec Preds
+                sasrec_indices = sasrec_topk[i].tolist()
+                sasrec_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in sasrec_indices]
+                
+                print(f"Sample {i}:")
+                print(f"  Alpha : {alpha[i].item():.4f}")
+                print(f"  Target: {target_name}")
+                print(f"  GenTxt: {gen_texts[i].strip()}") # Show generated text
+                print(f"  LLM   : {llm_names}")
+                print(f"  SASRec: {sasrec_names}")
+                print(f"  Ensem : {ens_names}")
 
     def _evaluate_step(self, batch, batch_idx, prefix="val"):
         # 1. Calculate Loss (Teacher Forcing)
