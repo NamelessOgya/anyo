@@ -25,6 +25,7 @@ flash-attn = [
     {url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.4cxx11abiFALSE-cp311-cp311-linux_x86_64.whl", python = "3.11"},
     {url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.4cxx11abiFALSE-cp312-cp312-linux_x86_64.whl", python = "3.12"}
 ]
+matplotlib = "^3.10.7"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8"

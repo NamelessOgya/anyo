@@ -162,6 +162,13 @@ class BigRecModel(pl.LightningModule):
             # Strip quotes to match reference evaluation logic (Grounding uses unquoted embeddings)
             generated_texts = [text.strip('"') for text in generated_texts]
             
+            # DEBUG: Log generated text vs target
+            if batch_idx == 0:
+                target_ids = batch["next_item"]
+                target_titles = [self.item_id_to_name.get(tid.item(), "") for tid in target_ids]
+                for i in range(min(3, len(generated_texts))):
+                    print(f"[DEBUG] Gen: '{generated_texts[i]}' | Target: '{target_titles[i]}'")
+            
             # Embed generated text using Base Model (disable LoRA)
             # We need to tokenize the generated text first
             # Note: We should use the same tokenizer
