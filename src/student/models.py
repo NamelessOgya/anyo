@@ -47,7 +47,9 @@ class SASRec(nn.Module):
         item_embeddings = self.item_embeddings(item_seq)
 
         # 位置埋め込み
-        positions = torch.arange(self.max_seq_len, device=item_seq.device).unsqueeze(0)
+        # 位置埋め込み
+        seq_len = item_seq.size(1)
+        positions = torch.arange(seq_len, device=item_seq.device).unsqueeze(0)
         position_embeddings = self.position_embeddings(positions)
 
         # 埋め込みの合計
