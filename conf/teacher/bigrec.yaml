@@ -15,3 +15,4 @@ item_embeddings_path: "data/ml-100k/item_embeddings.pt"
 compute_item_embeddings: true
 val_check_interval: 0.1
 load_in_8bit: false
+batch_size: 32

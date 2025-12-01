@@ -68,6 +68,16 @@ def run_experiment(cfg):
     model_type = cfg.teacher.get("model_type", "ilora")
     logger.info(f"Teacher Model Type: {model_type}")
 
+    # 2.5. Compute Item Embeddings (if needed)
+    if cfg.teacher.get("compute_item_embeddings", False):
+        from src.teacher.embedding_utils import compute_and_save_item_embeddings
+        compute_and_save_item_embeddings(
+            cfg,
+            llm_tokenizer=llm_tokenizer,
+            item_id_to_name=dm.mapped_id_to_title,
+            num_items=dm.num_items
+        )
+
     if model_type in ["bigrec", "moe_bigrec"]:
         from src.data.collators import BigRecCollator
         
@@ -104,7 +114,7 @@ def run_experiment(cfg):
         
         train_loader = DataLoader(
             dm.train_dataset,
-            batch_size=cfg.teacher.batch_size,
+            batch_size=cfg.teacher.get("batch_size", cfg.train.batch_size),
             shuffle=True,
             num_workers=cfg.train.num_workers,
             collate_fn=collator,
@@ -113,7 +123,7 @@ def run_experiment(cfg):
         
         val_loader = DataLoader(
             dm.val_dataset,
-            batch_size=cfg.teacher.batch_size,
+            batch_size=cfg.teacher.get("batch_size", cfg.train.batch_size),
             shuffle=False,
             num_workers=cfg.train.num_workers,
             collate_fn=collator,
