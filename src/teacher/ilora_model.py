@@ -199,6 +199,48 @@ class iLoRAModel(nn.Module):
         )
         return outputs
 
+    def set_gate_weights(self, input_ids: torch.Tensor):
+        """
+        input_idsに基づいてゲート重みを計算し、MoeLoraModelに設定します。
+        generate()を呼び出す前に使用します。
+        """
+        # 1. アイテムトークンのマスクを作成
+        is_item_token = input_ids >= self.original_vocab_size
+        
+        # 2. Embedding取得 (Lookup only)
+        input_embeddings = self.llm.get_input_embeddings()(input_ids)
+        
+        batch_gate_inputs = []
+        for i in range(input_ids.shape[0]):
+            # このサンプルのアイテムトークン位置
+            item_indices = torch.nonzero(is_item_token[i]).squeeze(-1)
+            
+            if len(item_indices) > 0:
+                # すべてのアイテムトークンを履歴とする
+                history_indices = item_indices
+            else:
+                history_indices = torch.tensor([], device=self.device, dtype=torch.long)
+                
+            if len(history_indices) > 0:
+                # 履歴アイテムの埋め込みを平均
+                history_embs = input_embeddings[i, history_indices, :]
+                user_emb = history_embs.mean(dim=0)
+            else:
+                user_emb = torch.zeros(self.llm.model.config.hidden_size, device=self.device, dtype=self.llm_dtype)
+                
+            batch_gate_inputs.append(user_emb)
+            
+        gate_inputs = torch.stack(batch_gate_inputs) # (B, H)
+        
+        # ゲート重みの計算
+        gate_inputs = gate_inputs.to(self.gating_network.model[0].weight.dtype)
+        gate_weights = F.softmax(self.gating_network(gate_inputs), dim=-1)
+        gate_weights = gate_weights.to(input_embeddings.dtype)
+
+        # MoeLoraModelインスタンスにgate_weightsを設定
+        self.llm.gate_weights.clear()
+        self.llm.gate_weights.append(gate_weights)
+
     def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
         return self._get_llm_outputs(batch)
 

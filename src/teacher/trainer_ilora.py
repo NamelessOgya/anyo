@@ -391,6 +391,9 @@ class iLoRATrainer(pl.LightningModule):
             
             # 2. Generate Text
             with torch.no_grad():
+                # Set Gate Weights for the prompt batch
+                self.model.set_gate_weights(prompt_batch)
+                
                 gen_outputs = self.model.llm.generate(
                     input_ids=prompt_batch,
                     attention_mask=prompt_mask,
