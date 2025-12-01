@@ -196,6 +196,7 @@ class iLoRAModel(nn.Module):
             inputs_embeds=input_embeddings,
             attention_mask=attention_mask,
             use_cache=False,
+            output_hidden_states=True
         )
         return outputs
 
@@ -256,7 +257,7 @@ class iLoRAModel(nn.Module):
         
         # 最後のトークンの隠れ状態を取得
         last_token_indices = batch["attention_mask"].sum(1) - 1
-        last_hidden_state = outputs.last_hidden_state[torch.arange(outputs.last_hidden_state.shape[0], device=self.device), last_token_indices, :] # (B, H)
+        last_hidden_state = outputs.hidden_states[-1][torch.arange(outputs.hidden_states[-1].shape[0], device=self.device), last_token_indices, :] # (B, H)
         
         # ランキングスコア（ロジット）の計算
         # LLMのアイテムEmbedding（拡張された語彙部分）との内積

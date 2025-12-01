@@ -165,7 +165,7 @@ class iLoRATrainer(pl.LightningModule):
         # Shift Labels: remove first token (Prefix start), keep rest
         shift_labels = batch["labels"][:, 1:].contiguous()
         # Shift Hidden: remove last token, keep rest
-        shift_hidden = outputs.last_hidden_state[:, :-1, :].contiguous()
+        shift_hidden = outputs.hidden_states[-1][:, :-1, :].contiguous()
         
         # Flatten
         flat_labels = shift_labels.view(-1)
