@@ -62,36 +62,36 @@ def process_and_split(df: pd.DataFrame, min_seq_len: int = 3, split_method: str 
             holdout_indices = [i for i, t in enumerate(timestamps) if t > split_time]
             train_indices = [i for i, t in enumerate(timestamps) if t <= split_time]
 
-            # --- Test & Val Sampling ---
+            # --- Test Sampling ---
             test_idx = None
-            val_idx = None
-
             if holdout_indices:
-                # Sample Test
+                # Sample Test from Holdout
                 test_idx = np.random.choice(holdout_indices)
-                
-                # Sample Val
-                remaining_holdout = [i for i in holdout_indices if i != test_idx]
-                if remaining_holdout:
-                    val_idx = np.random.choice(remaining_holdout)
             
+            # --- Val Sampling ---
+            # Val is the LAST item in the TRAIN part
+            val_idx = None
+            if train_indices:
+                val_idx = train_indices[-1]
+                # Remove val from train indices so it's not used in training
+                train_indices = train_indices[:-1]
+
             # Build Test Sample
             if test_idx is not None:
                 test_seq = seq[:test_idx]
                 test_item = seq[test_idx]
-                # Check min seq len for test? Usually we just need history.
-                # If history is empty, it's cold start.
                 test_data.append({'user_id': user_id, 'seq': test_seq, 'next_item': test_item})
 
             # Build Val Sample
             if val_idx is not None:
                 val_seq = seq[:val_idx]
                 val_item = seq[val_idx]
-                val_data.append({'user_id': user_id, 'seq': val_seq, 'next_item': val_item})
+                # Ensure history is long enough? (min_seq_len check was at start, but seq length changed)
+                if len(val_seq) >= 1: # At least 1 item history
+                     val_data.append({'user_id': user_id, 'seq': val_seq, 'next_item': val_item})
 
             # --- Train Sampling ---
-            # Use sliding window on TRAIN part only
-            # i starts from 1 because we need at least 1 item history
+            # Use sliding window on REMAINING train part
             for i in train_indices:
                 if i == 0: 
                     continue
