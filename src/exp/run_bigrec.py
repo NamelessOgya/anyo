@@ -94,7 +94,8 @@ def run_experiment(cfg: DictConfig):
         max_source_length=cfg.teacher.max_source_length,
         max_target_length=cfg.teacher.max_target_length,
         use_cot=cfg.teacher.get("use_cot", False),
-        max_history_items=cfg.teacher.get("max_history_items", 20)
+        max_history_items=cfg.teacher.get("max_history_items", 20),
+        sasrec_max_seq_len=cfg.student.max_seq_len
     )
     
     # Wrap dataloaders with custom collator

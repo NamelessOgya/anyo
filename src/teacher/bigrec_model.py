@@ -98,7 +98,10 @@ class BigRecModel(pl.LightningModule):
         # Load SASRec (Student) for Ensemble
         self.sasrec = None
         self.alpha = None
-        if student_model_path and os.path.exists(student_model_path):
+        if student_model_path:
+            if not os.path.exists(student_model_path):
+                raise FileNotFoundError(f"student_model_path is set to '{student_model_path}', but the file does not exist.")
+            
             print(f"Loading SASRec from {student_model_path}...")
             # We need to load the checkpoint. 
             # Since SASRec is usually wrapped in a LightningModule (StudentModel?), we need to be careful.
