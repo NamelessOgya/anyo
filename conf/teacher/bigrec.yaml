@@ -19,7 +19,7 @@ warmup_steps: 20 # Reference uses 20
 item_embeddings_path: "data/ml-100k/item_embeddings.pt"
 compute_item_embeddings: true
 student_model_path: "experiments/student/sasrec/checkpoints/last.ckpt" # Path to pre-trained SASRec
-val_check_interval: 0.25 # Check every 0.25 epoch
+val_check_interval: 0.1 # Check every 0.1 epoch
 num_epochs: 50 # Reference uses 50
 accumulate_grad_batches: 16 # 8 * 16 = 128 effective batch size
 

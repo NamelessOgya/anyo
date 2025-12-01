@@ -294,17 +294,54 @@ class BigRecModel(pl.LightningModule):
                 print(f"\n[Epoch {self.current_epoch} Validation Debug]")
                 print(f"Alpha (Mean): {alpha.mean().item():.4f}")
                 
-                for i in range(min(3, batch_size)):
+                debug_batch_size = min(3, batch_size)
+                
+                # Get Top-3 for individual models
+                _, llm_topk = torch.topk(llm_logits[:debug_batch_size], k=3)
+                _, sasrec_topk = torch.topk(sasrec_logits[:debug_batch_size], k=3)
+                
+                # Generate Text for visualization
+                # We use the same prompt_ids.
+                # Note: This is slow, so only do it for debug batch.
+                with torch.no_grad():
+                    gen_outputs = self.model.generate(
+                        input_ids=prompt_ids[:debug_batch_size],
+                        attention_mask=prompt_mask[:debug_batch_size],
+                        max_new_tokens=32,
+                        num_beams=1, # Greedy for debug
+                        do_sample=False,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id
+                    )
+                    # Decode
+                    # gen_outputs contains input + generated. We only want generated.
+                    input_len = prompt_ids[:debug_batch_size].shape[1]
+                    gen_text_tokens = gen_outputs[:, input_len:]
+                    gen_texts = self.tokenizer.batch_decode(gen_text_tokens, skip_special_tokens=True)
+                
+                for i in range(debug_batch_size):
                     target_id = target_ids[i].item()
                     target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
                     
-                    pred_indices = topk_indices[i].tolist()[:3] # Top 3
-                    pred_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in pred_indices]
+                    # Ensemble Preds
+                    ens_indices = topk_indices[i].tolist()[:3]
+                    ens_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in ens_indices]
+                    
+                    # LLM Preds
+                    llm_indices = llm_topk[i].tolist()
+                    llm_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in llm_indices]
+                    
+                    # SASRec Preds
+                    sasrec_indices = sasrec_topk[i].tolist()
+                    sasrec_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in sasrec_indices]
                     
                     print(f"Sample {i}:")
                     print(f"  Alpha : {alpha[i].item():.4f}")
                     print(f"  Target: {target_name}")
-                    print(f"  Preds : {pred_names}")
+                    print(f"  GenTxt: {gen_texts[i].strip()}") # Show generated text
+                    print(f"  LLM   : {llm_names}")
+                    print(f"  SASRec: {sasrec_names}")
+                    print(f"  Ensem : {ens_names}")
             
         else:
             # Standard Generation Validation
