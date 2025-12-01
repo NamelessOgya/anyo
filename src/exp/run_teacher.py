@@ -69,7 +69,9 @@ def run_experiment(cfg):
     logger.info(f"Teacher Model Type: {model_type}")
 
     # 2.5. Compute Item Embeddings (if needed)
-    if cfg.teacher.get("compute_item_embeddings", False):
+    compute_embeddings = cfg.teacher.get("compute_item_embeddings", False)
+    logger.info(f"DEBUG: compute_item_embeddings = {compute_embeddings}")
+    if compute_embeddings:
         from src.teacher.embedding_utils import compute_and_save_item_embeddings
         compute_and_save_item_embeddings(
             cfg,
