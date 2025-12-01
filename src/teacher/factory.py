@@ -1,6 +1,7 @@
 from omegaconf import DictConfig
 from src.teacher.interfaces import TeacherModel
 from src.teacher.ilora_model import iLoRAModel
+from src.teacher.moe_bigrec_model import MoEBigRecModel
 from src.teacher.mlp_projector import MLPProjector
 import torch
 import torch.nn as nn
@@ -207,6 +208,54 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             model = torch.compile(model)
             
         return model
+    
+    elif model_type == "moe_bigrec":
+        print("MoE-BIGRecモデル（Ensemble）を初期化しています...")
+        return MoEBigRecModel(
+            model_name_or_path=cfg.teacher.llm_model_name,
+            lora_r=cfg.teacher.lora_r,
+            lora_alpha=cfg.teacher.lora_alpha,
+            lora_dropout=cfg.teacher.lora_dropout,
+            learning_rate=cfg.train.learning_rate,
+            max_source_length=cfg.teacher.max_source_length,
+            max_target_length=cfg.teacher.max_target_length,
+            item_id_to_name=item_id_to_name,
+            metrics_k=candidate_topk,
+            num_beams=cfg.teacher.num_beams,
+            item_embeddings_path=cfg.teacher.item_embeddings_path,
+            temperature=cfg.teacher.get("temperature", 0.0),
+            top_p=cfg.teacher.get("top_p", 0.9),
+            top_k=cfg.teacher.get("top_k", 40),
+            warmup_steps=cfg.teacher.get("warmup_steps", 20),
+            student_model_path=cfg.teacher.get("student_model_path"),
+            load_in_8bit=cfg.teacher.get("load_in_8bit", False),
+            popularity_path=cfg.teacher.get("popularity_path"),
+            popularity_lambda=cfg.teacher.get("popularity_lambda", 1.0),
+        )
+    
+    elif model_type == "bigrec":
+        print("Standard BIGRecモデルを初期化しています...")
+        return BigRecModel(
+            model_name_or_path=cfg.teacher.llm_model_name,
+            lora_r=cfg.teacher.lora_r,
+            lora_alpha=cfg.teacher.lora_alpha,
+            lora_dropout=cfg.teacher.lora_dropout,
+            learning_rate=cfg.train.learning_rate,
+            max_source_length=cfg.teacher.max_source_length,
+            max_target_length=cfg.teacher.max_target_length,
+            item_id_to_name=item_id_to_name,
+            metrics_k=candidate_topk,
+            num_beams=cfg.teacher.num_beams,
+            item_embeddings_path=cfg.teacher.item_embeddings_path,
+            temperature=cfg.teacher.get("temperature", 0.0),
+            top_p=cfg.teacher.get("top_p", 0.9),
+            top_k=cfg.teacher.get("top_k", 40),
+            warmup_steps=cfg.teacher.get("warmup_steps", 20),
+            load_in_8bit=cfg.teacher.get("load_in_8bit", False),
+            popularity_path=cfg.teacher.get("popularity_path"),
+            popularity_lambda=cfg.teacher.get("popularity_lambda", 1.0),
+        )
+        
     else:
         raise ValueError(f"Unknown teacher model type: {model_type}")
 

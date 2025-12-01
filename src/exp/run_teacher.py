@@ -68,33 +68,30 @@ def run_experiment(cfg):
     model_type = cfg.teacher.get("model_type", "ilora")
     logger.info(f"Teacher Model Type: {model_type}")
 
-    if model_type == "bigrec":
-        from src.teacher.bigrec_model import BigRecModel
+    if model_type in ["bigrec", "moe_bigrec"]:
         from src.data.collators import BigRecCollator
         
-        # Instantiate BIGRec Model
-        model = BigRecModel(
-            model_name_or_path=cfg.teacher.llm_model_name,
-            lora_r=cfg.teacher.lora_r,
-            lora_alpha=cfg.teacher.lora_alpha,
-            lora_dropout=cfg.teacher.lora_dropout,
-            learning_rate=cfg.teacher.learning_rate,
-            max_source_length=cfg.teacher.max_source_length,
-            max_target_length=cfg.teacher.max_target_length,
-            temperature=cfg.teacher.get("temperature", 0.0),
-            top_p=cfg.teacher.get("top_p", 0.9),
-            top_k=cfg.teacher.get("top_k", 40),
-            warmup_steps=cfg.teacher.get("warmup_steps", 20)
+        # Instantiate Model via Factory
+        model = create_teacher_model(
+            cfg,
+            llm_tokenizer=llm_tokenizer,
+            num_items=dm.num_items,
+            max_seq_len=cfg.student.max_seq_len,
+            item_id_to_name=dm.mapped_id_to_title,
+            padding_item_id=dm.padding_item_id,
+            candidate_topk=cfg.distill.candidate_topk
         )
         
-        # Custom Collator for BIGRec
+        # Custom Collator for BIGRec / MoE-BIGRec
         collator = BigRecCollator(
             tokenizer=model.tokenizer,
             item_id_to_name=dm.mapped_id_to_title,
             max_source_length=cfg.teacher.max_source_length,
             max_target_length=cfg.teacher.max_target_length,
             use_cot=cfg.teacher.get("use_cot", False),
-            train_on_inputs=cfg.teacher.get("train_on_inputs", True) # Default to True to match reference
+            train_on_inputs=cfg.teacher.get("train_on_inputs", True), # Default to True to match reference
+            max_history_items=cfg.teacher.get("max_history_items", 20),
+            sasrec_max_seq_len=cfg.student.max_seq_len
         )
         
         # Override DataLoaders with custom collator
@@ -155,8 +152,8 @@ def run_experiment(cfg):
     tb_logger = TensorBoardLogger(save_dir=str(output_dir), name="tb_logs", version="")
     
     # Checkpoint filename differs slightly
-    if model_type == "bigrec":
-        filename = "bigrec-{epoch:02d}-{val_loss:.2f}"
+    if model_type in ["bigrec", "moe_bigrec"]:
+        filename = f"{model_type}-{{epoch:02d}}-{{val_loss:.2f}}"
         monitor = "val_loss"
         mode = "min"
     else:
@@ -202,7 +199,7 @@ def run_experiment(cfg):
     logger.info(f"Starting {model_type} teacher model training...")
     training_start_time = time.perf_counter()
     
-    if model_type == "bigrec":
+    if model_type in ["bigrec", "moe_bigrec"]:
         trainer.fit(trainer_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     else:
         trainer.fit(trainer_model, datamodule=dm)

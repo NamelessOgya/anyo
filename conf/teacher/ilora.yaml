@@ -1,5 +1,5 @@
 model_type: ilora
-llm_model_name: Qwen/Qwen1.5-1.8B-Chat # 小さなモデルでテスト
+llm_model_name: Qwen/Qwen1.5-1.8B # 小さなモデルでテスト
 num_lora_experts: 4 # Reference: 4
 lora_r: 8 # Reference: 8
 lora_alpha: 32 # Reference: 32

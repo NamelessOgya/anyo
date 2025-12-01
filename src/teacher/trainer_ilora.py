@@ -275,10 +275,23 @@ class iLoRATrainer(pl.LightningModule):
                 # SASRec Logits
                 sasrec_logits = sasrec_user_emb @ sasrec_all_item_embs.T # (N_item, NumItems)
                 
-                # Combine
-                logits = alpha * sasrec_logits + (1 - alpha) * logits
+                # Normalize Logits (Z-score)
+                llm_mean = logits.mean(dim=-1, keepdim=True)
+                llm_std = logits.std(dim=-1, keepdim=True)
+                logits_norm = (logits - llm_mean) / (llm_std + 1e-8)
+                
+                sasrec_mean = sasrec_logits.mean(dim=-1, keepdim=True)
+                sasrec_std = sasrec_logits.std(dim=-1, keepdim=True)
+                sasrec_logits_norm = (sasrec_logits - sasrec_mean) / (sasrec_std + 1e-8)
+                
+                # Combine Normalized Logits
+                logits = alpha * sasrec_logits_norm + (1 - alpha) * logits_norm
                 
                 self.log("train_alpha", alpha.mean(), on_step=True, prog_bar=True, logger=True)
+                self.log("train_llm_mean", llm_mean.mean(), on_step=True, logger=True)
+                self.log("train_llm_std", llm_std.mean(), on_step=True, logger=True)
+                self.log("train_sasrec_mean", sasrec_mean.mean(), on_step=True, logger=True)
+                self.log("train_sasrec_std", sasrec_std.mean(), on_step=True, logger=True)
 
             # 3. Targets
             # target_item_ids: (N_item,) containing 1..num_items
@@ -349,6 +362,15 @@ class iLoRATrainer(pl.LightningModule):
         
         if "alpha" in outputs and outputs["alpha"] is not None:
              self.log("val_alpha", outputs["alpha"].mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+             
+        if "llm_mean" in outputs and outputs["llm_mean"] is not None:
+             self.log("val_llm_mean", outputs["llm_mean"].mean(), on_step=False, on_epoch=True, logger=True)
+        if "llm_std" in outputs and outputs["llm_std"] is not None:
+             self.log("val_llm_std", outputs["llm_std"].mean(), on_step=False, on_epoch=True, logger=True)
+        if "sasrec_mean" in outputs and outputs["sasrec_mean"] is not None:
+             self.log("val_sasrec_mean", outputs["sasrec_mean"].mean(), on_step=False, on_epoch=True, logger=True)
+        if "sasrec_std" in outputs and outputs["sasrec_std"] is not None:
+             self.log("val_sasrec_std", outputs["sasrec_std"].mean(), on_step=False, on_epoch=True, logger=True)
 
         # --- Debug Logging (Batch 0) ---
         if batch_idx == 0:

@@ -307,18 +307,45 @@ class iLoRAModel(nn.Module):
             
             # Combine Scores
             # ranking_scores is LLM scores
-            ranking_scores = alpha * sasrec_logits_padded + (1 - alpha) * ranking_scores
+            # Normalize scores to have mean 0 and std 1 per sample to ensure alpha controls contribution correctly
+            
+            # LLM Normalization
+            llm_mean = ranking_scores.mean(dim=-1, keepdim=True)
+            llm_std = ranking_scores.std(dim=-1, keepdim=True)
+            ranking_scores_norm = (ranking_scores - llm_mean) / (llm_std + 1e-8)
+            
+            # SASRec Normalization
+            # Handle -inf padding in sasrec_logits_padded (index 0)
+            # We should normalize only valid items or handle -inf.
+            # Since index 0 is padding and set to -inf, it will mess up mean/std.
+            # Let's normalize sasrec_logits (which is 1..N) BEFORE padding.
+            sasrec_mean = sasrec_logits.mean(dim=-1, keepdim=True)
+            sasrec_std = sasrec_logits.std(dim=-1, keepdim=True)
+            sasrec_logits_norm = (sasrec_logits - sasrec_mean) / (sasrec_std + 1e-8)
+            
+            # Re-pad SASRec
+            padding_scores = torch.full((sasrec_logits.size(0), 1), float('-inf'), device=self.device)
+            sasrec_logits_padded_norm = torch.cat([padding_scores, sasrec_logits_norm], dim=1)
+            
+            # Combine Normalized Scores
+            # Note: We use normalized scores for ranking.
+            # If we want to preserve the original distribution shape of the dominant model, we could rescale?
+            # But for ranking, Z-score is fine.
+            ranking_scores = alpha * sasrec_logits_padded_norm + (1 - alpha) * ranking_scores_norm
         
         # 上位K個の候補と信頼度
         confidence, candidates = torch.topk(ranking_scores, k=self.candidate_topk, dim=-1)
         confidence = F.softmax(confidence, dim=-1)
 
-        return {
             "ranking_scores": ranking_scores,
             "embeddings": last_hidden_state,
             "candidates": candidates,
             "confidence": confidence,
-            "alpha": alpha
+            "alpha": alpha,
+            "llm_mean": llm_mean if 'llm_mean' in locals() else None,
+            "llm_std": llm_std if 'llm_std' in locals() else None,
+            "sasrec_mean": sasrec_mean if 'sasrec_mean' in locals() else None,
+            "sasrec_std": sasrec_std if 'sasrec_std' in locals() else None
         }
 
 

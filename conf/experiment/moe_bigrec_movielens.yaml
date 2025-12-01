@@ -2,7 +2,7 @@
 defaults:
   - /dataset: ml-100k
   - /train: bigrec
-  - /teacher: bigrec
+  - /teacher: moe_bigrec
   - /student: sasrec
   - /distill: dllm2rec
   - /eval: default

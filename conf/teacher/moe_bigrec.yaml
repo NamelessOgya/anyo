@@ -1,0 +1,30 @@
+# BIGRec Configuration
+model_type: moe_bigrec
+llm_model_name: "meta-llama/Llama-2-7b-hf" # Changed from Qwen as requested
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+learning_rate: 3e-4
+max_source_length: 512
+max_target_length: 64
+use_cot: false
+max_history_items: 10 # Reference uses 10
+metrics_k: ${eval.metrics_k}
+num_beams: 4 # Reference uses 4
+train_on_inputs: true # Reference uses True
+temperature: 0.0
+top_p: 0.9
+top_k: 40
+warmup_steps: 20 # Reference uses 20
+item_embeddings_path: "data/ml-100k/item_embeddings.pt"
+popularity_path: "data/ml-100k/popularity_counts.pt"
+popularity_lambda: 1.0
+compute_item_embeddings: true
+student_model_path: "experiments/student/sasrec/checkpoints/last.ckpt" # Path to pre-trained SASRec
+val_check_interval: 0.1 # Check every 0.1 epoch
+num_epochs: 50 # Reference uses 50
+accumulate_grad_batches: 16 # 8 * 16 = 128 effective batch size
+
+# Dataset
+limit_data_rows: null # Reverted to full dataset as requested
+batch_size: 8
