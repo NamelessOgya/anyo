@@ -44,7 +44,7 @@ def run_experiment(cfg):
     llm_tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
     llm_tokenizer.pad_token = llm_tokenizer.decode(0)
     llm_tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
-    llm_tokenizer.padding_side = "right"
+    llm_tokenizer.padding_side = "left"
 
     # 2. SASRecDataModuleのインスタンス化とデータ準備
     dm = SASRecDataModule(

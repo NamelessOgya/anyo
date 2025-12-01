@@ -385,8 +385,12 @@ class iLoRATrainer(pl.LightningModule):
                     targets.append(-1)
 
             # Pad prompts to create batch
-            from torch.nn.utils.rnn import pad_sequence
-            prompt_batch = pad_sequence(prompts, batch_first=True, padding_value=self.model.tokenizer.pad_token_id).to(self.device)
+            # Pad prompts to create batch (Left Padding for Generation)
+            max_len = max([p.size(0) for p in prompts])
+            prompt_batch = torch.full((len(prompts), max_len), self.model.tokenizer.pad_token_id, dtype=torch.long, device=self.device)
+            for i, p in enumerate(prompts):
+                prompt_batch[i, -len(p):] = p
+            
             prompt_mask = (prompt_batch != self.model.tokenizer.pad_token_id).long()
             
             # 2. Generate Text
