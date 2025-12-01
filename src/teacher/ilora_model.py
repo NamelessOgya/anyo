@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from src.teacher.moe_lora_model import MoeLoraModel
 from src.teacher.mlp_projector import MLPProjector
@@ -25,7 +25,7 @@ class iLoRAModel(nn.Module):
     """
     def __init__(
         self,
-        llm: AutoModel,
+        llm: AutoModelForCausalLM,
         tokenizer: AutoTokenizer,
         num_items: int,
         num_lora_experts: int,

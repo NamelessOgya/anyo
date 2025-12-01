@@ -5,7 +5,7 @@ from src.teacher.mlp_projector import MLPProjector
 import torch
 import torch.nn as nn
 from typing import Dict
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from src.student.models import SASRec
 import logging
 import os
@@ -52,7 +52,7 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
              llm_load_kwargs["torch_dtype"] = torch.bfloat16
 
         print("DEBUG: from_pretrainedを使用してLLMのロードを試みています...")
-        llm = AutoModel.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
+        llm = AutoModelForCausalLM.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
         logger.info(f"LLMのロードに成功しました: {llm.config._name_or_path}")
 
         # Add special tokens for Text + ID prediction
