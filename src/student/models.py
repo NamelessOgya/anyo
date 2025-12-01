@@ -60,7 +60,7 @@ class SASRec(nn.Module):
             if self.teacher_embedding_projection:
                 teacher_embeddings = self.teacher_embedding_projection(teacher_embeddings)
             teacher_embeddings_detached = teacher_embeddings.detach()
-            teacher_embeddings_expanded = teacher_embeddings_detached.unsqueeze(1).expand(-1, self.max_seq_len, -1)
+            teacher_embeddings_expanded = teacher_embeddings_detached.unsqueeze(1).expand(-1, seq_len, -1)
             input_embeddings = input_embeddings + self.ed_weight * teacher_embeddings_expanded
         
         input_embeddings = self.dropout(input_embeddings);
@@ -68,7 +68,7 @@ class SASRec(nn.Module):
         # アテンションマスクの作成
         attention_mask = (item_seq != self.padding_item_id).unsqueeze(1).unsqueeze(2)
         subsequent_mask = torch.triu(
-            torch.ones((self.max_seq_len, self.max_seq_len), device=item_seq.device), diagonal=1
+            torch.ones((seq_len, seq_len), device=item_seq.device), diagonal=1
         ).bool()
         attention_mask = attention_mask & ~subsequent_mask
 
