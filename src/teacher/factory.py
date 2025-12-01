@@ -98,6 +98,34 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
 
         # Projectorは不要なので削除
 
+        # SASRecモデルのロード (アンサンブル用)
+        sasrec_model = None
+        if cfg.teacher.get("sasrec_model_path"):
+            print(f"アンサンブル用のSASRecモデルを {cfg.teacher.sasrec_model_path} からロードします...")
+            sasrec_model = SASRec(
+                num_items=num_items,
+                hidden_size=cfg.student.hidden_size,
+                num_heads=cfg.student.num_heads,
+                num_layers=cfg.student.num_layers,
+                dropout_rate=cfg.student.dropout_rate,
+                max_seq_len=max_seq_len,
+                padding_item_id=padding_item_id,
+            )
+            checkpoint = torch.load(cfg.teacher.sasrec_model_path, map_location='cpu')
+            new_state_dict = {}
+            for k, v in checkpoint['state_dict'].items():
+                if k.startswith('model.'):
+                    new_state_dict[k[len('model.'):]] = v
+                else:
+                    new_state_dict[k] = v
+            sasrec_model.load_state_dict(new_state_dict)
+            
+            # Freeze SASRec
+            for param in sasrec_model.parameters():
+                param.requires_grad = False
+            sasrec_model.eval()
+            print("SASRecモデルをロードし、凍結しました。")
+
         model = iLoRAModel(
             llm=llm,
             tokenizer=llm_tokenizer,
@@ -112,7 +140,8 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
             item_id_to_name=item_id_to_name,
             padding_item_id=padding_item_id,
             llm_dtype=llm.dtype,
-            original_vocab_size=original_vocab_size # アイテムIDのオフセット用
+            original_vocab_size=original_vocab_size, # アイテムIDのオフセット用
+            sasrec_model=sasrec_model # Pass SASRec model
         )
 
         # パラメータ凍結設定

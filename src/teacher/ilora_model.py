@@ -39,12 +39,14 @@ class iLoRAModel(nn.Module):
         padding_item_id: int,
         llm_dtype: torch.dtype,
         original_vocab_size: int, # アイテムIDのオフセット
+        sasrec_model: Optional[nn.Module] = None, # アンサンブル用SASRecモデル
     ):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.llm_dtype = llm_dtype
         self.original_vocab_size = original_vocab_size
         self.num_items = num_items
+        self.sasrec_model = sasrec_model
         
         # ベースLLMの全パラメータを凍結（学習させない）
         for param in llm.parameters():
@@ -81,6 +83,12 @@ class iLoRAModel(nn.Module):
         ).to(self.device, dtype=self.llm_dtype)
 
         self.item_prediction_head = None # Embedding Headのみ使用
+        
+        # アンサンブル用ゲート (SASRec Hidden -> 1)
+        if self.sasrec_model is not None:
+            self.ensemble_gate = nn.Linear(self.sasrec_model.hidden_size, 1).to(self.device)
+            nn.init.zeros_(self.ensemble_gate.bias) # 初期値はSigmoid(0)=0.5で中立に
+            print("Ensemble Gate initialized.")
 
     def _get_llm_outputs(self, batch: Dict[str, Any]) -> torch.Tensor:
         """
@@ -186,6 +194,40 @@ class iLoRAModel(nn.Module):
         # パディングアイテムのスコアをマスク
         if self.padding_item_id is not None:
              ranking_scores[:, self.padding_item_id] = float('-inf')
+             
+        # --- Ensemble Logic ---
+        alpha = None
+        if self.sasrec_model is not None:
+            # SASRec Forward
+            # batch["seq"] contains raw item IDs for SASRec
+            sasrec_ids = batch["seq"]
+            sasrec_lens = batch["len_seq"] # Assuming this key exists or compute it
+            if sasrec_lens is None:
+                 sasrec_lens = (sasrec_ids != 0).sum(dim=1)
+            
+            # SASRec Logits (B, NumItems) - 0-based? No, SASRec usually outputs for all items.
+            # SASRec.predict returns scores for items 1..N (padding 0 excluded usually or handled)
+            # Let's assume predict returns (B, NumItems) corresponding to item IDs 1..N
+            # Our ranking_scores is (B, NumItems+1) including padding at 0.
+            
+            sasrec_logits = self.sasrec_model.predict(sasrec_ids, sasrec_lens) # (B, NumItems)
+            
+            # Pad SASRec logits at index 0 to match ranking_scores shape (B, NumItems+1)
+            # Or just ignore index 0 in ranking_scores.
+            # Let's pad SASRec logits with -inf at index 0
+            padding_scores = torch.full((sasrec_logits.size(0), 1), float('-inf'), device=self.device)
+            sasrec_logits_padded = torch.cat([padding_scores, sasrec_logits], dim=1)
+            
+            # SASRec User Embedding for Gating
+            sasrec_user_emb = self.sasrec_model(sasrec_ids, sasrec_lens) # (B, Hidden)
+            
+            # Compute Alpha
+            alpha_logits = self.ensemble_gate(sasrec_user_emb)
+            alpha = torch.sigmoid(alpha_logits) # (B, 1)
+            
+            # Combine Scores
+            # ranking_scores is LLM scores
+            ranking_scores = alpha * sasrec_logits_padded + (1 - alpha) * ranking_scores
         
         # 上位K個の候補と信頼度
         confidence, candidates = torch.topk(ranking_scores, k=self.candidate_topk, dim=-1)
@@ -196,6 +238,7 @@ class iLoRAModel(nn.Module):
             "embeddings": last_hidden_state,
             "candidates": candidates,
             "confidence": confidence,
+            "alpha": alpha
         }
 
 

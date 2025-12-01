@@ -194,6 +194,41 @@ class iLoRATrainer(pl.LightningModule):
         # 4. ロジット計算 (B, Num_Sampled)
         logits = last_hidden_state @ sampled_item_embs.T
         
+        # --- Ensemble Logic for Sampled Softmax ---
+        if self.model.sasrec_model is not None:
+            # SASRec User Embedding
+            sasrec_ids = batch["seq"]
+            sasrec_lens = batch["len_seq"]
+            if sasrec_lens is None:
+                 sasrec_lens = (sasrec_ids != 0).sum(dim=1)
+            
+            sasrec_user_emb = self.model.sasrec_model(sasrec_ids, sasrec_lens) # (B, H_rec)
+            
+            # Compute Alpha
+            alpha_logits = self.model.ensemble_gate(sasrec_user_emb)
+            alpha = torch.sigmoid(alpha_logits) # (B, 1)
+            
+            # SASRec Item Embeddings for Sampled Items
+            # sampled_indices are Token IDs (VocabOffset + ItemID)
+            # Convert to Item IDs (1-based)
+            sampled_item_ids = sampled_indices - vocab_offset
+            
+            # Handle potential padding index (0) if present in sampled_indices (though unlikely for negatives if range is correct)
+            # But unique_targets might contain padding if we are not careful? No, targets are valid items.
+            # Just in case, clamp or mask. SASRec embedding 0 is padding.
+            
+            # SASRec Item Embedding Matrix: (NumItems+1, H_rec)
+            sasrec_all_item_embs = self.model.sasrec_model.item_embeddings.weight
+            sampled_sasrec_item_embs = sasrec_all_item_embs[sampled_item_ids] # (Num_Sampled, H_rec)
+            
+            # SASRec Logits for Sampled Items
+            sasrec_logits = sasrec_user_emb @ sampled_sasrec_item_embs.T # (B, Num_Sampled)
+            
+            # Combine Logits
+            logits = alpha * sasrec_logits + (1 - alpha) * logits
+            
+            self.log("train_alpha", alpha.mean(), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
         # 5. ターゲットの再マッピング
         mask = (target_token_ids.unsqueeze(1) == sampled_indices.unsqueeze(0))
         new_targets = torch.argmax(mask.float(), dim=1)
@@ -244,6 +279,9 @@ class iLoRATrainer(pl.LightningModule):
 
         self.log(f"val_hr@{self.metrics_k}", hits.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log(f"val_ndcg@{self.metrics_k}", ndcgs.mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        
+        if "alpha" in outputs and outputs["alpha"] is not None:
+             self.log("val_alpha", outputs["alpha"].mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
         return {"val_loss": 0.0} # ダミーの損失
 

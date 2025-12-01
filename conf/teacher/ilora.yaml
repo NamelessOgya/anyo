@@ -7,7 +7,8 @@ lora_dropout: 0.1 # Reference: 0.1
 hidden_size: 64 # ゲーティングネットワーク用
 dropout_rate: 0.1
 max_gen_length: 20
-rec_model_checkpoint_path: /content/drive/MyDrive/rec/anyo/result/student_baseline_20251124_114208/checkpoints/student-baseline-epoch=00-val_recall@10=0.0028.ckpt # 事前学習済みSASRecモデルのチェックポイントパス
+rec_model_checkpoint_path: /content/drive/MyDrive/rec/anyo/result/student_baseline_20251124_114208/checkpoints/student-baseline-epoch=00-val_recall@10=0.0028.ckpt # 事前学習済みSASRecモデルのチェックポイントパス (Embedding初期化用)
+sasrec_model_path: /content/drive/MyDrive/rec/anyo/result/student_baseline_20251124_114208/checkpoints/student-baseline-epoch=00-val_recall@10=0.0028.ckpt # アンサンブル用SASRecモデルパス
 # teacher_checkpoint_path: null # 学習済みモデルのパス (run_distill, run_eval_allで使用)
 use_flash_attention: True
 
