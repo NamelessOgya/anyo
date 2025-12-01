@@ -51,7 +51,7 @@ def run_experiment(cfg):
         dataset_name=cfg.dataset.name,
         data_dir=cfg.dataset.data_dir,
         batch_size=cfg.teacher.get("batch_size", cfg.train.batch_size),
-        max_seq_len=cfg.student.max_seq_len,
+        max_seq_len=cfg.teacher.get("max_seq_len", cfg.student.max_seq_len),
         tokenizer=llm_tokenizer, # Pass tokenizer
         num_workers=cfg.train.num_workers,
         limit_data_rows=cfg.dataset.limit_data_rows,

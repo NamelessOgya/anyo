@@ -31,3 +31,4 @@ val_check_interval: 1.0 # Check validation every epoch
 learning_rate: 3e-4
 max_source_length: 512
 max_target_length: 64
+max_seq_len: 20
