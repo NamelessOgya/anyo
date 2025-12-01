@@ -3,5 +3,5 @@ hidden_size: 64
 num_heads: 2
 num_layers: 2
 dropout_rate: 0.1
-max_seq_len: 50
+max_seq_len: 20
 num_candidates: 20

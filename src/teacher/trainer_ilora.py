@@ -350,6 +350,97 @@ class iLoRATrainer(pl.LightningModule):
         if "alpha" in outputs and outputs["alpha"] is not None:
              self.log("val_alpha", outputs["alpha"].mean(), on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
+        # --- Debug Logging (Batch 0) ---
+        if batch_idx == 0:
+            print(f"\n[Epoch {self.current_epoch} Validation Debug]")
+            
+            debug_batch_size = min(3, batch["input_ids"].size(0))
+            
+            # 1. Prepare Prompt for Generation (Prefix + History + [Movie])
+            # We need to find the last [Movie] token.
+            movie_token_id = self.model.tokenizer.convert_tokens_to_ids("[Movie]")
+            
+            prompts = []
+            targets = []
+            
+            for i in range(debug_batch_size):
+                seq = batch["input_ids"][i]
+                # Find all [Movie] indices
+                movie_indices = (seq == movie_token_id).nonzero(as_tuple=True)[0]
+                if len(movie_indices) > 0:
+                    last_movie_idx = movie_indices[-1]
+                    # Prompt includes [Movie]
+                    prompt = seq[:last_movie_idx+1]
+                else:
+                    prompt = seq
+                prompts.append(prompt)
+                
+                # Target Item ID (1-based)
+                valid_labels = batch["labels"][i][batch["labels"][i] != -100]
+                if len(valid_labels) > 0:
+                    target_token_id = valid_labels[-1]
+                    target_item_id = target_token_id - self.model.original_vocab_size
+                    targets.append(target_item_id.item())
+                else:
+                    targets.append(-1)
+
+            # Pad prompts to create batch
+            from torch.nn.utils.rnn import pad_sequence
+            prompt_batch = pad_sequence(prompts, batch_first=True, padding_value=self.model.tokenizer.pad_token_id).to(self.device)
+            prompt_mask = (prompt_batch != self.model.tokenizer.pad_token_id).long()
+            
+            # 2. Generate Text
+            with torch.no_grad():
+                gen_outputs = self.model.llm.generate(
+                    input_ids=prompt_batch,
+                    attention_mask=prompt_mask,
+                    max_new_tokens=30, # Enough for Name + [ID] + Embedding
+                    num_beams=1,
+                    do_sample=False,
+                    pad_token_id=self.model.tokenizer.pad_token_id,
+                )
+                
+                # Decode with custom logic to show <embedding>
+                input_len = prompt_batch.shape[1]
+                gen_tokens = gen_outputs[:, input_len:]
+                
+                gen_texts = []
+                vocab_offset = self.model.original_vocab_size
+                
+                for seq in gen_tokens:
+                    decoded_seq = []
+                    for token_id in seq:
+                        if token_id >= vocab_offset:
+                            # Item ID Token
+                            item_id = token_id - vocab_offset
+                            decoded_seq.append(f"<embedding: {item_id.item()}>")
+                        elif token_id == self.model.tokenizer.pad_token_id:
+                            continue
+                        else:
+                            text = self.model.tokenizer.decode([token_id], skip_special_tokens=False)
+                            decoded_seq.append(text)
+                    gen_texts.append("".join(decoded_seq))
+            
+            # 3. Get Logits (Ensemble Rank of Target)
+            # We use the ranking_scores computed earlier in validation_step
+            # ranking_scores: (B, NumItems) - 0-based indices corresponding to Item 1..N
+            
+            for i in range(debug_batch_size):
+                target_id = targets[i] # 1-based
+                target_name = self.item_id_to_name.get(target_id, f"Item {target_id}")
+                
+                # Ensemble Scores for this sample
+                scores = ranking_scores[i] # (NumItems)
+                
+                # Top-3
+                _, topk = torch.topk(scores, k=3)
+                ens_names = [self.item_id_to_name.get(p.item() + 1, f"Item {p.item()+1}") for p in topk]
+                
+                print(f"Sample {i}:")
+                print(f"  Target: {target_name}")
+                print(f"  GenTxt: {gen_texts[i]}")
+                print(f"  Ensem : {ens_names}")
+
         return {"val_loss": 0.0} # ダミーの損失
 
     def configure_optimizers(self):
