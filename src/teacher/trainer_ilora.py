@@ -155,85 +155,152 @@ class iLoRATrainer(pl.LightningModule):
         # LLMのフォワードパス
         outputs = self.model(batch)
         
-        # Ranking Loss (Cross Entropy)
-        # outputsはLLMの生出力 (Batch, Seq, Hidden)
-        # Right Paddingを前提としているため、attention_maskを使用して最後の有効なトークンを取得
-        last_token_indices = batch["attention_mask"].sum(1) - 1
-        last_hidden_state = outputs.last_hidden_state[torch.arange(outputs.last_hidden_state.shape[0], device=self.device), last_token_indices, :] # (B, H)
+        # 1. Shift for Causal LM (predict next token)
+        # logits: (B, Seq, Hidden) -> we need to project for text loss
+        # labels: (B, Seq)
         
-        # 正解アイテムのID (1-based)
-        target_items = batch["next_item"] # (batch_size,)
+        # Shift so that logits[t] predicts labels[t+1]
+        # But wait, we need Hidden State for Sampled Softmax, and Logits for Text Loss.
         
-        # E4SRec: Sampled Softmax Logic using LLM Embeddings
-        num_samples = 2048
+        # Shift Labels: remove first token (Prefix start), keep rest
+        shift_labels = batch["labels"][:, 1:].contiguous()
+        # Shift Hidden: remove last token, keep rest
+        shift_hidden = outputs.last_hidden_state[:, :-1, :].contiguous()
         
-        # アイテムIDの範囲 (Token ID)
-        vocab_offset = self.model.original_vocab_size
-        min_item_token_id = vocab_offset + 1
-        max_item_token_id = vocab_offset + self.model.num_items
+        # Flatten
+        flat_labels = shift_labels.view(-1)
+        flat_hidden = shift_hidden.view(-1, shift_hidden.size(-1))
         
-        # ターゲットをToken IDに変換
-        target_token_ids = target_items + vocab_offset
+        # Masks
+        valid_mask = flat_labels != -100
+        text_mask = valid_mask & (flat_labels < self.model.original_vocab_size)
+        item_mask = valid_mask & (flat_labels >= self.model.original_vocab_size)
         
-        # 1. 正解アイテムをユニークにする
-        unique_targets = torch.unique(target_token_ids)
+        total_loss = 0.0
         
-        # 2. 負例をサンプリング (Token ID範囲から)
-        num_negatives = num_samples - len(unique_targets)
-        if num_negatives > 0:
-            negative_samples = torch.randint(min_item_token_id, max_item_token_id + 1, (num_negatives,), device=self.device)
-            sampled_indices = torch.cat([unique_targets, negative_samples])
-        else:
-            sampled_indices = unique_targets
+        # --- Text Loss (Standard CE) ---
+        if text_mask.any():
+            # Compute logits only for text targets to save memory?
+            # Or just project all and mask? Projecting all (B*Seq, Vocab) is expensive.
+            # Let's project only valid text positions.
             
-        sampled_indices = torch.unique(sampled_indices) # 重複排除
-        
-        # 3. Embedding計算 (LLMのInput Embeddingsから)
-        sampled_item_embs = self.model.llm.get_input_embeddings()(sampled_indices)
-        
-        # 4. ロジット計算 (B, Num_Sampled)
-        logits = last_hidden_state @ sampled_item_embs.T
-        
-        # --- Ensemble Logic for Sampled Softmax ---
-        if self.model.sasrec_model is not None:
-            # SASRec User Embedding
-            sasrec_ids = batch["seq"]
-            sasrec_lens = batch["len_seq"]
-            if sasrec_lens is None:
-                 sasrec_lens = (sasrec_ids != 0).sum(dim=1)
+            text_hidden = flat_hidden[text_mask] # (N_text, H)
+            text_targets = flat_labels[text_mask] # (N_text,)
             
-            sasrec_user_emb = self.model.sasrec_model(sasrec_ids, sasrec_lens) # (B, H_rec)
+            # Project to Vocab
+            # We use the LLM's embedding matrix as the output head (tying weights)
+            # self.model.llm is the base model.
+            # If it's OPT/Llama, embed_tokens is the embedding layer.
+            # We need to access the weight.
+            if hasattr(self.model.llm, "get_input_embeddings"):
+                embed_weight = self.model.llm.get_input_embeddings().weight
+            elif hasattr(self.model.llm, "embed_tokens"):
+                embed_weight = self.model.llm.embed_tokens.weight
+            else:
+                # Fallback: try to find it
+                embed_weight = list(self.model.llm.parameters())[0] # Risky
+                
+            # We only need logits for original vocab (Text)
+            # embed_weight is (Vocab+Items, H)
+            text_embed_weight = embed_weight[:self.model.original_vocab_size, :]
             
-            # Compute Alpha
-            alpha_logits = self.model.ensemble_gate(sasrec_user_emb)
-            alpha = torch.sigmoid(alpha_logits) # (B, 1)
+            text_logits = F.linear(text_hidden, text_embed_weight) # (N_text, Vocab)
+            text_loss = F.cross_entropy(text_logits, text_targets)
+            total_loss += text_loss
             
-            # SASRec Item Embeddings for Sampled Items
-            # sampled_indices are Token IDs (VocabOffset + ItemID)
-            # Convert to Item IDs (1-based)
-            sampled_item_ids = sampled_indices - vocab_offset
-            
-            # Handle potential padding index (0) if present in sampled_indices (though unlikely for negatives if range is correct)
-            # But unique_targets might contain padding if we are not careful? No, targets are valid items.
-            # Just in case, clamp or mask. SASRec embedding 0 is padding.
-            
-            # SASRec Item Embedding Matrix: (NumItems+1, H_rec)
-            sasrec_all_item_embs = self.model.sasrec_model.item_embeddings.weight
-            sampled_sasrec_item_embs = sasrec_all_item_embs[sampled_item_ids] # (Num_Sampled, H_rec)
-            
-            # SASRec Logits for Sampled Items
-            sasrec_logits = sasrec_user_emb @ sampled_sasrec_item_embs.T # (B, Num_Sampled)
-            
-            # Combine Logits
-            logits = alpha * sasrec_logits + (1 - alpha) * logits
-            
-            self.log("train_alpha", alpha.mean(), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            self.log("train_loss_text", text_loss, on_step=True, prog_bar=True, logger=True)
 
-        # 5. ターゲットの再マッピング
-        mask = (target_token_ids.unsqueeze(1) == sampled_indices.unsqueeze(0))
-        new_targets = torch.argmax(mask.float(), dim=1)
-        
-        loss = F.cross_entropy(logits, new_targets)
+        # --- Item Loss (Full Softmax) ---
+        # Staged Training: Only compute Item Loss after Epoch 0
+        if item_mask.any() and self.current_epoch >= 1:
+            item_hidden = flat_hidden[item_mask] # (N_item, H)
+            item_targets = flat_labels[item_mask] # (N_item,) - Token IDs
+            
+            # Convert Token IDs to Item IDs (0-based for embedding lookup? No, 1-based for SASRec?)
+            target_item_ids = item_targets - self.model.original_vocab_size # (1..N)
+            
+            # Full Softmax Logic
+            # We compute logits for ALL items.
+            
+            # 1. Get Embeddings for ALL Items
+            # Range: [vocab_offset, vocab_offset + num_items)
+            # Note: num_items is 1-based count. Item IDs are 1..num_items.
+            # Token IDs are vocab_offset + 1 .. vocab_offset + num_items.
+            # Index original_vocab_size is for Item 0 (Padding).
+            # We should predict items 1..num_items.
+            
+            vocab_offset = self.model.original_vocab_size
+            # We want embeddings for items 1 to num_items
+            # Token IDs: vocab_offset + 1, ..., vocab_offset + self.num_items
+            # Note: self.num_items is int.
+            all_item_token_ids = torch.arange(
+                vocab_offset + 1, 
+                vocab_offset + self.num_items + 1, 
+                device=self.device
+            )
+            
+            all_item_embs = self.model.llm.get_input_embeddings()(all_item_token_ids) # (NumItems, H)
+            
+            # 2. Compute Logits
+            # item_hidden: (N_item, H)
+            # all_item_embs: (NumItems, H)
+            logits = item_hidden @ all_item_embs.T # (N_item, NumItems)
+            
+            # --- Ensemble Logic ---
+            if self.model.sasrec_model is not None:
+                # Reconstruct indices for SASRec User Emb
+                B, S_minus_1 = shift_hidden.shape[:2]
+                item_indices = torch.nonzero(item_mask, as_tuple=True)[0]
+                batch_indices = item_indices // S_minus_1
+                
+                # SASRec Forward
+                sasrec_ids = batch["seq"]
+                sasrec_lens = batch["len_seq"]
+                if sasrec_lens is None:
+                     sasrec_lens = (sasrec_ids != 0).sum(dim=1)
+                
+                sasrec_user_emb_all = self.model.sasrec_model(sasrec_ids, sasrec_lens) # (B, H_rec)
+                sasrec_user_emb = sasrec_user_emb_all[batch_indices] # (N_item, H_rec)
+                
+                # Alpha
+                alpha_logits = self.model.ensemble_gate(sasrec_user_emb)
+                alpha = torch.sigmoid(alpha_logits) # (N_item, 1)
+                
+                # SASRec Item Embs for ALL Items
+                # SASRec Item Embeddings: index 1 to num_items
+                # sasrec_model.item_embeddings has size (num_items + 1, H_rec)
+                # We want indices 1..num_items
+                sasrec_all_item_embs = self.model.sasrec_model.item_embeddings.weight[1:] # (NumItems, H_rec)
+                
+                # SASRec Logits
+                sasrec_logits = sasrec_user_emb @ sasrec_all_item_embs.T # (N_item, NumItems)
+                
+                # Combine
+                logits = alpha * sasrec_logits + (1 - alpha) * logits
+                
+                self.log("train_alpha", alpha.mean(), on_step=True, prog_bar=True, logger=True)
+
+            # 3. Targets
+            # target_item_ids: (N_item,) containing 1..num_items
+            # We need indices into logits (0..NumItems-1)
+            # Since logits correspond to items 1..num_items, index 0 is Item 1.
+            # So target index is target_item_id - 1.
+            
+            loss_targets = target_item_ids - 1
+            
+            item_loss = F.cross_entropy(logits, loss_targets)
+            total_loss += item_loss
+            
+            self.log("train_loss_item", item_loss, on_step=True, prog_bar=True, logger=True)
+            total_loss += item_loss
+            
+            self.log("train_loss_item", item_loss, on_step=True, prog_bar=True, logger=True)
+            total_loss += item_loss
+            
+            self.log("train_loss_item", item_loss, on_step=True, prog_bar=True, logger=True)
+            
+        loss = total_loss
+
 
         # Reverse Distillation Loss (Embedding Imitation) is REMOVED for E4SRec
         # as we don't have a student model (SASRec) to distill from/to in this architecture initially.

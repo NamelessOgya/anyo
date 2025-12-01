@@ -55,6 +55,12 @@ def create_teacher_model(cfg: DictConfig, llm_tokenizer: AutoTokenizer, num_item
         llm = AutoModel.from_pretrained(cfg.teacher.llm_model_name, **llm_load_kwargs)
         logger.info(f"LLMのロードに成功しました: {llm.config._name_or_path}")
 
+        # Add special tokens for Text + ID prediction
+        special_tokens_dict = {'additional_special_tokens': ['[Movie]', '[ID]']}
+        num_added_toks = llm_tokenizer.add_special_tokens(special_tokens_dict)
+        print(f"Added {num_added_toks} special tokens: {special_tokens_dict['additional_special_tokens']}")
+        llm.resize_token_embeddings(len(llm_tokenizer))
+
         # LLMの語彙サイズを拡張 (アイテムID用)
         original_vocab_size = len(llm_tokenizer)
         # Item IDは1始まりでnum_itemsまであるため、+1しておく (ID 0はパディングだが、マッピングの都合上)

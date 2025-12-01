@@ -163,36 +163,79 @@ class TeacherTrainCollater:
             padded_seqs.append(padded_seq)
 
             # --- E4SRec Input Construction ---
-            # 1. Get valid item IDs (remove padding) and map to Token IDs
+            # 1. Get valid item IDs (remove padding)
             # seq contains raw item IDs (1..num_items). 0 is padding.
             valid_items = [i for i in seq if i != self.padding_item_id]
-            # Truncate if necessary (though seq is usually already truncated by dataset logic? No, dataset returns full seq)
+            
             # Apply max_seq_len limit
             if len(valid_items) > self.max_seq_len:
                 valid_items = valid_items[-self.max_seq_len:]
             
-            item_token_ids = torch.tensor([i + self.vocab_offset for i in valid_items], dtype=torch.long)
+            # 3. Concatenate: Prefix + ([Movie] + Name + [ID] + ID) + ... + Suffix + [Movie] + TargetName + [ID] + TargetID
+            input_parts = [self.prefix_ids]
+            label_parts = [torch.full_like(self.prefix_ids, -100)]
             
-            # 2. Target Token ID
-            # Target is also an item, so map it to Token ID
+            # Special Tokens
+            movie_token_id = self.tokenizer.convert_tokens_to_ids("[Movie]")
+            id_token_id = self.tokenizer.convert_tokens_to_ids("[ID]")
+            
+            # Check if special tokens exist (fallback if not added)
+            if movie_token_id == self.tokenizer.unk_token_id:
+                # If not found, maybe use empty tensor or warning? 
+                # For now assume they exist as per factory.py
+                pass
+            
+            movie_token_tensor = torch.tensor([movie_token_id], dtype=torch.long)
+            id_token_tensor = torch.tensor([id_token_id], dtype=torch.long)
+            
+            for item_id in valid_items:
+                # [Movie] Token
+                input_parts.append(movie_token_tensor)
+                label_parts.append(torch.tensor([-100], dtype=torch.long))
+                
+                # Text Name
+                name = self.id_to_name.get(item_id, f"Item {item_id}")
+                name_ids = self.tokenizer(name, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+                input_parts.append(name_ids)
+                label_parts.append(torch.full_like(name_ids, -100)) # History is input only
+                
+                # [ID] Token
+                input_parts.append(id_token_tensor)
+                label_parts.append(torch.tensor([-100], dtype=torch.long))
+                
+                # Item ID Token
+                token_id = torch.tensor([item_id + self.vocab_offset], dtype=torch.long)
+                input_parts.append(token_id)
+                label_parts.append(torch.full_like(token_id, -100)) # History is input only
+            
+            input_parts.append(self.suffix_ids)
+            label_parts.append(torch.full_like(self.suffix_ids, -100))
+            
+            # --- Target Prediction ---
+            # [Movie] Token
+            input_parts.append(movie_token_tensor)
+            label_parts.append(torch.tensor([-100], dtype=torch.long)) # Don't predict [Movie] tag itself? Or should we? 
+            # Usually we predict content. Let's mask tag.
+            
+            # Target Name
+            target_name = self.id_to_name.get(next_item, f"Item {next_item}")
+            target_name_ids = self.tokenizer(target_name, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+            input_parts.append(target_name_ids)
+            label_parts.append(target_name_ids) # Predict Name
+            
+            # [ID] Token
+            input_parts.append(id_token_tensor)
+            label_parts.append(id_token_tensor) # Predict [ID] tag to delimit Name and ID
+            
+            # Target ID
             target_token_id = torch.tensor([next_item + self.vocab_offset], dtype=torch.long)
+            input_parts.append(target_token_id)
+            label_parts.append(target_token_id) # Predict ID
             
-            # 3. Concatenate: Prefix + Items + Suffix
-            # Target is NOT included in input_ids to prevent leakage.
-            # The model should predict the target given [Prefix, Items, Suffix].
-            
-            full_ids = torch.cat([
-                self.prefix_ids,
-                item_token_ids,
-                self.suffix_ids
-            ])
+            full_ids = torch.cat(input_parts)
+            labels = torch.cat(label_parts)
             
             input_ids_list.append(full_ids)
-            
-            # 4. Create Labels
-            # We don't use standard CausalLM loss (we use sampled softmax in Trainer),
-            # but for consistency, we can set labels to -100.
-            labels = torch.full_like(full_ids, -100)
             labels_list.append(labels)
             
         # --- Pad Batch ---
