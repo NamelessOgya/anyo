@@ -78,7 +78,13 @@ def run_experiment(cfg: DictConfig):
         item_id_to_name=dm.mapped_id_to_title,
         metrics_k=cfg.teacher.metrics_k,
         num_beams=cfg.teacher.get("num_beams", 4),
-        item_embeddings_path=cfg.teacher.get("item_embeddings_path")
+        item_embeddings_path=cfg.teacher.get("item_embeddings_path"),
+        temperature=cfg.teacher.get("temperature", 0.0),
+        top_p=cfg.teacher.get("top_p", 0.9),
+        top_k=cfg.teacher.get("top_k", 40),
+        warmup_steps=cfg.teacher.get("warmup_steps", 20),
+        student_model_path=cfg.teacher.get("student_model_path"),
+        load_in_8bit=cfg.teacher.get("load_in_8bit", False)
     )
     
     # 3. Custom Collator
