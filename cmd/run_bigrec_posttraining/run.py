@@ -146,23 +146,24 @@ def main(cfg: DictConfig):
     ckpt_path = cfg.post_training.ckpt_path
     if not ckpt_path:
         # Try to find default
-        output_dir = Path(cfg.run.dir) / "checkpoints"
-        if output_dir.exists():
-            ckpts = list(output_dir.glob("*.ckpt"))
-            if ckpts:
-                ckpts.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-                ckpt_path = str(ckpts[0])
+        # Note: cfg.run.dir is the *current* run dir, not the previous one.
+        # If we want to find a previous run, we can't use cfg.run.dir here easily if it's a new run.
+        # But here we are relying on cfg.post_training.ckpt_path usually.
+        pass
     
     if not ckpt_path:
         raise ValueError("No BigRec checkpoint found. Please provide post_training.ckpt_path=...")
+    
+    # Convert to absolute path to handle Hydra's CWD change
+    ckpt_path = hydra.utils.to_absolute_path(ckpt_path)
         
     bigrec_model = BigRecModel.load_from_checkpoint(
         ckpt_path,
         map_location="cpu",
         strict=False,
         item_id_to_name=dm.mapped_id_to_title,
-        item_embeddings_path=cfg.teacher.item_embeddings_path,
-        popularity_path=cfg.teacher.popularity_path
+        item_embeddings_path=hydra.utils.to_absolute_path(cfg.teacher.item_embeddings_path),
+        popularity_path=hydra.utils.to_absolute_path(cfg.teacher.popularity_path)
     )
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -285,6 +286,9 @@ def main(cfg: DictConfig):
         if not os.path.exists(sasrec_ckpt):
              # Try relative to project root
              sasrec_ckpt = str(Path(__file__).resolve().parents[2] / "experiments/student/sasrec/checkpoints/last.ckpt")
+    
+    # Convert SASRec ckpt to absolute path
+    sasrec_ckpt = hydra.utils.to_absolute_path(sasrec_ckpt)
     
     if not os.path.exists(sasrec_ckpt):
          raise ValueError(f"SASRec checkpoint not found at {sasrec_ckpt}")
