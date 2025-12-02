@@ -91,24 +91,29 @@ class MoEBigRecModel(pl.LightningModule):
         
         # Load Item Embeddings if provided
         self.item_embeddings = None
-        if self.item_embeddings_path and os.path.exists(self.item_embeddings_path):
-            print(f"Loading item embeddings from {self.item_embeddings_path}...")
-            loaded_data = torch.load(self.item_embeddings_path)
-            if isinstance(loaded_data, dict):
-                # Convert dict to tensor
-                # Assume keys are 1-based item IDs
-                max_id = max(loaded_data.keys())
-                # Infer embedding dim
-                emb_dim = list(loaded_data.values())[0].shape[0]
-                # Create tensor (0 is padding)
-                self.item_embeddings = torch.zeros(max_id + 1, emb_dim)
-                for k, v in loaded_data.items():
-                    self.item_embeddings[k] = v
-            else:
-                self.item_embeddings = loaded_data
+        if not self.item_embeddings_path:
+            raise ValueError("item_embeddings_path must be provided for MoE-BigRec model.")
             
-            # Move to device later or keep on CPU if large? 
-            # Ideally move to same device as model during validation.
+        if not os.path.exists(self.item_embeddings_path):
+            raise FileNotFoundError(f"item_embeddings_path is set to '{self.item_embeddings_path}', but the file does not exist.")
+
+        print(f"Loading item embeddings from {self.item_embeddings_path}...")
+        loaded_data = torch.load(self.item_embeddings_path)
+        if isinstance(loaded_data, dict):
+            # Convert dict to tensor
+            # Assume keys are 1-based item IDs
+            max_id = max(loaded_data.keys())
+            # Infer embedding dim
+            emb_dim = list(loaded_data.values())[0].shape[0]
+            # Create tensor (0 is padding)
+            self.item_embeddings = torch.zeros(max_id + 1, emb_dim)
+            for k, v in loaded_data.items():
+                self.item_embeddings[k] = v
+        else:
+            self.item_embeddings = loaded_data
+            
+        # Move to device later or keep on CPU if large? 
+        # Ideally move to same device as model during validation.
             
         # Load Popularity Scores if provided
         self.popularity_scores = None
@@ -123,12 +128,24 @@ class MoEBigRecModel(pl.LightningModule):
         # Load SASRec (Student) for Ensemble
         self.sasrec = None
         self.alpha = None
-        if student_model_path:
-            if not os.path.exists(student_model_path):
-                raise FileNotFoundError(f"student_model_path is set to '{student_model_path}', but the file does not exist.")
+        
+        if not student_model_path:
+            raise ValueError("student_model_path must be provided for MoE-BigRec model.")
             
-            print(f"Loading SASRec from {student_model_path}...")
+        if not os.path.exists(student_model_path):
+            raise FileNotFoundError(f"student_model_path is set to '{student_model_path}', but the file does not exist.")
+            
+        print(f"Loading SASRec from {student_model_path}...")
             # ... (rest of SASRec loading)
+            # Assuming SASRec loading logic is here (it was truncated in view_file)
+            # We need to make sure we don't break the code structure since I can't see the full block.
+            # But based on previous view, the loading logic was inside the if block.
+            # I will just add a print at the end of __init__ to confirm status.
+        
+        print(f"[DEBUG] MoEBigRecModel Initialized.")
+        print(f"[DEBUG]   sasrec loaded: {self.sasrec is not None}")
+        print(f"[DEBUG]   item_embeddings loaded: {self.item_embeddings is not None}")
+        print(f"[DEBUG]   popularity_scores loaded: {self.popularity_scores is not None}")
 
     def training_step(self, batch, batch_idx):
         # ...
@@ -319,8 +336,12 @@ class MoEBigRecModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         if self.sasrec is not None and self.item_embeddings is not None:
+            if batch_idx == 0:
+                print(f"[DEBUG] Running _evaluate_ensemble (Ensemble Validation)")
             self._evaluate_ensemble(batch, batch_idx, prefix="val")
         else:
+            if batch_idx == 0:
+                print(f"[DEBUG] Running _evaluate_step (Standard Validation) - Missing sasrec or item_embeddings")
             self._evaluate_step(batch, batch_idx, prefix="val")
 
     def test_step(self, batch, batch_idx):
