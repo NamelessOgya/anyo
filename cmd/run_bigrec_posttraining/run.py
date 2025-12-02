@@ -113,7 +113,7 @@ def precompute_bigrec_embeddings(model, dataloader, device, cache_path=None):
         
     return all_embs
 
-@hydra.main(config_path="../../conf", config_name="config", version_base="1.2")
+@hydra.main(version_base=None, config_path="../../conf", config_name="post_training_config")
 def main(cfg: DictConfig):
     set_seed(cfg.seed)
     
@@ -143,7 +143,7 @@ def main(cfg: DictConfig):
     
     # 2. Load BigRec Model
     logger.info("Loading BigRec Model...")
-    ckpt_path = cfg.get("ckpt_path")
+    ckpt_path = cfg.post_training.ckpt_path
     if not ckpt_path:
         # Try to find default
         output_dir = Path(cfg.run.dir) / "checkpoints"
@@ -154,7 +154,7 @@ def main(cfg: DictConfig):
                 ckpt_path = str(ckpts[0])
     
     if not ckpt_path:
-        raise ValueError("No BigRec checkpoint found. Please provide ckpt_path=...")
+        raise ValueError("No BigRec checkpoint found. Please provide post_training.ckpt_path=...")
         
     bigrec_model = BigRecModel.load_from_checkpoint(
         ckpt_path,
@@ -274,7 +274,7 @@ def main(cfg: DictConfig):
     logger.info("--- Phase 3: Training Ensemble ---")
     
     # Load SASRec
-    sasrec_ckpt = cfg.get("sasrec_ckpt")
+    sasrec_ckpt = cfg.post_training.sasrec_ckpt
     if not sasrec_ckpt:
         # Try default student path
         # Assuming structure: experiments/student/sasrec/checkpoints/last.ckpt
