@@ -354,15 +354,6 @@ class MoEBigRecModel(pl.LightningModule):
         llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t())
         llm_logits = llm_logits_full[:, 1:] # Remove padding index 0
         
-        # Apply Popularity Bias Adjustment (BIGRec)
-        if self.popularity_scores is not None and self.popularity_lambda > 0:
-            if self.popularity_scores.device != self.device:
-                self.popularity_scores = self.popularity_scores.to(self.device)
-            
-            pop_scores = self.popularity_scores[1:]
-            pop_adjustment = self.popularity_lambda * torch.log(pop_scores + 1.0)
-            llm_logits = llm_logits + pop_adjustment
-
         sasrec_ids = batch["sasrec_input_ids"]
         sasrec_lens = (sasrec_ids != 0).sum(dim=1)
         sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
@@ -382,6 +373,17 @@ class MoEBigRecModel(pl.LightningModule):
         sasrec_logits_norm = (sasrec_logits - sasrec_mean) / (sasrec_std + 1e-8)
         
         ensemble_logits = alpha * sasrec_logits_norm + (1 - alpha) * llm_logits_norm
+
+        # Apply Popularity Bias Adjustment (Global Prior)
+        # Applied AFTER ensemble and normalization to ensure consistent scale
+        pop_adjustment = torch.tensor(0.0, device=self.device)
+        if self.popularity_scores is not None and self.popularity_lambda > 0:
+            if self.popularity_scores.device != self.device:
+                self.popularity_scores = self.popularity_scores.to(self.device)
+            
+            pop_scores = self.popularity_scores[1:]
+            pop_adjustment = self.popularity_lambda * torch.log(pop_scores + 1.0)
+            ensemble_logits = ensemble_logits + pop_adjustment
         
         self.log(f"{prefix}_llm_mean", llm_mean.mean(), prog_bar=True)
         self.log(f"{prefix}_llm_std", llm_std.mean(), prog_bar=True)
@@ -417,6 +419,10 @@ class MoEBigRecModel(pl.LightningModule):
         if batch_idx == 0:
             print(f"\n[Epoch {self.current_epoch} {prefix.capitalize()} Debug]")
             print(f"Alpha (Mean): {alpha.mean().item():.4f}")
+            print(f"LLM Logits   - Mean: {llm_mean.mean().item():.4f}, Std: {llm_std.mean().item():.4f}")
+            if self.popularity_scores is not None and self.popularity_lambda > 0:
+                print(f"Pop Adjust   - Max: {pop_adjustment.max().item():.4f}, Mean: {pop_adjustment.mean().item():.4f}")
+            print(f"SASRec Logits- Mean: {sasrec_mean.mean().item():.4f}, Std: {sasrec_std.mean().item():.4f}")
             
             debug_batch_size = min(3, batch_size)
             

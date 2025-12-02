@@ -183,9 +183,11 @@ class BigRecModel(pl.LightningModule):
             
             # Normalize Distances (Min-Max)
             # Map to [0, 1]
-            min_dist = dists.min(dim=1, keepdim=True)[0]
+            # Normalize Distances (Divide by Max)
+            # Map to [0, 1] but preserve 0-based minimum only if it was 0
+            # min_dist = dists.min(dim=1, keepdim=True)[0] # Don't subtract min
             max_dist = dists.max(dim=1, keepdim=True)[0]
-            dists = (dists - min_dist) / (max_dist - min_dist + 1e-8)
+            dists = dists / (max_dist + 1e-8)
             
             # Apply Popularity Adjustment
             # D_new = D_old / (Pop ^ gamma)
@@ -243,7 +245,7 @@ class BigRecModel(pl.LightningModule):
                     print(f"  Target: {target_name}")
                     print(f"  Generated: {gen_text}")
                     print(f"  Retrieved Top-1: {top1_pred_name}")
-                    print(f"  Distance: {topk_dists[i][0].item():.4f}")
+                    print(f"  Norm Distance: {topk_dists[i][0].item():.4f}")
                     print("-" * 20)
 
     def configure_optimizers(self):
