@@ -404,8 +404,8 @@ class MoEBigRecModel(pl.LightningModule):
                 rank = preds.index(target)
                 ndcg += 1.0 / torch.log2(torch.tensor(rank + 2.0))
         
-        self.log(f"{prefix}_hr@{self.metrics_k}", hits / batch_size, prog_bar=True)
-        self.log(f"{prefix}_ndcg@{self.metrics_k}", ndcg / batch_size, prog_bar=True)
+        self.log(f"{prefix}_hr@{self.metrics_k}", hits / batch_size, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log(f"{prefix}_ndcg@{self.metrics_k}", ndcg / batch_size, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log(f"{prefix}_alpha", alpha.mean(), on_step=False, on_epoch=True, prog_bar=True)
         
         # Debug Logging (First 3 samples of the batch)
