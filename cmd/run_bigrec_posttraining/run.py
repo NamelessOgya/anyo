@@ -226,16 +226,21 @@ def main(cfg: DictConfig):
             batch_embs = val_bigrec_embs[i:end].to(device)
             batch_targets = val_targets[i:end]
             
-            dists = torch.cdist(batch_embs.float(), item_embs.float(), p=2)
-            max_dist = dists.max(dim=1, keepdim=True)[0]
-            dists = dists / (max_dist + 1e-8)
+            # dists = torch.cdist(batch_embs.float(), item_embs.float(), p=2)
+            # max_dist = dists.max(dim=1, keepdim=True)[0]
+            # dists = dists / (max_dist + 1e-8)
+            
+            # Use Dot Product
+            scores = torch.matmul(batch_embs.float(), item_embs.float().t())
             
             if pop_scores is not None and lam > 0:
                 pop_factor = (pop_scores + 1.0) ** lam
-                dists = dists / pop_factor.unsqueeze(0)
+                # dists = dists / pop_factor.unsqueeze(0)
+                # For scores (higher is better), multiply by popularity factor
+                scores = scores * pop_factor.unsqueeze(0)
                 
-            # Top-K
-            _, topk_indices = torch.topk(dists, k=10, dim=1, largest=False)
+            # Top-K (Largest)
+            _, topk_indices = torch.topk(scores, k=10, dim=1, largest=True)
             
             # Metrics
             for j in range(len(batch_targets)):
@@ -325,8 +330,8 @@ def main(cfg: DictConfig):
         sasrec_ckpt,
         rec_model=sasrec_model,
         num_items=dm.num_items,
-        learning_rate=cfg.student.learning_rate,
-        weight_decay=cfg.student.weight_decay,
+        learning_rate=cfg.student.get("learning_rate", 1e-3),
+        weight_decay=cfg.student.get("weight_decay", 0.01),
         metrics_k=cfg.eval.metrics_k
     )
     
@@ -457,15 +462,20 @@ def main(cfg: DictConfig):
         batch_embs = test_bigrec_embs[i:end].to(device)
         batch_targets = test_targets[i:end]
         
-        dists = torch.cdist(batch_embs.float(), item_embs.float(), p=2)
-        max_dist = dists.max(dim=1, keepdim=True)[0]
-        dists = dists / (max_dist + 1e-8)
+        # dists = torch.cdist(batch_embs.float(), item_embs.float(), p=2)
+        # max_dist = dists.max(dim=1, keepdim=True)[0]
+        # dists = dists / (max_dist + 1e-8)
+        
+        # Use Dot Product
+        scores = torch.matmul(batch_embs.float(), item_embs.float().t())
         
         if pop_scores is not None and best_lambda > 0:
             pop_factor = (pop_scores + 1.0) ** best_lambda
-            dists = dists / pop_factor.unsqueeze(0)
+            # dists = dists / pop_factor.unsqueeze(0)
+            # For scores (higher is better), multiply by popularity factor
+            scores = scores * pop_factor.unsqueeze(0)
             
-        _, topk_indices = torch.topk(dists, k=10, dim=1, largest=False)
+        _, topk_indices = torch.topk(scores, k=10, dim=1, largest=True)
         
         for j in range(len(batch_targets)):
             t = batch_targets[j].item()

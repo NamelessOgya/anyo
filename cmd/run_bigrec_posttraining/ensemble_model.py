@@ -49,26 +49,28 @@ class EnsembleBigRecSASRec(pl.LightningModule):
         
         # 2. BigRec Scores
         # bigrec_emb: (B, EmbDim)
-        # Compute distances
+        # Compute scores (Dot Product)
         # item_embeddings: (NumItems+1, EmbDim)
-        dists = torch.cdist(bigrec_emb.float(), self.item_embeddings.float(), p=2) # (B, NumItems+1)
+        # scores: (B, NumItems+1)
+        scores = torch.matmul(bigrec_emb.float(), self.item_embeddings.float().t())
         
         # Normalize Distances (Min-Max per batch)
         # Note: BigRecModel normalizes by dividing by max_dist per sample
-        max_dist = dists.max(dim=1, keepdim=True)[0]
-        dists = dists / (max_dist + 1e-8)
+        # max_dist = dists.max(dim=1, keepdim=True)[0]
+        # dists = dists / (max_dist + 1e-8)
         
         # Apply Popularity Adjustment
-        if self.popularity_scores is not None and self.popularity_lambda > 0:
-            pop_factor = (self.popularity_scores + 1.0) ** self.popularity_lambda
-            dists = dists / pop_factor.unsqueeze(0)
+        # if self.popularity_scores is not None and self.popularity_lambda > 0:
+        #     pop_factor = (self.popularity_scores + 1.0) ** self.popularity_lambda
+        #     # For scores (higher is better), we multiply by popularity factor
+        #     scores = scores * pop_factor.unsqueeze(0)
             
         # Convert Distances to Probabilities (Softmax)
         # We negate distances because smaller is better.
         # We might need a temperature scaling for BigRec to match SASRec's sharpness.
         # For now, let's use a learnable temperature or fixed 1.0.
         # Or just use raw negated distances.
-        bigrec_logits = -dists * 10.0 # Scale up a bit?
+        bigrec_logits = scores # * 10.0 # Scale up a bit?
         
         # 3. Alpha
         alpha = self.alpha_net(sasrec_emb) # (B, 1)
@@ -177,3 +179,10 @@ class EnsembleBigRecSASRec(pl.LightningModule):
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.alpha_net.parameters(), lr=self.lr)
+
+    def on_save_checkpoint(self, checkpoint):
+        # Exclude frozen SASRec parameters from checkpoint to save space
+        # We assume SASRec is always loaded from its own checkpoint during initialization
+        keys_to_remove = [k for k in checkpoint['state_dict'].keys() if k.startswith("sasrec.")]
+        for k in keys_to_remove:
+            del checkpoint['state_dict'][k]
