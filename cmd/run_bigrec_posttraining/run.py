@@ -132,13 +132,11 @@ def main(cfg: DictConfig):
     logger.info("Loading DataModule...")
     data_dir = hydra.utils.to_absolute_path(cfg.dataset.data_dir)
     dm = SASRecDataModule(
+        dataset_name=cfg.dataset.name,
         data_dir=data_dir,
         batch_size=cfg.teacher.batch_size, # Use teacher batch size for generation/inference
         max_seq_len=cfg.student.max_seq_len,
-        min_seq_len=cfg.student.min_seq_len,
         limit_data_rows=cfg.dataset.limit_data_rows,
-        split_method=cfg.dataset.split_method,
-        split_ratio=cfg.dataset.split_ratio
     )
     dm.prepare_data()
     dm.setup()
