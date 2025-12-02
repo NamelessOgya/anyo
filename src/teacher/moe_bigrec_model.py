@@ -408,43 +408,43 @@ class MoEBigRecModel(pl.LightningModule):
         self.log(f"{prefix}_ndcg@{self.metrics_k}", ndcg / batch_size, prog_bar=True)
         self.log(f"{prefix}_alpha", alpha.mean(), on_step=False, on_epoch=True, prog_bar=True)
         
-            # Debug Logging (First 3 samples of the batch)
-            if batch_idx == 0:
-                print(f"\n[Epoch {self.current_epoch} {prefix.capitalize()} Debug]")
-                print(f"Alpha (Mean): {alpha.mean().item():.4f}")
-                print(f"LLM Logits   - Mean: {llm_mean.mean().item():.4f}, Std: {llm_std.mean().item():.4f}")
-                if self.popularity_scores is not None and self.popularity_lambda > 0:
-                    print(f"Pop Adjust   - Max: {pop_adjustment.max().item():.4f}, Mean: {pop_adjustment.mean().item():.4f}")
-                print(f"SASRec Logits- Mean: {sasrec_mean.mean().item():.4f}, Std: {sasrec_std.mean().item():.4f}")
+        # Debug Logging (First 3 samples of the batch)
+        if batch_idx == 0:
+            print(f"\n[Epoch {self.current_epoch} {prefix.capitalize()} Debug]")
+            print(f"Alpha (Mean): {alpha.mean().item():.4f}")
+            print(f"LLM Logits   - Mean: {llm_mean.mean().item():.4f}, Std: {llm_std.mean().item():.4f}")
+            if self.popularity_scores is not None and self.popularity_lambda > 0:
+                print(f"Pop Adjust   - Max: {pop_adjustment.max().item():.4f}, Mean: {pop_adjustment.mean().item():.4f}")
+            print(f"SASRec Logits- Mean: {sasrec_mean.mean().item():.4f}, Std: {sasrec_std.mean().item():.4f}")
+            
+            debug_batch_size = min(3, batch_size)
+            
+            # Get Top-3 for individual models
+            _, llm_topk = torch.topk(llm_logits[:debug_batch_size], k=3)
+            _, sasrec_topk = torch.topk(sasrec_logits[:debug_batch_size], k=3)
+            
+            for i in range(debug_batch_size):
+                target_id = target_ids[i].item()
+                target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
                 
-                debug_batch_size = min(3, batch_size)
+                # Ensemble Preds
+                ens_indices = topk_indices[i].tolist()[:3]
+                ens_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in ens_indices]
                 
-                # Get Top-3 for individual models
-                _, llm_topk = torch.topk(llm_logits[:debug_batch_size], k=3)
-                _, sasrec_topk = torch.topk(sasrec_logits[:debug_batch_size], k=3)
+                # LLM Preds
+                llm_indices = llm_topk[i].tolist()
+                llm_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in llm_indices]
                 
-                for i in range(debug_batch_size):
-                    target_id = target_ids[i].item()
-                    target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
-                    
-                    # Ensemble Preds
-                    ens_indices = topk_indices[i].tolist()[:3]
-                    ens_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in ens_indices]
-                    
-                    # LLM Preds
-                    llm_indices = llm_topk[i].tolist()
-                    llm_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in llm_indices]
-                    
-                    # SASRec Preds
-                    sasrec_indices = sasrec_topk[i].tolist()
-                    sasrec_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in sasrec_indices]
-                    
-                    print(f"Sample {i}:")
-                    print(f"  Alpha : {alpha[i].item():.4f}")
-                    print(f"  Target: {target_name}")
-                    print(f"  LLM   : {llm_names}")
-                    print(f"  SASRec: {sasrec_names}")
-                    print(f"  Ensem : {ens_names}")
+                # SASRec Preds
+                sasrec_indices = sasrec_topk[i].tolist()
+                sasrec_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in sasrec_indices]
+                
+                print(f"Sample {i}:")
+                print(f"  Alpha : {alpha[i].item():.4f}")
+                print(f"  Target: {target_name}")
+                print(f"  LLM   : {llm_names}")
+                print(f"  SASRec: {sasrec_names}")
+                print(f"  Ensem : {ens_names}")
 
     def _evaluate_step(self, batch, batch_idx, prefix="val"):
         # 1. Calculate Loss (Teacher Forcing)
