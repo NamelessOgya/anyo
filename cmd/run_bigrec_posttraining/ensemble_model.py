@@ -162,5 +162,18 @@ class EnsembleBigRecSASRec(pl.LightningModule):
         self.log("test_ndcg@10", ndcg / batch_size, prog_bar=True)
         self.log("test_alpha_mean", alpha.mean(), prog_bar=True)
 
+    def predict_alpha(self, seq, seq_len):
+        """
+        Predict alpha value for a given sequence using SASRec and AlphaNetwork.
+        Does not require BigRec embeddings.
+        """
+        # 1. SASRec Forward
+        sasrec_emb = self.sasrec(seq, seq_len)
+        
+        # 2. Alpha
+        alpha = self.alpha_net(sasrec_emb) # (B, 1)
+        
+        return alpha
+
     def configure_optimizers(self):
         return torch.optim.Adam(self.alpha_net.parameters(), lr=self.lr)

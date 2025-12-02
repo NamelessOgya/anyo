@@ -271,7 +271,7 @@ def main(cfg: DictConfig):
         logger.info(f"Subsampling training data: {num_subsample}/{num_samples} ({subsample_ratio*100:.1f}%)")
         
         # Random indices
-        indices = torch.randperm(num_samples)[:num_subsample]
+        indices = torch.randperm(num_samples)[:num_subsample].tolist()
         train_dataset = torch.utils.data.Subset(train_dataset, indices)
     
     train_loader_gen = DataLoader(
@@ -377,6 +377,56 @@ def main(cfg: DictConfig):
     
     trainer.fit(ensemble_model, train_dataloaders=ensemble_loader, val_dataloaders=ensemble_val_loader)
     
+    # 7.5 Phase 3.5: Mining Hard Samples
+    logger.info("--- Phase 3.5: Mining Hard Samples ---")
+    
+    # We want to mine from the FULL training dataset
+    mining_dataset = dm.train_dataset
+    mining_loader = DataLoader(
+        mining_dataset,
+        batch_size=cfg.student.batch_size * 2, # Can use larger batch size for inference
+        shuffle=False,
+        num_workers=cfg.train.num_workers,
+        collate_fn=student_collator
+    )
+    
+    ensemble_model.eval()
+    ensemble_model.to(device)
+    
+    all_alphas = []
+    
+    with torch.no_grad():
+        for batch in tqdm(mining_loader, desc="Mining Alphas"):
+            seq = batch['seq'].to(device)
+            seq_len = batch['len_seq'].to(device)
+            
+            alphas = ensemble_model.predict_alpha(seq, seq_len)
+            all_alphas.append(alphas.cpu())
+            
+    all_alphas = torch.cat(all_alphas).squeeze() # (N,)
+    
+    # Select Top 20%
+    mining_ratio = 0.2
+    k = int(len(all_alphas) * mining_ratio)
+    
+    # Get indices of top-k alpha values (hardest samples where BigRec is preferred)
+    topk_values, topk_indices = torch.topk(all_alphas, k=k)
+    
+    logger.info(f"Mined {k} hard samples (Top {mining_ratio*100}%)")
+    logger.info(f"Alpha Range: {topk_values.min():.4f} - {topk_values.max():.4f}")
+    
+    # Determine Output Directory (Reuse logic)
+    ckpt_path_obj = Path(ckpt_path)
+    if ckpt_path_obj.parent.name == "checkpoints":
+        output_dir = ckpt_path_obj.parent.parent / "post_training"
+    else:
+        output_dir = ckpt_path_obj.parent / "post_training"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    hard_indices_path = output_dir / "hard_sample_indices.pt"
+    torch.save(topk_indices, hard_indices_path)
+    logger.info(f"Saved hard sample indices to {hard_indices_path.absolute()}")
+
     # 7. Phase 4: Test
     logger.info("--- Phase 4: Testing ---")
     
