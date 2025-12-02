@@ -6,7 +6,7 @@ lora_alpha: 16
 lora_dropout: 0.05
 max_source_length: 512
 max_target_length: 64
-num_beams: 4
+num_beams: 1
 temperature: 0.0
 top_p: 0.9
 top_k: 40
@@ -16,4 +16,4 @@ popularity_path: "data/ml-100k/popularity_counts.pt"
 compute_item_embeddings: true
 val_check_interval: 0.1
 load_in_8bit: false
-batch_size: 32
+batch_size: 4

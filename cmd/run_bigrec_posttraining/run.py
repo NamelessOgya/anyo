@@ -260,8 +260,22 @@ def main(cfg: DictConfig):
     
     # 5. Phase 2: Pre-compute Training Embeddings
     logger.info("--- Phase 2: Pre-computing Training Embeddings ---")
+    
+    # Subsampling
+    train_dataset = dm.train_dataset
+    subsample_ratio = cfg.post_training.get("subsample_ratio", 1.0)
+    
+    if subsample_ratio < 1.0:
+        num_samples = len(train_dataset)
+        num_subsample = int(num_samples * subsample_ratio)
+        logger.info(f"Subsampling training data: {num_subsample}/{num_samples} ({subsample_ratio*100:.1f}%)")
+        
+        # Random indices
+        indices = torch.randperm(num_samples)[:num_subsample]
+        train_dataset = torch.utils.data.Subset(train_dataset, indices)
+    
     train_loader_gen = DataLoader(
-        dm.train_dataset,
+        train_dataset,
         batch_size=cfg.teacher.batch_size,
         shuffle=False, # Must be False to align with dataset
         num_workers=cfg.train.num_workers,
@@ -328,7 +342,7 @@ def main(cfg: DictConfig):
     )
     
     # Create Ensemble Dataloader
-    ensemble_dataset = EnsembleDataset(dm.train_dataset, train_bigrec_embs)
+    ensemble_dataset = EnsembleDataset(train_dataset, train_bigrec_embs)
     student_collator = StudentCollater(max_seq_len=cfg.student.max_seq_len, padding_item_id=dm.padding_item_id)
     ensemble_collator = EnsembleCollator(student_collator)
     
