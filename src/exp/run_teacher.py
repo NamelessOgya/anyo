@@ -208,10 +208,9 @@ def run_experiment(cfg):
         # strategy="ddp_find_unused_parameters_true" if cfg.train.devices > 1 else "auto"
     )
     
-    # Custom Callback for Console Logging
-    class ConsoleMetricsCallback(pl.Callback):
         def _log_metrics(self, trainer, stage):
-            metrics = trainer.callback_metrics
+            # Combine callback_metrics and logged_metrics to be safe
+            metrics = {**trainer.callback_metrics, **trainer.logged_metrics}
             epoch = trainer.current_epoch
             
             # Filter relevant metrics
@@ -227,8 +226,9 @@ def run_experiment(cfg):
                 msg += f"  {k}: {v:.4f}\n"
             
             print(msg)
+            sys.stdout.flush() # Ensure output is flushed
 
-        def on_validation_end(self, trainer, pl_module):
+        def on_validation_epoch_end(self, trainer, pl_module):
             self._log_metrics(trainer, "Validation")
 
         def on_train_epoch_end(self, trainer, pl_module):
