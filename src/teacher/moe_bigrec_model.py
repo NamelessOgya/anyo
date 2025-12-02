@@ -187,16 +187,7 @@ class MoEBigRecModel(pl.LightningModule):
                 llm_logits = llm_logits + pop_adjustment
             
             # Normalize Logits (Z-score)
-            # ...
-            # We need to load the checkpoint. 
-            # Since SASRec is usually wrapped in a LightningModule (StudentModel?), we need to be careful.
-            # Or if it's just the model state dict.
-            # Assuming it's a PL checkpoint.
-            try:
-                # We need to know the class structure of the checkpoint.
-                # If it's a standard PL checkpoint, we can load state_dict.
-                # But we need to instantiate SASRec first.
-                # We'll assume standard ML-100k params for now or try to infer?
+
         # Hardcoding ML-100k params for simplicity as per config usually.
         # num_items=1682, hidden_size=64, etc.
         # Ideally, we should load config from the checkpoint or similar.
