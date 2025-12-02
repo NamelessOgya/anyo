@@ -136,58 +136,6 @@ class MoEBigRecModel(pl.LightningModule):
             raise FileNotFoundError(f"student_model_path is set to '{student_model_path}', but the file does not exist.")
             
         print(f"Loading SASRec from {student_model_path}...")
-            # ... (rest of SASRec loading)
-            # Assuming SASRec loading logic is here (it was truncated in view_file)
-            # We need to make sure we don't break the code structure since I can't see the full block.
-            # But based on previous view, the loading logic was inside the if block.
-            # I will just add a print at the end of __init__ to confirm status.
-        
-        print(f"[DEBUG] MoEBigRecModel Initialized.")
-        print(f"[DEBUG]   sasrec loaded: {self.sasrec is not None}")
-        print(f"[DEBUG]   item_embeddings loaded: {self.item_embeddings is not None}")
-        print(f"[DEBUG]   popularity_scores loaded: {self.popularity_scores is not None}")
-
-    def training_step(self, batch, batch_idx):
-        # ...
-            llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t()) # (B, NumItems+1)
-            llm_logits = llm_logits_full[:, 1:] # Remove padding index 0. (B, NumItems)
-            
-            # Apply Popularity Bias Adjustment (BIGRec)
-            # Logits = Logits + lambda * log(Pop)
-            if self.popularity_scores is not None and self.popularity_lambda > 0:
-                if self.popularity_scores.device != self.device:
-                    self.popularity_scores = self.popularity_scores.to(self.device)
-                
-                # popularity_scores is (NumItems+1,)
-                # We need indices 1..NumItems
-                pop_scores = self.popularity_scores[1:] # (NumItems,)
-                
-                # Add to logits (Broadcasting)
-                # log(count + 1) to handle zeros if any, though we initialized with 0 for padding.
-                # If count is 0, log(1) = 0.
-                # We assume popularity_scores contains raw counts.
-                pop_adjustment = self.popularity_lambda * torch.log(pop_scores + 1.0)
-                llm_logits = llm_logits + pop_adjustment
-            
-            # Normalize Logits (Z-score)
-            # ...
-
-    def validation_step(self, batch, batch_idx):
-        # ...
-            llm_logits_full = torch.matmul(llm_user_emb, self.item_embeddings.t())
-            llm_logits = llm_logits_full[:, 1:] # Remove padding index 0
-            
-            # Apply Popularity Bias Adjustment (BIGRec)
-            if self.popularity_scores is not None and self.popularity_lambda > 0:
-                if self.popularity_scores.device != self.device:
-                    self.popularity_scores = self.popularity_scores.to(self.device)
-                
-                pop_scores = self.popularity_scores[1:]
-                pop_adjustment = self.popularity_lambda * torch.log(pop_scores + 1.0)
-                llm_logits = llm_logits + pop_adjustment
-            
-            # Normalize Logits (Z-score)
-
         # Hardcoding ML-100k params for simplicity as per config usually.
         # num_items=1682, hidden_size=64, etc.
         # Ideally, we should load config from the checkpoint or similar.
@@ -225,6 +173,17 @@ class MoEBigRecModel(pl.LightningModule):
         # Initialize bias to 0 (sigmoid(0) = 0.5) to start neutral
         nn.init.zeros_(self.gate.bias)
         print("Ensemble Gate initialized.")
+        
+        print(f"[DEBUG] MoEBigRecModel Initialized.")
+        print(f"[DEBUG]   sasrec loaded: {self.sasrec is not None}")
+        print(f"[DEBUG]   item_embeddings loaded: {self.item_embeddings is not None}")
+        print(f"[DEBUG]   popularity_scores loaded: {self.popularity_scores is not None}")
+
+
+    def validation_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            print(f"[DEBUG] Running _evaluate_ensemble (Ensemble Validation)")
+        self._evaluate_ensemble(batch, batch_idx, prefix="val")
 
     def forward(self, input_ids, attention_mask, labels=None):
         return self.model(
@@ -319,21 +278,8 @@ class MoEBigRecModel(pl.LightningModule):
             self.log("train_loss", loss, prog_bar=True)
             return loss
 
-    def validation_step(self, batch, batch_idx):
-        if self.sasrec is not None and self.item_embeddings is not None:
-            if batch_idx == 0:
-                print(f"[DEBUG] Running _evaluate_ensemble (Ensemble Validation)")
-            self._evaluate_ensemble(batch, batch_idx, prefix="val")
-        else:
-            if batch_idx == 0:
-                print(f"[DEBUG] Running _evaluate_step (Standard Validation) - Missing sasrec or item_embeddings")
-            self._evaluate_step(batch, batch_idx, prefix="val")
-
     def test_step(self, batch, batch_idx):
-        if self.sasrec is not None and self.item_embeddings is not None:
-            self._evaluate_ensemble(batch, batch_idx, prefix="test")
-        else:
-            self._evaluate_step(batch, batch_idx, prefix="test")
+        self._evaluate_ensemble(batch, batch_idx, prefix="test")
 
     def _evaluate_ensemble(self, batch, batch_idx, prefix="val"):
         # Ensemble Evaluation
@@ -431,19 +377,19 @@ class MoEBigRecModel(pl.LightningModule):
             
             for i in range(debug_batch_size):
                 target_id = target_ids[i].item()
-                target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}")
+                target_name = self.item_id_to_name.get(target_id, f"Item_{target_id}") if self.item_id_to_name else f"Item_{target_id}"
                 
                 # Ensemble Preds
                 ens_indices = topk_indices[i].tolist()[:3]
-                ens_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in ens_indices]
+                ens_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") if self.item_id_to_name else f"Item_{p+1}" for p in ens_indices]
                 
                 # LLM Preds
                 llm_indices = llm_topk[i].tolist()
-                llm_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in llm_indices]
+                llm_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") if self.item_id_to_name else f"Item_{p+1}" for p in llm_indices]
                 
                 # SASRec Preds
                 sasrec_indices = sasrec_topk[i].tolist()
-                sasrec_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") for p in sasrec_indices]
+                sasrec_names = [self.item_id_to_name.get(p + 1, f"Item_{p+1}") if self.item_id_to_name else f"Item_{p+1}" for p in sasrec_indices]
                 
                 print(f"Sample {i}:")
                 print(f"  Alpha : {alpha[i].item():.4f}")
@@ -452,209 +398,4 @@ class MoEBigRecModel(pl.LightningModule):
                 print(f"  SASRec: {sasrec_names}")
                 print(f"  Ensem : {ens_names}")
 
-    def _evaluate_step(self, batch, batch_idx, prefix="val"):
-        # 1. Calculate Loss (Teacher Forcing)
-        outputs = self(
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
-            labels=batch["labels"]
-        )
-        loss = outputs.loss
-        self.log(f"{prefix}_loss", loss, prog_bar=True)
-        
-        # 2. Calculate Metrics (Generation + Grounding)
-        if self.item_embeddings is not None:
-            # Move embeddings to device if needed
-            if self.item_embeddings.device != self.device:
-                self.item_embeddings = self.item_embeddings.to(self.device)
 
-            # Compute distances
-            # (B, Dim) vs (NumItems, Dim)
-            # Euclidean distance
-            # dists = torch.cdist(pred_embeddings.float(), self.item_embeddings.float(), p=2) # (B, NumItems)
-            
-            # Rank
-            # We want Top-K items with smallest distance
-            # dists is (B, NumItems)
-            # Get indices of Top-K smallest
-            # topk_dists, topk_indices = torch.topk(dists, k=self.metrics_k, dim=1, largest=False)
-            
-            # Calculate HR and NDCG
-            # target_ids = batch["next_item"] # (B,)
-            
-            # hits = 0
-            # ndcg = 0
-            # batch_size = len(target_ids)
-            
-            # for i in range(batch_size):
-            #     target = target_ids[i].item()
-            #     preds = topk_indices[i].tolist() # List of K item IDs
-                
-            #     if target in preds:
-            #         hits += 1
-            #         rank = preds.index(target)
-            #         ndcg += 1.0 / torch.log2(torch.tensor(rank + 2.0))
-            
-            # val_hr = hits / batch_size
-            # val_ndcg = ndcg / batch_size
-            
-            # self.log(f"{prefix}_hr@{self.metrics_k}", val_hr, prog_bar=True)
-            # self.log(f"{prefix}_ndcg@{self.metrics_k}", val_ndcg, prog_bar=True)
-            
-            # Since we removed generation, we can't compute distance-based metrics here without generation.
-            # But wait, BigRec relies on generation for inference.
-            # If we remove generation, we can't evaluate BigRec (non-ensemble) properly.
-            # However, the user asked to remove generation because it's slow.
-            # For MoE-BigRec (Ensemble), we use _evaluate_ensemble which uses Logits (fast).
-            # For pure BigRec, we need generation.
-            # Assuming the user is focusing on MoE-BigRec now.
-            # If we are in MoE mode (sasrec is not None), we use _evaluate_ensemble.
-            # If we are in BigRec mode, we still need generation?
-            # Or maybe we can use Logit-based evaluation for BigRec too if we have item embeddings?
-            # No, BigRec is Generative Retrieval.
-            
-            # Let's just comment out the generation part in _evaluate_step for now or skip it if requested.
-            # But _evaluate_step is used when sasrec is None.
-            # If the user is running MoE-BigRec, sasrec is NOT None, so _evaluate_ensemble is used.
-            # So _evaluate_step changes might not be needed if we only care about MoE.
-            # But to be safe and consistent, let's leave _evaluate_step as is (or minimal) 
-            # and ensure _evaluate_ensemble is fast.
-            # The previous tool call already modified _evaluate_ensemble.
-            
-            pass
-            
-        elif self.item_id_to_name:
-            # Fallback to Exact Match if embeddings not provided
-            # Generate predictions
-            # Use beam search to get top-K candidates
-            # Fallback to Exact Match if embeddings not provided
-            # Generate predictions
-            # Use beam search to get top-K candidates
-            generated_ids = self.model.generate(
-                input_ids=batch["prompt_input_ids"],
-                attention_mask=batch["prompt_attention_mask"],
-                max_new_tokens=self.hparams.max_target_length,
-                num_beams=self.num_beams,
-                num_return_sequences=self.num_beams,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                early_stopping=True
-            )
-            
-            # generated_ids shape: (batch_size * num_return_sequences, seq_len)
-            # Reshape to (batch_size, num_return_sequences, seq_len)
-            batch_size = batch["prompt_input_ids"].size(0)
-            generated_ids = generated_ids.view(batch_size, self.num_beams, -1)
-            
-            # Decode predictions
-            decoded_preds = []
-            for i in range(batch_size):
-                # Extract new tokens
-                input_len = batch["prompt_input_ids"].shape[1]
-                new_tokens = generated_ids[i, :, input_len:]
-                preds = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
-                decoded_preds.append([p.strip() for p in preds])
-
-            # Get Ground Truth Titles
-            target_ids = batch["next_item"] # (batch_size,)
-            target_titles = [self.item_id_to_name.get(tid.item(), "") for tid in target_ids]
-            
-            # Calculate HR and NDCG
-            hits = 0
-            ndcg = 0
-            
-            for i, target_title in enumerate(target_titles):
-                preds = decoded_preds[i] # List of K strings
-                
-                # Check if target_title is in preds
-                # We use exact string match (case insensitive maybe?)
-                # Let's do case insensitive strip match
-                target_clean = target_title.strip().lower()
-                preds_clean = [p.strip().lower() for p in preds]
-                
-                if target_clean in preds_clean:
-                    hits += 1
-                    rank = preds_clean.index(target_clean) # 0-based
-                    ndcg += 1.0 / torch.log2(torch.tensor(rank + 2.0))
-            
-            val_hr = hits / batch_size
-            val_ndcg = ndcg / batch_size
-            
-            self.log(f"{prefix}_hr@{self.metrics_k}", val_hr, prog_bar=True)
-            self.log(f"{prefix}_ndcg@{self.metrics_k}", val_ndcg, prog_bar=True)
-
-    def on_save_checkpoint(self, checkpoint):
-        # Only save trainable parameters (LoRA + Gate) to save space and avoid saving frozen models
-        state_dict = checkpoint["state_dict"]
-        keys_to_keep = [k for k, v in self.named_parameters() if v.requires_grad]
-        new_state_dict = {k: state_dict[k] for k in keys_to_keep if k in state_dict}
-        checkpoint["state_dict"] = new_state_dict
-
-    def load_state_dict(self, state_dict, strict=True):
-        # Allow missing keys (frozen params)
-        return super().load_state_dict(state_dict, strict=False)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.parameters()), lr=self.hparams.learning_rate)
-        
-        # Use Linear Decay with Warmup
-        from transformers import get_linear_schedule_with_warmup
-        
-        # Use Linear Decay with Warmup
-        from transformers import get_linear_schedule_with_warmup
-        
-        # Estimate total steps
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = self.hparams.warmup_steps
-        
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps
-        )
-        
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-                "frequency": 1
-            }
-        }
-
-    def generate(self, input_ids, attention_mask, max_new_tokens=None):
-        if max_new_tokens is None:
-            max_new_tokens = self.hparams.max_target_length
-            
-        return self.model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id
-        )
-
-    @staticmethod
-    def extract_recommendation(text: str, use_cot: bool = False) -> str:
-        """
-        Extracts the recommendation part from the generated text.
-        """
-        # Split by Response tag
-        parts = text.split("### Response:\n")
-        if len(parts) > 1:
-            response_part = parts[-1].strip()
-        else:
-            response_part = text.strip()
-        
-        if use_cot:
-            # Format: "Reasoning: ...\nRecommendation: Item"
-            rec_parts = response_part.split("Recommendation:")
-            if len(rec_parts) > 1:
-                final_rec = rec_parts[-1].strip()
-            else:
-                # Fallback: maybe the model didn't output Recommendation tag?
-                # Use the whole response or last line?
-                final_rec = response_part.split("\n")[-1].strip()
-            return final_rec
-        else:
-            return response_part
