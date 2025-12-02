@@ -210,7 +210,7 @@ def run_experiment(cfg):
     
     # Custom Callback for Console Logging
     class ConsoleMetricsCallback(pl.Callback):
-        def on_validation_epoch_end(self, trainer, pl_module):
+        def _log_metrics(self, trainer, stage):
             metrics = trainer.callback_metrics
             epoch = trainer.current_epoch
             
@@ -219,15 +219,20 @@ def run_experiment(cfg):
             if not keys_to_log:
                 return
                 
-            msg = f"\n[Epoch {epoch} Metrics]\n"
+            msg = f"\n[Epoch {epoch} {stage} Metrics]\n"
             for k in sorted(keys_to_log):
                 v = metrics[k]
                 if isinstance(v, torch.Tensor):
                     v = v.item()
                 msg += f"  {k}: {v:.4f}\n"
             
-            # Use print explicitly to ensure visibility in stdout
             print(msg)
+
+        def on_validation_end(self, trainer, pl_module):
+            self._log_metrics(trainer, "Validation")
+
+        def on_train_epoch_end(self, trainer, pl_module):
+            self._log_metrics(trainer, "Train")
 
     trainer.callbacks.append(ConsoleMetricsCallback())
 
