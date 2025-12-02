@@ -164,11 +164,18 @@ def run_experiment(cfg):
     tb_logger = TensorBoardLogger(save_dir=str(output_dir), name="tb_logs", version="")
     
     # Checkpoint filename differs slightly
-    if model_type in ["bigrec", "moe_bigrec"]:
+    # Checkpoint filename differs slightly
+    if model_type == "bigrec":
         filename = f"{model_type}-{{epoch:02d}}-{{val_loss:.2f}}"
         monitor = "val_loss"
         mode = "min"
+    elif model_type == "moe_bigrec":
+        # MoE-BigRec uses Ensemble Evaluation which logs val_hr@10
+        filename = f"{model_type}-{{epoch:02d}}-{{val_hr@10:.4f}}"
+        monitor = "val_hr@10"
+        mode = "max"
     else:
+        # iLoRA
         filename = "teacher-{epoch:02d}-{val_hr@10:.4f}"
         monitor = "val_hr@10"
         mode = "max"
