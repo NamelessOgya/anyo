@@ -205,9 +205,32 @@ def run_experiment(cfg):
         val_check_interval=cfg.teacher.val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps,
         callbacks=[checkpoint_callback, lr_monitor],
-        logger=tb_logger,
         # strategy="ddp_find_unused_parameters_true" if cfg.train.devices > 1 else "auto"
     )
+    
+    # Custom Callback for Console Logging
+    class ConsoleMetricsCallback(pl.Callback):
+        def on_validation_epoch_end(self, trainer, pl_module):
+            metrics = trainer.callback_metrics
+            epoch = trainer.current_epoch
+            
+            # Filter relevant metrics
+            keys_to_log = [k for k in metrics.keys() if "val_" in k or "train_" in k]
+            if not keys_to_log:
+                return
+                
+            msg = f"\n[Epoch {epoch} Metrics]\n"
+            for k in sorted(keys_to_log):
+                v = metrics[k]
+                if isinstance(v, torch.Tensor):
+                    v = v.item()
+                msg += f"  {k}: {v:.4f}\n"
+            
+            # Use print explicitly to ensure visibility in stdout
+            print(msg)
+
+    trainer.callbacks.append(ConsoleMetricsCallback())
+
     logger.info(f"Starting {model_type} teacher model training...")
     training_start_time = time.perf_counter()
     

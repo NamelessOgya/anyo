@@ -34,30 +34,65 @@ def analyze_tb_logs(result_dir):
     tags = ea.Tags()['scalars']
     print(f"Available tags: {tags}")
 
-    # Filter for validation metrics
-    val_tags = [t for t in tags if "val" in t or "hr" in t or "ndcg" in t]
+    # Define metrics of interest
+    metrics_of_interest = ["epoch", "val_hr@10", "val_ndcg@10", "train_alpha", "train_loss"]
     
     data = {}
-    for tag in val_tags:
-        events = ea.Scalars(tag)
-        steps = [e.step for e in events]
-        values = [e.value for e in events]
-        data[tag] = pd.Series(values, index=steps)
+    
+    # Extract data for each metric
+    for tag in metrics_of_interest:
+        # Find exact match or close match
+        found_tag = None
+        if tag in tags:
+            found_tag = tag
+        else:
+            # Try to find partial match (e.g. "train_alpha_epoch")
+            matches = [t for t in tags if tag in t]
+            if matches:
+                # Prefer exact match if possible, otherwise shortest match (likely the base name)
+                found_tag = sorted(matches, key=len)[0]
+        
+        if found_tag:
+            events = ea.Scalars(found_tag)
+            steps = [e.step for e in events]
+            values = [e.value for e in events]
+            # Use step as index to align different metrics
+            data[tag] = pd.Series(values, index=steps)
+        else:
+            print(f"Warning: Metric '{tag}' not found in logs.")
 
     if not data:
-        print("No validation metrics found.")
+        print("No relevant metrics found.")
         return
 
     df = pd.DataFrame(data)
     df.index.name = "Step"
     
-    print("\nValidation Metrics Summary:")
+    # If 'epoch' exists, use it to sort or display. 
+    # Note: 'epoch' might be logged at different steps than validation metrics.
+    # We'll forward fill epoch to align with validation steps if needed, 
+    # but usually PL logs them together or close enough.
+    # Let's just display the DataFrame sorted by Step.
+    
+    # Drop rows where all columns are NaN (unlikely)
+    df = df.dropna(how='all')
+    
+    # Sort by Step
+    df = df.sort_index()
+    
+    print("\nMetrics Summary (Aligned by Step):")
     print(df)
     
+    # Filter to show only rows where val_hr@10 is present (Validation steps)
+    if "val_hr@10" in df.columns:
+        print("\nValidation Epochs Summary:")
+        val_df = df[df["val_hr@10"].notna()]
+        print(val_df)
+    
     # Save to CSV
-    output_csv = os.path.join(result_dir, "validation_metrics.csv")
+    output_csv = os.path.join(result_dir, "metrics_summary.csv")
     df.to_csv(output_csv)
-    print(f"\nMetrics saved to {output_csv}")
+    print(f"\nFull metrics saved to {output_csv}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze TensorBoard logs and extract validation metrics.")
