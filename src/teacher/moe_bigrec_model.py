@@ -276,40 +276,33 @@ class MoEBigRecModel(pl.LightningModule):
             alpha_logits = self.gate(sasrec_user_emb) # (B, 1)
             alpha = torch.sigmoid(alpha_logits) # (B, 1)
             
-            # Normalize Logits (Min-Max) for Loss Calculation
-            # Map logits to [0, 1] range
-            llm_min = llm_logits.min(dim=-1, keepdim=True)[0]
-            llm_max = llm_logits.max(dim=-1, keepdim=True)[0]
-            llm_logits_norm = (llm_logits - llm_min) / (llm_max - llm_min + 1e-8)
-            
-            sasrec_min = sasrec_logits.min(dim=-1, keepdim=True)[0]
-            sasrec_max = sasrec_logits.max(dim=-1, keepdim=True)[0]
-            sasrec_logits_norm = (sasrec_logits - sasrec_min) / (sasrec_max - sasrec_min + 1e-8)
-            
-            self.log("train_llm_min", llm_min.mean(), prog_bar=True)
-            self.log("train_llm_max", llm_max.mean(), prog_bar=True)
-            self.log("train_sasrec_min", sasrec_min.mean(), prog_bar=True)
-            self.log("train_sasrec_max", sasrec_max.mean(), prog_bar=True)
-
-            # 4. Compute Separate Losses (Mixture of Losses)
+            # 4. Compute Ensemble Probability Loss
             target_ids = batch["next_item"] # (B,) 1-based IDs
             loss_targets = target_ids - 1
             
-            # LLM Loss (Normalized)
-            loss_llm = F.cross_entropy(llm_logits_norm, loss_targets, reduction='none') # (B,)
+            # Softmax to get Probabilities
+            probs_llm = F.softmax(llm_logits, dim=-1)       # (B, NumItems)
+            probs_sasrec = F.softmax(sasrec_logits, dim=-1) # (B, NumItems)
             
-            # SASRec Loss (Normalized)
-            loss_sasrec = F.cross_entropy(sasrec_logits_norm, loss_targets, reduction='none') # (B,)
+            # Weighted Average of Probabilities
+            # alpha is (B, 1)
+            probs_ensemble = alpha * probs_sasrec + (1 - alpha) * probs_llm
             
-            # Combine Losses
-            # alpha is (B, 1), broadcast to (B,)
-            alpha_flat = alpha.squeeze(-1)
-            loss = (alpha_flat * loss_sasrec + (1 - alpha_flat) * loss_llm).mean()
+            # Compute Loss (NLLLoss expects log-probabilities)
+            # Add epsilon for numerical stability
+            log_probs_ensemble = torch.log(probs_ensemble + 1e-8)
+            
+            loss = F.nll_loss(log_probs_ensemble, loss_targets)
+            
+            # Logging (Optional: Compute individual CrossEntropy for monitoring)
+            with torch.no_grad():
+                loss_llm = F.cross_entropy(llm_logits, loss_targets)
+                loss_sasrec = F.cross_entropy(sasrec_logits, loss_targets)
             
             self.log("train_loss", loss, prog_bar=True)
-            self.log("train_loss_llm", loss_llm.mean(), prog_bar=True)
-            self.log("train_loss_sasrec", loss_sasrec.mean(), prog_bar=True)
-            self.log("alpha", alpha.mean(), prog_bar=True)
+            self.log("train_loss_llm", loss_llm, prog_bar=True)
+            self.log("train_loss_sasrec", loss_sasrec, prog_bar=True)
+            self.log("train_alpha", alpha.mean(), on_step=True, on_epoch=True, prog_bar=True)
             
             return loss
             
@@ -413,7 +406,7 @@ class MoEBigRecModel(pl.LightningModule):
         
         self.log(f"{prefix}_hr@{self.metrics_k}", hits / batch_size, prog_bar=True)
         self.log(f"{prefix}_ndcg@{self.metrics_k}", ndcg / batch_size, prog_bar=True)
-        self.log(f"{prefix}_alpha", alpha.mean(), prog_bar=True)
+        self.log(f"{prefix}_alpha", alpha.mean(), on_step=False, on_epoch=True, prog_bar=True)
         
         # Debug Logging (First 3 samples of the batch)
         if batch_idx == 0:
@@ -648,6 +641,17 @@ class MoEBigRecModel(pl.LightningModule):
             
             self.log(f"{prefix}_hr@{self.metrics_k}", val_hr, prog_bar=True)
             self.log(f"{prefix}_ndcg@{self.metrics_k}", val_ndcg, prog_bar=True)
+
+    def on_save_checkpoint(self, checkpoint):
+        # Only save trainable parameters (LoRA + Gate) to save space and avoid saving frozen models
+        state_dict = checkpoint["state_dict"]
+        keys_to_keep = [k for k, v in self.named_parameters() if v.requires_grad]
+        new_state_dict = {k: state_dict[k] for k in keys_to_keep if k in state_dict}
+        checkpoint["state_dict"] = new_state_dict
+
+    def load_state_dict(self, state_dict, strict=True):
+        # Allow missing keys (frozen params)
+        return super().load_state_dict(state_dict, strict=False)
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.parameters()), lr=self.hparams.learning_rate)

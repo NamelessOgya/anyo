@@ -287,7 +287,7 @@ class iLoRATrainer(pl.LightningModule):
                 # Combine Normalized Logits
                 logits = alpha * sasrec_logits_norm + (1 - alpha) * logits_norm
                 
-                self.log("train_alpha", alpha.mean(), on_step=True, prog_bar=True, logger=True)
+                self.log("train_alpha", alpha.mean(), on_step=True, on_epoch=True, prog_bar=True, logger=True)
                 self.log("train_llm_mean", llm_mean.mean(), on_step=True, logger=True)
                 self.log("train_llm_std", llm_std.mean(), on_step=True, logger=True)
                 self.log("train_sasrec_mean", sasrec_mean.mean(), on_step=True, logger=True)
