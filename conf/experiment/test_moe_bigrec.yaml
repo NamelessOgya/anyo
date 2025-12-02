@@ -1,0 +1,39 @@
+# @package _global_
+
+defaults:
+  - /teacher: moe_bigrec
+  - /student: sasrec
+  - /train: default
+  - /eval: default
+  - /distill: dllm2rec
+  - _self_
+
+teacher:
+  model_type: moe_bigrec
+  llm_model_name: "dummy"
+  item_embeddings_path: "dummy"
+  student_model_path: "dummy"
+  compute_item_embeddings: false
+  popularity_path: null
+  
+  # LoRA params (ignored by dummy but needed for config validation)
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  num_beams: 1
+  
+  max_source_length: 32
+  max_target_length: 16
+
+train:
+  batch_size: 2
+  max_epochs: 1
+  accelerator: cpu
+  devices: 1
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+
+dataset:
+  name: ml-100k
+  data_dir: data/ml-100k-dummy
+  limit_data_rows: 10

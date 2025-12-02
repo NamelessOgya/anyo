@@ -40,11 +40,32 @@ def run_experiment(cfg):
     logger.info(f"Config: {OmegaConf.to_yaml(cfg)}")
 
     # Initialize tokenizer early
-    llm_tokenizer = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name, use_fast=False)
-    llm_tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
-    llm_tokenizer.pad_token = llm_tokenizer.decode(0)
-    llm_tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
-    llm_tokenizer.padding_side = "left"
+    # Initialize tokenizer early
+    if cfg.teacher.llm_model_name == "dummy":
+        class DummyTokenizer:
+            def __init__(self):
+                self.padding_side = "left"
+                self.pad_token_id = 0
+                self.pad_token = "[PAD]"
+                self.eos_token_id = 1
+                self.eos_token = "[EOS]"
+            def __call__(self, text, return_tensors="pt", **kwargs):
+                return {'input_ids': torch.tensor([[1, 2, 3]]), 'attention_mask': torch.tensor([[1, 1, 1]])}
+            def decode(self, token_ids, **kwargs):
+                return "dummy text"
+            def batch_decode(self, token_ids, **kwargs):
+                return ["dummy text"] * len(token_ids)
+            def __len__(self):
+                return 1000
+            def add_special_tokens(self, *args, **kwargs):
+                return 0
+        llm_tokenizer = DummyTokenizer()
+    else:
+        llm_tokenizer = AutoTokenizer.from_pretrained(cfg.teacher.llm_model_name, use_fast=False)
+        llm_tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
+        llm_tokenizer.pad_token = llm_tokenizer.decode(0)
+        llm_tokenizer.add_special_tokens({'additional_special_tokens': ['[PH]','[HistoryEmb]','[CansEmb]','[ItemEmb]']})
+        llm_tokenizer.padding_side = "left"
 
     # 2. SASRecDataModuleのインスタンス化とデータ準備
     dm = SASRecDataModule(

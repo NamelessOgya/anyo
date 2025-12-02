@@ -8,6 +8,7 @@ from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_tr
 from typing import List, Dict, Any
 import os
 from src.student.models import SASRec
+from src.utils.dummies import DummyLLM, DummySASRec
 
 class MoEBigRecModel(pl.LightningModule):
     def __init__(
@@ -39,12 +40,34 @@ class MoEBigRecModel(pl.LightningModule):
         self.num_beams = num_beams
         self.item_embeddings_path = item_embeddings_path
         
+        self.item_embeddings_path = item_embeddings_path
+        
         # Load Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-        self.tokenizer.padding_side = "left" # Required for generation
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
-            self.tokenizer.pad_token = self.tokenizer.decode(0)
+        if model_name_or_path == "dummy":
+            # Mock tokenizer
+            class DummyTokenizer:
+                def __init__(self):
+                    self.padding_side = "left"
+                    self.pad_token_id = 0
+                    self.pad_token = "[PAD]"
+                    self.eos_token_id = 1
+                    self.eos_token = "[EOS]"
+                def __call__(self, text, return_tensors="pt", **kwargs):
+                    # Return dummy input_ids
+                    return {'input_ids': torch.tensor([[1, 2, 3]]), 'attention_mask': torch.tensor([[1, 1, 1]])}
+                def decode(self, token_ids, **kwargs):
+                    return "dummy text"
+                def batch_decode(self, token_ids, **kwargs):
+                    return ["dummy text"] * len(token_ids)
+                def __len__(self):
+                    return 1000
+            self.tokenizer = DummyTokenizer()
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+            self.tokenizer.padding_side = "left" # Required for generation
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token_id = 0 # Reference uses 0 (unk)
+                self.tokenizer.pad_token = self.tokenizer.decode(0)
             
         # Load Model
         # Determine dtype (bf16 if supported, else fp16)
@@ -65,21 +88,31 @@ class MoEBigRecModel(pl.LightningModule):
             print("Flash Attention 2 not found. Using default attention.")
 
         # Load Model
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path,
-            **model_kwargs
-        )
+        # Load Model
+        if model_name_or_path == "dummy":
+            print("Using DummyLLM.")
+            self.model = DummyLLM()
+            torch_dtype = torch.float32 # Dummy uses float32 usually
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name_or_path,
+                **model_kwargs
+            )
         
         # Configure LoRA
-        peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            inference_mode=False,
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            target_modules=["q_proj", "v_proj"] # Common for Llama/Qwen. Adjust if needed.
-        )
-        self.model = get_peft_model(self.model, peft_config)
+        if model_name_or_path != "dummy":
+            # Configure LoRA
+            peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                inference_mode=False,
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=["q_proj", "v_proj"] # Common for Llama/Qwen. Adjust if needed.
+            )
+            self.model = get_peft_model(self.model, peft_config)
+        else:
+            print("Skipping PEFT wrapping for DummyLLM.")
         
         # Ensure LoRA layers match the base model dtype if using Flash Attention 2
         # LoRA layers are often float32 by default, which causes dtype mismatch in FA2
@@ -94,23 +127,30 @@ class MoEBigRecModel(pl.LightningModule):
         if not self.item_embeddings_path:
             raise ValueError("item_embeddings_path must be provided for MoE-BigRec model.")
             
-        if not os.path.exists(self.item_embeddings_path):
+        if self.item_embeddings_path != "dummy" and not os.path.exists(self.item_embeddings_path):
             raise FileNotFoundError(f"item_embeddings_path is set to '{self.item_embeddings_path}', but the file does not exist.")
 
-        print(f"Loading item embeddings from {self.item_embeddings_path}...")
-        loaded_data = torch.load(self.item_embeddings_path)
-        if isinstance(loaded_data, dict):
-            # Convert dict to tensor
-            # Assume keys are 1-based item IDs
-            max_id = max(loaded_data.keys())
-            # Infer embedding dim
-            emb_dim = list(loaded_data.values())[0].shape[0]
-            # Create tensor (0 is padding)
-            self.item_embeddings = torch.zeros(max_id + 1, emb_dim)
-            for k, v in loaded_data.items():
-                self.item_embeddings[k] = v
+        if self.item_embeddings_path == "dummy":
+            print("Using dummy item embeddings.")
+            # Assume max_id is derived from item_id_to_name or just sufficient size
+            max_id = max(self.item_id_to_name.keys()) if self.item_id_to_name else 1682
+            emb_dim = 128 # Dummy dim
+            self.item_embeddings = torch.randn(max_id + 1, emb_dim)
         else:
-            self.item_embeddings = loaded_data
+            print(f"Loading item embeddings from {self.item_embeddings_path}...")
+            loaded_data = torch.load(self.item_embeddings_path)
+            if isinstance(loaded_data, dict):
+                # Convert dict to tensor
+                # Assume keys are 1-based item IDs
+                max_id = max(loaded_data.keys())
+                # Infer embedding dim
+                emb_dim = list(loaded_data.values())[0].shape[0]
+                # Create tensor (0 is padding)
+                self.item_embeddings = torch.zeros(max_id + 1, emb_dim)
+                for k, v in loaded_data.items():
+                    self.item_embeddings[k] = v
+            else:
+                self.item_embeddings = loaded_data
             
         # Move to device later or keep on CPU if large? 
         # Ideally move to same device as model during validation.
@@ -132,40 +172,46 @@ class MoEBigRecModel(pl.LightningModule):
         if not student_model_path:
             raise ValueError("student_model_path must be provided for MoE-BigRec model.")
             
-        if not os.path.exists(student_model_path):
+        if student_model_path != "dummy" and not os.path.exists(student_model_path):
             raise FileNotFoundError(f"student_model_path is set to '{student_model_path}', but the file does not exist.")
             
-        print(f"Loading SASRec from {student_model_path}...")
-        # Hardcoding ML-100k params for simplicity as per config usually.
-        # num_items=1682, hidden_size=64, etc.
-        # Ideally, we should load config from the checkpoint or similar.
-        # For this task, let's assume standard params.
-        num_items = 1682 # ML-100k
-        hidden_size = 64
-        num_heads = 2
-        num_layers = 2
-        max_seq_len = 50
-        dropout_rate = 0.1
-        
-        self.sasrec = SASRec(num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
-        
-        checkpoint = torch.load(student_model_path, map_location="cpu")
-        # Checkpoint keys might be "state_dict" -> "model.xxx"
-        state_dict = checkpoint["state_dict"]
-        # Adjust keys if necessary (remove "model." prefix if wrapped)
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith("model."):
-                new_state_dict[k[6:]] = v
-            else:
-                new_state_dict[k] = v
-        self.sasrec.load_state_dict(new_state_dict)
-        
-        # Freeze SASRec
-        for param in self.sasrec.parameters():
-            param.requires_grad = False
-        self.sasrec.eval()
-        print("SASRec loaded and frozen.")
+        if student_model_path == "dummy":
+            print("Using DummySASRec.")
+            hidden_size = 64
+            num_items = max(self.item_id_to_name.keys()) if self.item_id_to_name else 1682
+            self.sasrec = DummySASRec(num_items=num_items, hidden_size=hidden_size, max_seq_len=50)
+        else:
+            print(f"Loading SASRec from {student_model_path}...")
+            # Hardcoding ML-100k params for simplicity as per config usually.
+            # num_items=1682, hidden_size=64, etc.
+            # Ideally, we should load config from the checkpoint or similar.
+            # For this task, let's assume standard params.
+            num_items = 1682 # ML-100k
+            hidden_size = 64
+            num_heads = 2
+            num_layers = 2
+            max_seq_len = 50
+            dropout_rate = 0.1
+            
+            self.sasrec = SASRec(num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
+            
+            checkpoint = torch.load(student_model_path, map_location="cpu")
+            # Checkpoint keys might be "state_dict" -> "model.xxx"
+            state_dict = checkpoint["state_dict"]
+            # Adjust keys if necessary (remove "model." prefix if wrapped)
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith("model."):
+                    new_state_dict[k[6:]] = v
+                else:
+                    new_state_dict[k] = v
+            self.sasrec.load_state_dict(new_state_dict)
+            
+            # Freeze SASRec
+            for param in self.sasrec.parameters():
+                param.requires_grad = False
+            self.sasrec.eval()
+            print("SASRec loaded and frozen.")
         
         # Initialize Gate (Dynamic Alpha)
         # Input: SASRec hidden size -> Output: 1 (logit for sigmoid)
@@ -227,8 +273,9 @@ class MoEBigRecModel(pl.LightningModule):
             sasrec_ids = batch["sasrec_input_ids"] # (B, Seq)
             sasrec_lens = (sasrec_ids != 0).sum(dim=1)
             
-            # SASRec predict returns (B, NumItems)
+            # SASRec predict returns (B, NumItems + 1)
             sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
+            sasrec_logits = sasrec_logits[:, 1:] # Remove padding index 0
             
             # Get SASRec User Embedding for Gating
             sasrec_user_emb = self.sasrec(sasrec_ids, sasrec_lens) # (B, Hidden)
@@ -302,6 +349,7 @@ class MoEBigRecModel(pl.LightningModule):
         sasrec_ids = batch["sasrec_input_ids"]
         sasrec_lens = (sasrec_ids != 0).sum(dim=1)
         sasrec_logits = self.sasrec.predict(sasrec_ids, sasrec_lens)
+        sasrec_logits = sasrec_logits[:, 1:] # Remove padding index 0
         
         # Dynamic Alpha
         sasrec_user_emb = self.sasrec(sasrec_ids, sasrec_lens)

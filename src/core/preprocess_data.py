@@ -195,11 +195,11 @@ def preprocess_data(data_dir: str, dataset_type: str, min_seq_len: int = 3, spli
     movies_df = process_metadata(output_dir, dataset_type)
     
     # Filter out items with "unknown" title
-    logging.info("Filtering out items with 'unknown' title...")
-    initial_items = len(movies_df)
-    movies_df = movies_df[~movies_df['title'].str.contains("unknown", case=False, na=False)]
-    removed_items = initial_items - len(movies_df)
-    logging.info(f"Removed {removed_items} items.")
+    # logging.info("Filtering out items with 'unknown' title...")
+    # initial_items = len(movies_df)
+    # movies_df = movies_df[~movies_df['title'].str.contains("unknown", case=False, na=False)]
+    # removed_items = initial_items - len(movies_df)
+    # logging.info(f"Removed {removed_items} items.")
     
     movies_csv_path = output_dir / "movies.csv"
     logging.info(f"Saving standardized metadata to {movies_csv_path}...")

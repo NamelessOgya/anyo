@@ -6,6 +6,7 @@ from src.core.git_info import get_git_info
 from omegaconf import OmegaConf
 from src.student.datamodule import SASRecDataModule
 from src.student.models import SASRec
+from src.utils.dummies import DummySASRec
 from src.student.trainer_baseline import SASRecTrainer
 from src.core.callbacks import CustomRichProgressBar
 
@@ -56,15 +57,23 @@ def main():
     dm.setup()
 
     # 3. SASRecモデルのインスタンス化
-    student_model = SASRec(
-        num_items=dm.num_items,
-        hidden_size=cfg.student.hidden_size,
-        num_heads=cfg.student.num_heads,
-        num_layers=cfg.student.num_layers,
-        dropout_rate=cfg.student.dropout_rate,
-        max_seq_len=cfg.student.max_seq_len,
-        padding_item_id=dm.padding_item_id
-    )
+    if cfg.student.get("use_dummy_model", False):
+        print("Using DummySASRec.")
+        student_model = DummySASRec(
+            num_items=dm.num_items,
+            hidden_size=cfg.student.hidden_size,
+            max_seq_len=cfg.student.max_seq_len,
+        )
+    else:
+        student_model = SASRec(
+            num_items=dm.num_items,
+            hidden_size=cfg.student.hidden_size,
+            num_heads=cfg.student.num_heads,
+            num_layers=cfg.student.num_layers,
+            dropout_rate=cfg.student.dropout_rate,
+            max_seq_len=cfg.student.max_seq_len,
+            padding_item_id=dm.padding_item_id
+        )
 
     # 4. SASRecTrainerのインスタンス化
     trainer_model = SASRecTrainer(
