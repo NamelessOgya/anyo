@@ -308,16 +308,15 @@ class MoEBigRecModel(pl.LightningModule):
         alpha_logits = self.gate(sasrec_user_emb)
         alpha = torch.sigmoid(alpha_logits)
         
-        # Normalize Logits (Z-score)
-        llm_mean = llm_logits.mean(dim=-1, keepdim=True)
-        llm_std = llm_logits.std(dim=-1, keepdim=True)
-        llm_logits_norm = (llm_logits - llm_mean) / (llm_std + 1e-8)
+        # Probability Ensemble (Weighted Average of Softmax Probs)
+        probs_llm = F.softmax(llm_logits, dim=-1)
+        probs_sasrec = F.softmax(sasrec_logits, dim=-1)
         
-        sasrec_mean = sasrec_logits.mean(dim=-1, keepdim=True)
-        sasrec_std = sasrec_logits.std(dim=-1, keepdim=True)
-        sasrec_logits_norm = (sasrec_logits - sasrec_mean) / (sasrec_std + 1e-8)
+        probs_ensemble = alpha * probs_sasrec + (1 - alpha) * probs_llm
         
-        ensemble_logits = alpha * sasrec_logits_norm + (1 - alpha) * llm_logits_norm
+        # Convert back to log-space for top-k selection (optional, but consistent with logits)
+        # Or just use probs directly since top-k is monotonic
+        ensemble_logits = probs_ensemble
 
         # Apply Popularity Bias Adjustment (Global Prior)
         # Applied AFTER ensemble and normalization to ensure consistent scale
@@ -330,10 +329,17 @@ class MoEBigRecModel(pl.LightningModule):
             pop_adjustment = self.popularity_lambda * torch.log(pop_scores + 1.0)
             ensemble_logits = ensemble_logits + pop_adjustment
         
-        self.log(f"{prefix}_llm_mean", llm_mean.mean(), prog_bar=True)
-        self.log(f"{prefix}_llm_std", llm_std.mean(), prog_bar=True)
-        self.log(f"{prefix}_sasrec_mean", sasrec_mean.mean(), prog_bar=True)
-        self.log(f"{prefix}_sasrec_std", sasrec_std.mean(), prog_bar=True)
+
+        
+        
+        # Compute Loss for Monitoring (NLLLoss)
+        loss_targets = batch["next_item"] - 1
+        log_probs_ensemble = torch.log(probs_ensemble + 1e-8)
+        loss = F.nll_loss(log_probs_ensemble, loss_targets)
+        self.log(f"{prefix}_loss", loss, prog_bar=True)
+
+        self.log(f"{prefix}_prob_llm_mean", probs_llm.mean(), prog_bar=True)
+        self.log(f"{prefix}_prob_sasrec_mean", probs_sasrec.mean(), prog_bar=True)
         
         # Metrics
         # Top-K
@@ -364,10 +370,10 @@ class MoEBigRecModel(pl.LightningModule):
         if batch_idx == 0:
             print(f"\n[Epoch {self.current_epoch} {prefix.capitalize()} Debug]")
             print(f"Alpha (Mean): {alpha.mean().item():.4f}")
-            print(f"LLM Logits   - Mean: {llm_mean.mean().item():.4f}, Std: {llm_std.mean().item():.4f}")
+            # print(f"LLM Logits   - Mean: {llm_mean.mean().item():.4f}, Std: {llm_std.mean().item():.4f}")
             if self.popularity_scores is not None and self.popularity_lambda > 0:
                 print(f"Pop Adjust   - Max: {pop_adjustment.max().item():.4f}, Mean: {pop_adjustment.mean().item():.4f}")
-            print(f"SASRec Logits- Mean: {sasrec_mean.mean().item():.4f}, Std: {sasrec_std.mean().item():.4f}")
+            # print(f"SASRec Logits- Mean: {sasrec_mean.mean().item():.4f}, Std: {sasrec_std.mean().item():.4f}")
             
             debug_batch_size = min(3, batch_size)
             
