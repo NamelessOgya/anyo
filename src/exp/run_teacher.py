@@ -208,14 +208,20 @@ def run_experiment(cfg):
         # strategy="ddp_find_unused_parameters_true" if cfg.train.devices > 1 else "auto"
     )
     
+    # Custom Callback for Console Logging
+    class ConsoleMetricsCallback(pl.Callback):
         def _log_metrics(self, trainer, stage):
             # Combine callback_metrics and logged_metrics to be safe
             metrics = {**trainer.callback_metrics, **trainer.logged_metrics}
             epoch = trainer.current_epoch
             
+            # DEBUG: Print ALL keys to see what's available
+            print(f"\n[DEBUG] All Available Metrics Keys at {stage} Epoch End: {list(metrics.keys())}")
+            
             # Filter relevant metrics
             keys_to_log = [k for k in metrics.keys() if "val_" in k or "train_" in k]
             if not keys_to_log:
+                print(f"[DEBUG] No keys matched filter 'val_' or 'train_'")
                 return
                 
             msg = f"\n[Epoch {epoch} {stage} Metrics]\n"
@@ -233,6 +239,8 @@ def run_experiment(cfg):
 
         def on_train_epoch_end(self, trainer, pl_module):
             self._log_metrics(trainer, "Train")
+
+    trainer.callbacks.append(ConsoleMetricsCallback())
 
     trainer.callbacks.append(ConsoleMetricsCallback())
 
