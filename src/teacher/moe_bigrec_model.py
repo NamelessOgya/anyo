@@ -197,49 +197,43 @@ class MoEBigRecModel(pl.LightningModule):
                 # If it's a standard PL checkpoint, we can load state_dict.
                 # But we need to instantiate SASRec first.
                 # We'll assume standard ML-100k params for now or try to infer?
-                # Hardcoding ML-100k params for simplicity as per config usually.
-                # num_items=1682, hidden_size=64, etc.
-                # Ideally, we should load config from the checkpoint or similar.
-                # For this task, let's assume standard params.
-                num_items = 1682 # ML-100k
-                hidden_size = 64
-                num_heads = 2
-                num_layers = 2
-                max_seq_len = 50
-                dropout_rate = 0.1
-                
-                self.sasrec = SASRec(num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
-                
-                checkpoint = torch.load(student_model_path, map_location="cpu")
-                # Checkpoint keys might be "state_dict" -> "model.xxx"
-                state_dict = checkpoint["state_dict"]
-                # Adjust keys if necessary (remove "model." prefix if wrapped)
-                new_state_dict = {}
-                for k, v in state_dict.items():
-                    if k.startswith("model."):
-                        new_state_dict[k[6:]] = v
-                    else:
-                        new_state_dict[k] = v
-                self.sasrec.load_state_dict(new_state_dict)
-                
-                # Freeze SASRec
-                for param in self.sasrec.parameters():
-                    param.requires_grad = False
-                self.sasrec.eval()
-                print("SASRec loaded and frozen.")
-                
-                # Initialize Gate (Dynamic Alpha)
-                # Input: SASRec hidden size -> Output: 1 (logit for sigmoid)
-                self.gate = nn.Linear(hidden_size, 1)
-                # Initialize bias to 0 (sigmoid(0) = 0.5) to start neutral
-                nn.init.zeros_(self.gate.bias)
-                print("Ensemble Gate initialized.")
-                
-            except Exception as e:
-                print(f"Failed to load SASRec: {e}")
-                import traceback
-                traceback.print_exc()
-                self.sasrec = None
+        # Hardcoding ML-100k params for simplicity as per config usually.
+        # num_items=1682, hidden_size=64, etc.
+        # Ideally, we should load config from the checkpoint or similar.
+        # For this task, let's assume standard params.
+        num_items = 1682 # ML-100k
+        hidden_size = 64
+        num_heads = 2
+        num_layers = 2
+        max_seq_len = 50
+        dropout_rate = 0.1
+        
+        self.sasrec = SASRec(num_items, hidden_size, num_heads, num_layers, dropout_rate, max_seq_len)
+        
+        checkpoint = torch.load(student_model_path, map_location="cpu")
+        # Checkpoint keys might be "state_dict" -> "model.xxx"
+        state_dict = checkpoint["state_dict"]
+        # Adjust keys if necessary (remove "model." prefix if wrapped)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("model."):
+                new_state_dict[k[6:]] = v
+            else:
+                new_state_dict[k] = v
+        self.sasrec.load_state_dict(new_state_dict)
+        
+        # Freeze SASRec
+        for param in self.sasrec.parameters():
+            param.requires_grad = False
+        self.sasrec.eval()
+        print("SASRec loaded and frozen.")
+        
+        # Initialize Gate (Dynamic Alpha)
+        # Input: SASRec hidden size -> Output: 1 (logit for sigmoid)
+        self.gate = nn.Linear(hidden_size, 1)
+        # Initialize bias to 0 (sigmoid(0) = 0.5) to start neutral
+        nn.init.zeros_(self.gate.bias)
+        print("Ensemble Gate initialized.")
 
     def forward(self, input_ids, attention_mask, labels=None):
         return self.model(
