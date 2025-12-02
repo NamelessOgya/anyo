@@ -399,3 +399,39 @@ class MoEBigRecModel(pl.LightningModule):
                 print(f"  Ensem : {ens_names}")
 
 
+
+    def on_save_checkpoint(self, checkpoint):
+        # Only save trainable parameters (LoRA + Gate) to save space and avoid saving frozen models
+        state_dict = checkpoint["state_dict"]
+        keys_to_keep = [k for k, v in self.named_parameters() if v.requires_grad]
+        new_state_dict = {k: state_dict[k] for k in keys_to_keep if k in state_dict}
+        checkpoint["state_dict"] = new_state_dict
+
+    def load_state_dict(self, state_dict, strict=True):
+        # Allow missing keys (frozen params)
+        return super().load_state_dict(state_dict, strict=False)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.parameters()), lr=self.hparams.learning_rate)
+        
+        # Use Linear Decay with Warmup
+        from transformers import get_linear_schedule_with_warmup
+        
+        # Estimate total steps
+        total_steps = self.trainer.estimated_stepping_batches
+        warmup_steps = self.hparams.warmup_steps
+        
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps
+        )
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1
+            }
+        }
