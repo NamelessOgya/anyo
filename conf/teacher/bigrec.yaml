@@ -12,6 +12,7 @@ top_p: 0.9
 top_k: 40
 warmup_steps: 20
 item_embeddings_path: "data/ml-100k/item_embeddings.pt"
+popularity_path: "data/ml-100k/popularity_counts.pt"
 compute_item_embeddings: true
 val_check_interval: 0.1
 load_in_8bit: false
